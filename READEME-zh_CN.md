@@ -5,7 +5,7 @@
 
 Ristretto is a Rust implementation for https://github.com/dgraph-io/ristretto. A high performance memory-bound Rust cache.
 
-English | [简体中文](README-zh_CN.md)
+[English](README.md) | 简体中文
 
 [<img alt="github" src="https://img.shields.io/badge/GITHUB-Ristretto-8da0cb?style=for-the-badge&logo=Github" height="22">][Github-url]
 [<img alt="Build" src="https://img.shields.io/badge/Build-passing-brightgreen?style=for-the-badge&logo=Github-Actions" height="22">][CI-url]
