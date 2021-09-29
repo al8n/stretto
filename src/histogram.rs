@@ -1,0 +1,271 @@
+use std::sync::atomic::{AtomicI64, Ordering};
+use crate::utils::vec_to_array;
+use atomic::Atomic;
+use std::sync::Arc;
+use std::fmt::{Display, Formatter};
+
+const MAXI64: i64 = i64::MAX;
+
+/// `HistogramData` stores the information needed to represent the sizes of the keys and values
+/// as a histogram.
+#[derive(Debug)]
+pub struct Histogram<const BS: usize, const CPB: usize> {
+    // bounds: Vec<f64>,
+    bounds: Arc<[Atomic<f64>; BS]>,
+    // count: i64,
+    count: AtomicI64,
+    // count_per_bucket: Vec<i64>,
+    count_per_bucket: Arc<[AtomicI64; CPB]>,
+    // min: i64,
+    min: AtomicI64,
+    // max: i64,
+    max: AtomicI64,
+    // sum: i64,
+    sum: AtomicI64,
+}
+
+impl<const BS: usize, const CPB: usize> Histogram<BS, CPB> {
+    /// Returns a new instance of HistogramData with properly initialized fields.
+    pub fn new(bounds: Vec<f64>) -> Self {
+        let bounds: [Atomic<f64>; BS] = vec_to_array::<Atomic<f64>, BS>(bounds
+            .iter()
+            .map(|val| Atomic::new(*val))
+            .collect()
+        );
+
+        Histogram {
+            bounds: Arc::new(bounds),
+            count: AtomicI64::new(0),
+            count_per_bucket: Arc::new(init_cpb::<CPB>()),
+            min: AtomicI64::new(MAXI64),
+            max: AtomicI64::new(0),
+            sum: AtomicI64::new(0),
+        }
+    }
+
+    /// Returns HistogramData base on the min exponent and max exponent. The bounds are powers of two of the form
+    /// [2^min_exponent, ..., 2^max_exponent].
+    pub fn from_exponents(min_exp: u32, max_exp: u32) -> Self {
+        Self::new((min_exp..=max_exp).map(|idx| (1 << idx) as f64).collect())
+    }
+
+    /// `update` changes the Min and Max fields if value is less than or greater than the current values.
+    pub fn update(&mut self, val: i64) {
+        let _ = self.max.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |max| {
+            if val > max {
+                Some(val)
+            } else {
+                None
+            }
+        });
+
+        let _ = self.min.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |min| {
+            if val < min {
+                Some(val)
+            } else {
+                None
+            }
+        });
+
+        self.sum.fetch_add(val, Ordering::SeqCst);
+        self.count.fetch_add(1, Ordering::SeqCst);
+
+        for idx in 0..=self.bounds.len() {
+            // Allocate value in the last buckets if we reached the end of the Bounds array.
+            if idx == self.bounds.len() {
+                self.count_per_bucket[idx].fetch_add(1, Ordering::SeqCst);
+                break;
+            }
+
+            if val < (self.bounds[idx].load(Ordering::SeqCst) as i64) {
+                self.count_per_bucket[idx].fetch_add(1, Ordering::SeqCst);
+                break;
+            }
+        }
+    }
+
+    /// `mean` returns the mean value for the histogram.
+    pub fn mean(&self) -> f64 {
+        if self.count.load(Ordering::SeqCst) == 0 {
+            0f64
+        } else {
+            (self.sum.load(Ordering::SeqCst) as f64) / (self.count.load(Ordering::SeqCst) as f64)
+        }
+    }
+
+    /// `percentile` returns the percentile value for the histogram.
+    /// value of p should be between [0.0-1.0]
+
+    pub fn percentile(&self, p: f64) -> f64 {
+        let count = self.count.load(Ordering::SeqCst);
+        if count == 0 {
+            // if no data return the minimum range
+            self.bounds[0].load(Ordering::SeqCst)
+        } else {
+            let mut pval = ((count as f64) * p) as i64;
+
+            for (idx, val) in self.count_per_bucket.iter().enumerate() {
+                pval = pval - val.load(Ordering::SeqCst);
+                if pval <= 0 {
+                    if idx == self.bounds.len() {
+                        break;
+                    }
+                    return self.bounds[idx].load(Ordering::SeqCst);
+                }
+            }
+            // default return should be the max range
+            self.bounds[self.bounds.len() - 1].load(Ordering::SeqCst)
+        }
+    }
+
+    /// `clear` reset the histogram. Helpful in situations where we need to reset the metrics
+    pub fn clear(&mut self) {
+        self.count = AtomicI64::new(0);
+        self.count_per_bucket = Arc::new(init_cpb::<CPB>());
+        self.sum = AtomicI64::new(0);
+        self.max = AtomicI64::new(0);
+        self.min = AtomicI64::new(MAXI64);
+    }
+}
+
+impl<const BS: usize, const CPB: usize> Display for Histogram<BS, CPB> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        todo!()
+        // let mut buf = Vec::<u8>::new();
+        // buf.extend("\n -- Histogram: \n".as_bytes());
+        // buf.extend(format!("Min value: {}\n", self.min).as_bytes());
+        // buf.extend(format!("Max value: {}\n", self.max).as_bytes());
+        // buf.extend(format!("Count: {}\n", self.count).as_bytes());
+        // buf.extend(format!("50p: {}\n", self.percentile(0.5)).as_bytes());
+        // buf.extend(format!("75p: {}\n", self.percentile(0.75)).as_bytes());
+        // buf.extend(format!("90p: {}\n", self.percentile(0.9)).as_bytes());
+        //
+        // let num_bounds = self.bounds.len();
+        // let mut cum = 0f64;
+        // for (idx, ct) in self.count_per_bucket.iter().enumerate() {
+        //     let ct = *ct;
+        //     if ct == 0 {
+        //         continue;
+        //     }
+        //
+        //     // The last bucket represents the bucket that contains the range from
+        //     // the last bound up to infinity so it's processed differently than the
+        //     // other buckets.
+        //     if idx == self.count_per_bucket.len() - 1 {
+        //         let lb = self.bounds[num_bounds - 1] as u64;
+        //         let page = (ct * 100) as f64 / (self.count as f64);
+        //         cum += page;
+        //         buf.extend(format!("[{}, {}) {} {:.2}% {:.2}%\n", lb, "infinity", ct, page, cum).as_bytes());
+        //         continue;
+        //     }
+        //
+        //     let ub = self.bounds[idx] as u64;
+        //     let mut lb = 0u64;
+        //     if idx > 0 {
+        //         lb = self.bounds[idx - 1] as u64;
+        //     }
+        //
+        //     let page = (ct * 100) as f64 / (self.count as f64);
+        //
+        //     cum += page;
+        //     buf.extend(format!("[{}, {}) {} {:.2}% {:.2}%\n", lb, ub, ct, page, cum).as_bytes())
+        // }
+        //
+        // buf.extend(" --\n".as_bytes());
+        // write!(f, "{}", String::from_utf8(buf).unwrap())
+    }
+}
+
+fn init_cpb<const N: usize>() -> [AtomicI64; N] {
+    vec_to_array::<AtomicI64, N>(vec![0; N].iter().map(|_| AtomicI64::new(0)).collect())
+}
+
+#[cfg(test)]
+mod test {
+    use crate::histogram::Histogram;
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    struct PercentileTestCase {
+        upper_bound: i64,
+        lower_bound: i64,
+        step: i64,
+        loops: u64,
+        percent: f64,
+        expect: f64,
+    }
+
+    fn init_histogram<const BS: usize, const CPB: usize>(lb: f64, ub: f64, step: f64) -> Histogram<BS, CPB> {
+        let size = ((ub - lb) / step).ceil() as usize;
+        let mut bounds = vec![0f64; size + 1];
+
+        let mut prev = 0f64;
+        bounds.iter_mut().enumerate().for_each(|(idx, val)| {
+            if idx == 0 {
+                *val = lb;
+                prev = lb;
+            } else if idx == size {
+                *val = ub;
+                return;
+            } else {
+                *val = prev + step;
+                prev = *val;
+            }
+        });
+        Histogram::new(bounds)
+    }
+
+    fn assert_histogram_percentiles(ps: Vec<PercentileTestCase>) {
+        let mut h = init_histogram::<122, 123>(32.0, 514.0, 4.0);
+
+        ps.iter().for_each(|case| {
+            (case.lower_bound..=case.upper_bound).filter(|x| *x % case.step == 0).for_each(|v| {
+                (0..case.loops).for_each(|_| {
+                    h.update(v);
+                })
+            });
+
+            assert_eq!(h.percentile(case.percent), case.expect, "bad: p: {}", case.percent);
+            h.clear();
+        });
+    }
+
+    #[test]
+    fn test_mean() {
+        let mut h = init_histogram::<5, 6>(0.0, 16.0, 4.0);
+        (0..=16).filter(|x| *x % 4 == 0).for_each(|v| {
+            h.update(v);
+        });
+        assert_eq!(h.mean(), 40f64 / 5f64);
+    }
+
+    #[test]
+    fn test_percentile() {
+        let cases = vec![
+            PercentileTestCase{
+                upper_bound: 1024,
+                lower_bound: 0,
+                step: 4,
+                loops: 1000,
+                percent: 0.0,
+                expect: 32.0
+            },
+            PercentileTestCase{
+                upper_bound: 512,
+                lower_bound: 0,
+                step: 4,
+                loops: 1000,
+                percent: 0.99,
+                expect: 512.0
+            },
+            PercentileTestCase{
+                upper_bound: 1024,
+                lower_bound: 0,
+                step: 4,
+                loops: 1000,
+                percent: 1.0,
+                expect: 514.0
+            },
+        ];
+        assert_histogram_percentiles(cases);
+    }
+}
