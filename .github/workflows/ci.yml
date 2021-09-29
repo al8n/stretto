@@ -3,9 +3,8 @@ name: CI
 on:
   push:
     # Ignore bors branches, since they are covered by `clippy_bors.yml`
-    branches-ignore:
-      - auto
-      - try
+    branches:
+      - main
     # Don't run Clippy tests, when only textfiles were modified
     paths-ignore:
       - 'README'
