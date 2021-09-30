@@ -1,5 +1,4 @@
 #![cfg_attr(feature = "nightly", feature(generic_const_exprs))]
-mod ring;
 /// This package includes multiple probabalistic data structures needed for
 /// admission/eviction metadata. Most are Counting Bloom Filter variations, but
 /// a caching-specific feature that is also required is a "freshness" mechanism,
@@ -9,28 +8,38 @@ mod ring;
 ///
 /// [1]: https://arxiv.org/abs/1512.00727
 pub mod error;
+mod histogram;
+mod metrics;
 mod policy;
+mod pool;
+mod ring;
 mod store;
 mod ttl;
-mod pool;
-mod metrics;
-mod histogram;
 pub(crate) mod utils;
 
 #[macro_use]
 mod macros;
+mod bbloom;
+mod cache;
+mod sketch;
 
 extern crate atomic;
+#[macro_use]
+extern crate crossbeam;
+#[macro_use]
+extern crate log;
+extern crate serde;
 
-use std::hash::{Hash, BuildHasher, Hasher};
-use std::collections::hash_map::{RandomState};
+use core::borrow::Borrow;
+use std::collections::hash_map::RandomState;
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::marker::PhantomData;
-use std::borrow::Borrow;
 
 pub trait KeyHasher<K: Hash + Eq> {
     fn hash_key<Q>(&self, k: &Q) -> u64
-    where K: Borrow<Q>,
-    Q: Hash + Eq + ?Sized;
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized;
 }
 
 #[derive(Debug)]
@@ -50,13 +59,12 @@ impl<K: Hash + Eq> Default for DefaultKeyHasher<K> {
 
 impl<K: Hash + Eq> KeyHasher<K> for DefaultKeyHasher<K> {
     fn hash_key<Q>(&self, k: &Q) -> u64
-        where K: Borrow<Q>, Q: Hash + Eq + ?Sized
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
     {
         let mut s = self.s.build_hasher();
         k.hash(&mut s);
         s.finish()
     }
 }
-
-
-

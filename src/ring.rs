@@ -72,7 +72,5 @@ impl RingBuffer {
 
     /// `push` adds an element to one of the internal stripes and possibly drains if
     /// the stripe becomes full.
-    pub fn push(&mut self, item: u64) {
-
-    }
+    pub fn push(&mut self, item: u64) {}
 }
