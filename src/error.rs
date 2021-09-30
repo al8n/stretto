@@ -8,6 +8,8 @@ pub enum CacheError {
     InvalidSamples(usize),
     /// Invalid false positive ratio for TinyLFU
     InvalidFalsePositiveRatio(f64),
+
+    SendError(String),
 }
 
 impl CacheError {
@@ -22,6 +24,7 @@ impl CacheError {
                 "invalid false positive ratio: {}, which should be in range (0.0, 1.0)",
                 *v
             ),
+            CacheError::SendError(msg) => write!(f, "fail to send msg to channel: {}", msg),
         }
     }
 }

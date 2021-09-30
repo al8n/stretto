@@ -116,7 +116,7 @@ impl CountMinSketch {
     }
 
     /// `estimate` returns the value of the specified key.
-    pub(crate) fn estimate(&self, hashed: u64) -> u64 {
+    pub(crate) fn estimate(&self, hashed: u64) -> i64 {
         let mask = self.mask;
         let mut min = 255u8;
         (0..DEPTH).for_each(|i| {
@@ -127,7 +127,7 @@ impl CountMinSketch {
             }
         });
 
-        min as u64
+        min as i64
     }
 
     /// `reset` halves all counter values.

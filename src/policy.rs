@@ -1,5 +1,4 @@
-use crate::metrics::MetricType;
-use crate::{bbloom::Bloom, error::CacheError, metrics::Metrics, sketch::CountMinSketch};
+use crate::{bbloom::Bloom, error::CacheError, metrics::{MetricType, Metrics}, sketch::CountMinSketch, cache::ItemMeta};
 use crossbeam::{
     channel::{bounded, unbounded, Receiver, RecvError, Sender},
     thread::scope,
@@ -17,6 +16,30 @@ use std::{
 /// DEFAULT_SAMPLES is the number of items to sample when looking at eviction
 /// candidates. 5 seems to be the most optimal number [citation needed].
 const DEFAULT_SAMPLES: usize = 5;
+
+#[derive(Copy, Clone, Debug, Default)]
+struct PolicyPair {
+    key: u64,
+    cost: i64,
+}
+
+impl PolicyPair {
+    fn new(k: u64, c: i64) -> Self {
+        Self {
+            key: k,
+            cost: c
+        }
+    }
+}
+
+impl Into<PolicyPair> for (u64, i64) {
+    fn into(self) -> PolicyPair {
+        PolicyPair {
+            key: self.0,
+            cost: self.1,
+        }
+    }
+}
 
 pub(crate) struct LFUPolicy {
     inner: Arc<Mutex<PolicyInner>>,
@@ -49,7 +72,122 @@ impl LFUPolicy {
 
     pub fn collect_metrics(&mut self, metrics: Arc<Metrics>) {
         self.metrics = Some(metrics.clone());
-        self.inner.get_mut().set_metrics(metrics);
+        self.inner.lock().set_metrics(metrics);
+    }
+
+    pub fn push(&self, keys: Vec<u64>) -> Result<bool, CacheError> {
+        if self.is_closed {
+            return Ok(false);
+        }
+        let num_of_keys = keys.len() as u64;
+        if num_of_keys == 0 {
+            return Ok(true);
+        }
+        let first = keys[0];
+        select! {
+            send(self.items_tx, keys) -> res =>
+                res
+                .map(|_| {
+                    if let Some(ref m) = self.metrics {
+                        m.add(MetricType::KeepGets, first, num_of_keys);
+                    }
+                    true
+                })
+                .map_err(|e| {
+                    CacheError::SendError(format!("sending on a disconnected channel, msg: {:?}", e.0))
+                }),
+            default => {
+                if let Some(ref m) = self.metrics {
+                    m.add(MetricType::DropGets, first, num_of_keys);
+                }
+                return Ok(false);
+            }
+        }
+    }
+
+    pub fn add(&self, key: u64, cost: i64) -> (Option<Vec<ItemMeta>>, bool) {
+        let mut inner = self.inner.lock();
+        let max_cost = inner.costs.get_max_cost();
+
+        // cannot ad an item bigger than entire cache
+        if cost > max_cost {
+            return (None, false);
+        }
+
+        // no need to go any further if the item is already in the cache
+        if inner.costs.update(key, cost) {
+            // an update does not count as an addition, so return false.
+            return (None, false);
+        }
+
+        // If the execution reaches this point, the key doesn't exist in the cache.
+        // Calculate the remaining room in the cache (usually bytes).
+        let mut room = inner.costs.room_left(cost);
+        if room >= 0 {
+            // There's enough room in the cache to store the new item without
+            // overflowing. Do that now and stop here.
+            inner.costs.increment(key, cost);
+            if let Some(ref m) = self.metrics {
+                m.add(MetricType::CostAdd, key, cost as u64);
+            }
+            return (None, true);
+        }
+
+        // inc_hits is the hit count for the incoming item
+        let inc_hits = inner.admit.estimate(key);
+        // sample is the eviction candidate pool to be filled via random sampling.
+        // TODO: perhaps we should use a min heap here. Right now our time
+        // complexity is N for finding the min. Min heap should bring it down to
+        // O(lg N).
+        let mut sample = Vec::with_capacity(DEFAULT_SAMPLES);
+        let mut victims = Vec::new();
+
+        // Delete victims until there's enough space or a minKey is found that has
+        // more hits than incoming item.
+        while room < 0 {
+            // fill up empty slots in sample
+            sample = inner.costs.fill_sample(sample);
+
+            // find minimally used item in sample
+            let (mut min_key, mut min_hits, mut min_id, mut min_cost) = (0u64, i64::MAX, 0, 0i64);
+
+            sample.iter().enumerate().for_each(|(idx, pair)| {
+                // Look up hit count for sample key.
+                let hits = inner.admit.estimate(pair.key);
+                if hits < min_hits {
+                    min_key = pair.key;
+                    min_hits = hits;
+                    min_id = idx;
+                    min_cost = pair.cost;
+                }
+            });
+
+            // If the incoming item isn't worth keeping in the policy, reject.
+            if inc_hits < min_hits {
+                if let Some(ref m) = self.metrics {
+                    m.add(MetricType::RejectSets, key, 1);
+                }
+                return (None, false);
+            }
+
+            // Delete the victim from metadata.
+            inner.costs.remove(min_key);
+
+            // Delete the victim from sample.
+            let new_len = sample.len() - 1;
+            sample[min_id] = sample[new_len];
+            sample.drain(new_len..);
+            // store victim in evicted victims slice
+            victims.push(ItemMeta::new(min_key, min_cost, 0));
+
+            room = inner.costs.room_left(cost);
+        }
+
+        inner.costs.increment(key, cost);
+        if let Some(ref m) = self.metrics {
+            m.add(MetricType::CostAdd, key, cost as u64);
+        }
+        (Some(victims), true)
     }
 }
 
@@ -192,12 +330,12 @@ impl<S: BuildHasher> SampledLFU<S> {
     }
 
     /// try to fill the SampledLFU by the given pairs.
-    pub fn fill_sample(&mut self, mut pairs: Vec<(u64, i64)>) -> Vec<(u64, i64)> {
+    pub fn fill_sample(&mut self, mut pairs: Vec<PolicyPair>) -> Vec<PolicyPair> {
         if pairs.len() >= self.samples {
             pairs
         } else {
             for (k, v) in self.key_costs.read().iter() {
-                pairs.push((*k, *v));
+                pairs.push(PolicyPair::new(*k, *v));
                 if pairs.len() >= self.samples {
                     return pairs;
                 }
@@ -286,7 +424,7 @@ impl TinyLFU {
     /// Otherwise, TinyLFU returns just the estimation from the main structure.
     ///
     /// [TinyLFU: A Highly Efficient Cache Admission Policy §3.4.2]: https://arxiv.org/pdf/1512.00727.pdf
-    pub fn estimate(&self, kh: u64) -> u64 {
+    pub fn estimate(&self, kh: u64) -> i64 {
         let mut hits = self.ctr.estimate(kh);
         if self.doorkeeper.contains(kh) {
             hits += 1;
@@ -409,8 +547,8 @@ mod test {
         let mut l = SampledLFU::new(16);
         l.increment(4, 4);
         l.increment(5, 5);
-        let sample = l.fill_sample(vec![(1, 1), (2, 2), (3, 3)]);
-        let k = sample[sample.len() - 1].0;
+        let sample = l.fill_sample(vec![(1, 1).into(), (2, 2).into(), (3, 3).into()]);
+        let k = sample[sample.len() - 1].key;
         assert_eq!(5, sample.len());
         assert_ne!(1, k);
         assert_ne!(2, k);
