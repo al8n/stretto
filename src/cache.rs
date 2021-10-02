@@ -1,3 +1,4 @@
+use crate::ttl::Time;
 use crossbeam::sync::WaitGroup;
 use std::time::Duration;
 
@@ -21,15 +22,29 @@ impl ItemMeta {
         Self {
             key: k,
             conflict,
-            cost
+            cost,
         }
     }
 }
 
-pub(crate) struct Item<T> {
+pub(crate) struct Item<V> {
     flag: ItemFlag,
     meta: ItemMeta,
-    value: Option<T>,
-    expiration: Duration,
+    pub value: Option<V>,
+    expiration: Time,
     wg: WaitGroup,
+}
+
+impl<V> Item<V> {
+    pub fn get_key(&self) -> u64 {
+        self.meta.key
+    }
+
+    pub fn get_conflict(&self) -> u64 {
+        self.meta.conflict
+    }
+
+    pub fn get_expiration(&self) -> Time {
+        self.expiration
+    }
 }

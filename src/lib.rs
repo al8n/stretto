@@ -27,6 +27,8 @@ extern crate atomic;
 #[macro_use]
 extern crate crossbeam;
 #[macro_use]
+extern crate lazy_static;
+#[macro_use]
 extern crate log;
 extern crate serde;
 
@@ -66,5 +68,19 @@ impl<K: Hash + Eq> KeyHasher<K> for DefaultKeyHasher<K> {
         let mut s = self.s.build_hasher();
         k.hash(&mut s);
         s.finish()
+    }
+}
+
+struct SharedRef<T>(*const T);
+
+impl<T> SharedRef<T> {
+    fn new(ptr: *const T) -> Self {
+        Self(ptr)
+    }
+}
+
+impl<T> Borrow<T> for SharedRef<T> {
+    fn borrow(&self) -> &T {
+        unsafe { &*self.0 }
     }
 }

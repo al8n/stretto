@@ -29,6 +29,7 @@ crossbeam = "0.8.1"
 chrono = "0.4.19"
 caches = "0.2.0"
 log = "0.4.14"
+lazy_static = "1.4.0"
 parking_lot = "0.11.2"
 rand = "0.8.4"
 serde = {version = "1", optional = true}
