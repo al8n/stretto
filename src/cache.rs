@@ -4,7 +4,7 @@ use std::time::Duration;
 
 #[derive(Debug, Copy, Clone)]
 #[repr(u8)]
-enum ItemFlag {
+pub(crate) enum ItemFlag {
     New,
     Delete,
     Update,
@@ -28,11 +28,11 @@ impl ItemMeta {
 }
 
 pub(crate) struct Item<V> {
-    flag: ItemFlag,
-    meta: ItemMeta,
-    pub value: Option<V>,
-    expiration: Time,
-    wg: WaitGroup,
+    pub(crate) flag: ItemFlag,
+    pub(crate) meta: ItemMeta,
+    pub(crate) value: V,
+    pub(crate) expiration: Option<Time>,
+    pub(crate) wg: Option<WaitGroup>,
 }
 
 impl<V> Item<V> {
@@ -44,7 +44,7 @@ impl<V> Item<V> {
         self.meta.conflict
     }
 
-    pub fn get_expiration(&self) -> Time {
+    pub fn get_expiration(&self) -> Option<Time> {
         self.expiration
     }
 }

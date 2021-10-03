@@ -6,6 +6,7 @@ use std::hash::BuildHasher;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use crate::SharedRef;
 
 /// (1969*365 + 1969/4 - 1969/100 + 1969/400) * (60 * 60 * 24)
 const UNIX_TO_INTERNAL: u64 = 62135596800;
@@ -22,7 +23,7 @@ fn cleanup_bucket(t: Time) -> i64 {
     storage_bucket::<BUCKET_DURATION_SECS>(t) - 1
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 pub struct Time {
     d: Duration,
     created_at: SystemTime,
@@ -116,6 +117,10 @@ impl<BS: BuildHasher + Default, S: BuildHasher> ExpirationMap<BS, S> {
     //         buckets: RwLock::new(RefCell::new(HashMap::<i64, Bucket<BS>>::with_hasher(hasher))),
     //     }
     // }
+
+    pub fn shared_ref(&self) -> SharedRef<Self> {
+        SharedRef::new(self)
+    }
 
     pub fn insert(&self, key: u64, conflict: u64, expiration: Time) {
         // Items that don't expire don't need to be in the expiration map.

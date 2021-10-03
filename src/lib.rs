@@ -36,6 +36,8 @@ use core::borrow::Borrow;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::marker::PhantomData;
+use parking_lot::RwLockReadGuard;
+use std::collections::HashMap;
 
 pub trait KeyHasher<K: Hash + Eq> {
     fn hash_key<Q>(&self, k: &Q) -> u64
@@ -71,6 +73,9 @@ impl<K: Hash + Eq> KeyHasher<K> for DefaultKeyHasher<K> {
     }
 }
 
+
+
+#[derive(Copy, Clone)]
 struct SharedRef<T>(*const T);
 
 impl<T> SharedRef<T> {
@@ -82,5 +87,15 @@ impl<T> SharedRef<T> {
 impl<T> Borrow<T> for SharedRef<T> {
     fn borrow(&self) -> &T {
         unsafe { &*self.0 }
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    #[test]
+    fn test_value_ref() {
+        let c = "asdv".to_string();
+
     }
 }

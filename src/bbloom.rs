@@ -68,7 +68,6 @@ impl Bloom {
         };
 
         let size = get_size(entries_locs.entries);
-
         let this = Self {
             bitset: vec![0; (size.size >> 6) as usize],
             elem_num: 0,

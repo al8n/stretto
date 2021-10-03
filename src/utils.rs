@@ -16,3 +16,19 @@ pub(crate) fn next_power_of_2(num: u64) -> u64 {
     num += 1;
     num
 }
+
+/// # Safety
+///
+/// Requires that you ensure the reference does not become invalid.
+/// The object has to outlive the reference.
+pub(crate) unsafe fn change_lifetime_const<'a, 'b, T>(x: &'a T) -> &'b T {
+    &*(x as *const T)
+}
+
+/// # Safety
+///
+/// Requires that you ensure the reference does not become invalid.
+/// The object has to outlive the reference.
+pub(crate) unsafe fn change_lifetime_mut<'a, 'b, T>(x: &'a mut T) -> &'b mut T {
+    &mut *(x as *mut T)
+}
