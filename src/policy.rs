@@ -580,7 +580,7 @@ mod test {
         drop(inner);
 
         p.stop_tx.send(()).unwrap();
-        p.items_tx.send(vec![3, 3, 3]).unwrap();
+        assert!(p.items_tx.send(vec![3, 3, 3]).is_err());
         sleep(WAIT);
         let inner = p.inner.lock();
         assert_eq!(inner.admit.estimate(3), 0);
