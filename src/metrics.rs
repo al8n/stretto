@@ -59,6 +59,7 @@ pub(crate) enum MetricType {
     KeepGets,
 
     /// This should be the final enum. Other enums should be set before this.
+    #[allow(dead_code)]
     DoNotUse,
 }
 

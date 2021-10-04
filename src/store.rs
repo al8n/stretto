@@ -178,11 +178,11 @@ impl<V> ShardedMap<V> {
 
 #[cfg(test)]
 mod test {
-    use crate::store::{ShardedMap};
-    use std::sync::Arc;
+    use crate::store::{ShardedMap, StoreItem};
     use crate::ttl::Time;
-    use std::thread::sleep;
+    use std::sync::Arc;
     use std::time::Duration;
+    use crate::utils::SharedValue;
 
     #[test]
     fn test_store() {
@@ -215,10 +215,17 @@ mod test {
         std::thread::spawn(move || {
             s.insert(1, 2, 0, Time::now());
         });
-        sleep(Duration::from_millis(10));
-        assert_eq!(s1.get(1, 0).unwrap().read(), 2);
-    }
 
+        loop {
+            match s1.get(1, 0) {
+                None => continue,
+                Some(val) => {
+                    assert_eq!(val.read(), 2);
+                    break;
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_concurrent_get_mut_insert() {
@@ -227,11 +234,33 @@ mod test {
 
         std::thread::spawn(move || {
             s.insert(1, 2, 0, Time::now());
-            sleep(Duration::from_millis(20));
-            assert_eq!(s.get(1, 0).unwrap().read(), 7);
+            loop {
+                match s.get(1, 0) {
+                    None => continue,
+                    Some(val) => {
+                        let val = val.read();
+                        if val == 2 {
+                            continue;
+                        } else if val == 7 {
+                            break;
+                        } else {
+                            panic!("get wrong value")
+                        }
+                    }
+                }
+            }
         });
-        sleep(Duration::from_millis(10));
-        assert_eq!(s1.get(1, 0).unwrap().read(), 2);
+
+        loop {
+            match s1.get(1, 0) {
+                None => continue,
+                Some(val) => {
+                    assert_eq!(val.read(), 2);
+                    break;
+                }
+            }
+        }
+
         s1.get_mut(1, 0).unwrap().write(7);
     }
 
@@ -244,5 +273,68 @@ mod test {
         let v = s.get(1, 0);
         assert!(v.is_none());
         assert_eq!(s.remove(2, 0), (0, None));
+    }
+
+    #[test]
+    fn test_store_update() {
+        let s = ShardedMap::new();
+        s.insert(1, 1, 0, Time::now());
+        let v = s.update(1, 2, 0, Time::now());
+        assert_eq!(v, Some(1));
+
+        assert_eq!(s.get(1, 0).unwrap().read(), 2);
+
+        let v = s.update(1, 3, 0, Time::now());
+        assert_eq!(v, Some(2));
+
+        assert_eq!(s.get(1, 0).unwrap().read(), 3);
+
+        let v = s.update(2, 2, 0, Time::now());
+        assert!(v.is_none());
+        let v = s.get(2, 0);
+        assert!(v.is_none());
+    }
+
+    #[test]
+    fn test_store_expiration() {
+        let exp = Time::now_with_expiration(Duration::from_secs(1));
+        let s = ShardedMap::new();
+        s.insert(1, 1, 0, exp);
+
+        assert_eq!(s.get(1, 0).unwrap().read(), 1);
+
+        let ttl = s.expiration(1);
+        assert_eq!(exp, ttl.unwrap());
+
+        s.remove(1, 0);
+        assert!(s.get(1, 0).is_none());
+        let ttl = s.expiration(1);
+        assert!(ttl.is_none());
+
+        assert!(s.expiration(4340958203495).is_none());
+    }
+
+    #[test]
+    fn test_store_collision() {
+        let s = ShardedMap::new();
+        let mut data1 = s.shards[1].write();
+        data1.insert(1, StoreItem {
+            key: 1,
+            conflict: 0,
+            value: SharedValue::new(1),
+            expiration: Time::now(),
+        });
+        drop(data1);
+        assert!(s.get(1, 1).is_none());
+
+        s.insert(1, 2, 1, Time::now());
+        assert_ne!(s.get(1, 0).unwrap().read(), 2);
+
+        let v = s.update(1, 2, 1, Time::now());
+        assert!(v.is_none());
+        assert_ne!(s.get(1, 0).unwrap().read(), 2);
+
+        assert_eq!(s.remove(1, 1), (0, None));
+        assert_eq!(s.get(1, 0).unwrap().read(), 1);
     }
 }

@@ -30,10 +30,8 @@ extern crate crossbeam;
 extern crate log;
 extern crate serde;
 
-use core::borrow::Borrow;
 use std::collections::hash_map::{RandomState, DefaultHasher};
 use std::hash::{BuildHasher, Hash, Hasher, BuildHasherDefault};
-use std::marker::PhantomData;
 use twox_hash::{XxHash64};
 
 pub trait KeyHasher<K: Hash + Eq + ?Sized> {

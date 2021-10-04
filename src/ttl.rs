@@ -50,8 +50,7 @@ impl Time {
             .created_at
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_secs()
-            - UNIX_TO_INTERNAL) as i64
+            .as_secs()) as i64
     }
 
     pub fn is_expired(&self) -> bool {

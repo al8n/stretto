@@ -37,4 +37,4 @@ serde_json = {version = "1.0", optional = true}
 twox-hash = "1.6.1"
 
 [dev-dependencies]
-loom = "0.5.1"
+shuttle = "0.0.7"

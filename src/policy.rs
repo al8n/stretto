@@ -554,7 +554,7 @@ mod test {
     use std::thread::sleep;
     use std::time::Duration;
 
-    static WAIT: Duration = Duration::from_millis(10);
+    static WAIT: Duration = Duration::from_millis(100);
 
     #[test]
     fn test_policy() {
