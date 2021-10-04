@@ -1,75 +1,19 @@
-use crate::cache::Item;
 use crate::ttl::{ExpirationMap, Time};
-use crate::SharedRef;
-use parking_lot::{RwLock, RawRwLock, RwLockWriteGuard};
-use std::borrow::{Borrow, BorrowMut};
+use parking_lot::{RwLock};
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
-use std::hash::BuildHasher;
 use std::mem;
 use std::convert::TryInto;
 use std::fmt::{Debug, Formatter};
-use parking_lot::lock_api::RwLockReadGuard;
-use std::cell::{RefCell};
-use crate::utils::{change_lifetime_const, change_lifetime_mut};
+use crate::utils::{change_lifetime_const, SharedValue, ValueRef, ValueRefMut};
 
 const NUM_OF_SHARDS: usize = 256;
 
-pub struct ValueRef<'a, V, S = RandomState> {
-    guard: RwLockReadGuard<'a, RawRwLock, HashMap<u64, StoreItem<V>, S>>,
-    val: &'a V,
-}
-
-unsafe impl<'a, V: Send, S: BuildHasher> Send for ValueRef<'a, V, S> {}
-
-unsafe impl<'a, V: Send + Sync, S: BuildHasher> Sync
-for ValueRef<'a, V, S> {}
-
-impl<'a, V, S: BuildHasher> ValueRef<'a, V, S> {
-    fn new(guard: RwLockReadGuard<'a, RawRwLock, HashMap<u64, StoreItem<V>, S>>, val: &'a V) -> Self {
-        Self {
-            guard,
-            val,
-        }
-    }
-
-    pub fn value(&self) -> &V {
-        self.val
-    }
-}
-
-pub struct ValueRefMut<'a, V, S = RandomState> {
-    guard: RwLockWriteGuard<'a, HashMap<u64, StoreItem<V>, S>>,
-    val: &'a mut V,
-}
-
-unsafe impl<'a, V: Send, S: BuildHasher> Send for ValueRefMut<'a, V, S> {}
-
-unsafe impl<'a, V: Send + Sync, S: BuildHasher> Sync
-for ValueRefMut<'a, V, S> {}
-
-impl<'a, V, S: BuildHasher> ValueRefMut<'a, V, S> {
-    fn new(guard: RwLockWriteGuard<'a, HashMap<u64, StoreItem<V>, S>>, val: &'a mut V) -> Self {
-        Self {
-            guard,
-            val,
-        }
-    }
-
-    pub fn value(&self) -> &V {
-        self.val
-    }
-
-    pub fn value_mut(&mut self) -> &mut V {
-        self.val
-    }
-}
-
-struct StoreItem<V> {
+pub(crate) struct StoreItem<V> {
     key: u64,
     conflict: u64,
-    value: V,
-    expiration: Option<Time>,
+    value: SharedValue<V>,
+    expiration: Time,
 }
 
 impl<V> Debug for StoreItem<V> {
@@ -91,10 +35,11 @@ impl<V> ShardedMap<V> {
     pub fn new() -> Self {
         let em = ExpirationMap::new();
 
-        let shards: [RwLock<_>; NUM_OF_SHARDS] = (0..NUM_OF_SHARDS).map(|_| RwLock::new(HashMap::new())).collect::<Vec<_>>().try_into().unwrap();
+        let shards = Box::new((0..NUM_OF_SHARDS).map(|_| RwLock::new(HashMap::new())).collect::<Vec<_>>().try_into().unwrap());
+
 
         Self {
-            shards: Box::new(shards),
+            shards,
             em,
         }
     }
@@ -107,14 +52,13 @@ impl<V> ShardedMap<V> {
                 return None;
             }
 
-            if let Some(expiration) = item.expiration {
-                if !expiration.is_zero() && expiration.is_expired() {
-                    return None;
-                }
+            // Handle expired items
+            if !item.expiration.is_zero() && item.expiration.is_expired() {
+                return None;
             }
 
             unsafe {
-                let vptr = change_lifetime_const(&item.value);
+                let vptr = change_lifetime_const(item.value.get());
                 Some(ValueRef::new(data, vptr))
             }
         } else {
@@ -122,22 +66,21 @@ impl<V> ShardedMap<V> {
         }
     }
 
-    pub fn get_mut(&mut self, key: u64, conflict: u64) -> Option<ValueRefMut<'_, V>> {
-        let mut data = self.shards[(key as usize) % NUM_OF_SHARDS].write();
+    pub fn get_mut(&self, key: u64, conflict: u64) -> Option<ValueRefMut<'_, V>> {
+        let data = self.shards[(key as usize) % NUM_OF_SHARDS].write();
 
-        if let Some(item) =  data.get_mut(&key) {
+        if let Some(item) =  data.get(&key) {
             if conflict != 0 && (conflict != item.conflict) {
                 return None;
             }
 
-            if let Some(expiration) = item.expiration {
-                if !expiration.is_zero() && expiration.is_expired() {
-                    return None;
-                }
+            // Handle expired items
+            if !item.expiration.is_zero() && item.expiration.is_expired() {
+                return None;
             }
 
             unsafe {
-                let vptr = change_lifetime_mut(&mut item.value);
+                let vptr = &mut *item.value.as_ptr();
                 Some(ValueRefMut::new(data, vptr))
             }
         } else {
@@ -145,20 +88,14 @@ impl<V> ShardedMap<V> {
         }
     }
 
-    pub fn insert(&mut self, item: Item<V>) {
-        let key = item.get_key();
-        let conflict = item.get_conflict();
-        let expiration = item.get_expiration();
-
+    pub fn insert(&self, key: u64, val: V, conflict: u64, expiration: Time) {
         let mut data = self.shards[(key as usize) % NUM_OF_SHARDS].write();
 
         match data.get(&key) {
             None => {
                 // The value is not in the map already. There's no need to return anything.
                 // Simply add the expiration map.
-                if let Some(expiration) = expiration {
-                    self.em.insert(key, conflict, expiration);
-                }
+                self.em.insert(key, conflict, expiration);
             }
             Some(sitem) => {
                 // The item existed already. We need to check the conflict key and reject the
@@ -168,11 +105,7 @@ impl<V> ShardedMap<V> {
                 }
 
                 //TODO: should update check
-                if let Some(expiration) = expiration {
-                    if let Some(old_expiration) = sitem.expiration {
-                        self.em.update(key, conflict, old_expiration, expiration);
-                    }
-                }
+                self.em.update(key, conflict, sitem.expiration, expiration);
             }
         }
 
@@ -181,193 +114,135 @@ impl<V> ShardedMap<V> {
             StoreItem {
                 key,
                 conflict,
-                value: item.value,
+                value: SharedValue::new(val),
                 expiration,
             },
         );
     }
-}
 
-struct ShardedInnerMap<V, DS = RandomState, S = RandomState> {
-    data: HashMap<u64, StoreItem<V>, DS>,
-    em: SharedRef<ExpirationMap<S>>,
-}
+    pub fn update(&self, key: u64, mut val: V, conflict: u64, expiration: Time) -> Option<V> {
 
-impl<V> ShardedInnerMap<V> {
-    fn new(em: SharedRef<ExpirationMap>) -> Self {
-        Self {
-            data: HashMap::new(),
-            em,
+        let mut data = self.shards[(key as usize) % NUM_OF_SHARDS].write();
+        match data.get_mut(&key) {
+            None => None,
+            Some(item) => {
+                if conflict != 0 && (conflict != item.conflict) {
+                    return None;
+                }
+
+                // TODO: check update
+                mem::swap(&mut val, &mut item.value.get_mut());
+
+                //TODO: should update check
+                self.em.update(key, conflict, item.expiration, expiration);
+
+                Some(val)
+            }
         }
     }
-}
 
-// impl<V, DS: BuildHasher, S: BuildHasher + Default> ShardedInnerMap<V, DS, S> {
-//     fn with_hasher(em: SharedRef<ExpirationMap<S>>, hasher: DS) -> Self {
-//         Self {
-//             data: HashMap::with_hasher(hasher),
-//             em,
-//         }
-//     }
-//
-//     pub fn get(&self, k: u64, conflict: u64) -> Option<&StoreItem<V>> {
-//         match self.data.get(&k) {
-//             None => None,
-//             Some(item) => {
-//                 if conflict != 0 && (conflict != item.conflict) {
-//                     return None;
-//                 }
-//
-//                 if !item.expiration.is_zero() && item.expiration.is_expired() {
-//                     return None;
-//                 }
-//
-//                 Some(item)
-//             }
-//         }
-//     }
-//
-//     pub fn expiration(&self, key: u64) -> Option<Time> {
-//         self.data.get(&key).map(|item| item.expiration)
-//     }
-//
-//     fn em_ref(&self) -> &ExpirationMap<S> {
-//         unsafe { self.em.0.as_ref().unwrap() }
-//     }
-//
-//     pub fn set(&mut self, item: Item<V>) {
-//         let key = item.get_key();
-//         let conflict = item.get_conflict();
-//         let expiration = item.get_expiration();
-//         match self.data.get(&key) {
-//             None => {
-//                 // The value is not in the map already. There's no need to return anything.
-//                 // Simply add the expiration map.
-//                 self.em_ref().insert(key, conflict, expiration);
-//             }
-//             Some(sitem) => {
-//                 // The item existed already. We need to check the conflict key and reject the
-//                 // update if they do not match. Only after that the expiration map is updated.
-//                 if conflict != 0 && (conflict != sitem.conflict) {
-//                     return;
-//                 }
-//
-//                 //TODO: should update check
-//                 self.em_ref()
-//                     .update(key, conflict, sitem.expiration, expiration);
-//             }
-//         }
-//
-//         self.data.insert(
-//             key,
-//             StoreItem {
-//                 key,
-//                 conflict,
-//                 value: item.value,
-//                 expiration,
-//             },
-//         );
-//     }
-//
-//     pub fn update(&mut self, mut new_item: Item<V>) -> Option<V> {
-//         let nk = new_item.get_key();
-//
-//         match self.data.get_mut(&nk) {
-//             None => None,
-//             Some(item) => {
-//                 let nc = new_item.get_conflict();
-//                 let ne = new_item.get_expiration();
-//                 if nc != 0 && (nc != item.conflict) {
-//                     return None;
-//                 }
-//
-//                 // TODO: check update
-//
-//                 mem::swap(&mut new_item.value, &mut item.value);
-//
-//                 let exp = item.expiration;
-//                 self.em_ref().update(nk, nc, exp, ne);
-//
-//                 Some(new_item.value)
-//             }
-//         }
-//     }
-//
-//     pub fn remove(&mut self, key: u64, conflict: u64) -> (u64, Option<V>) {
-//         match self.data.get(&key) {
-//             None => (0, None),
-//             Some(item) => {
-//                 if conflict != 0 && (conflict != item.conflict) {
-//                     return (0, None);
-//                 }
-//
-//                 if !item.expiration.is_zero() {
-//                     self.em_ref().remove(key, item.expiration);
-//                 }
-//
-//                 unsafe {
-//                     self.data
-//                         .remove(&key)
-//                         .map_or((0, None), |item| (item.conflict, Some(item.value)))
-//                 }
-//             }
-//         }
-//     }
-//
-//     pub fn clear(&mut self) {
-//         //TODO: onevict
-//         self.data.clear()
-//     }
-// }
+    pub fn remove(&self, key: u64, conflict: u64) -> (u64, Option<V>) {
+        let mut data = self.shards[(key as usize) % NUM_OF_SHARDS].write();
 
-impl<V, DS, S> Debug for ShardedInnerMap<V, DS, S> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ShardedInnerMap").field("data", &self.data.len()).finish()
+        match data.get(&key) {
+            None => (0, None),
+            Some(item) => {
+                if conflict != 0 && (conflict != item.conflict) {
+                    return (0, None);
+                }
+
+                if !item.expiration.is_zero() {
+                    self.em.remove(key, item.expiration);
+                }
+
+                data
+                    .remove(&key)
+                    .map_or((0, None), |item| (item.conflict, Some(item.value.into_inner())))
+            }
+        }
     }
+
+    pub fn expiration(&self, key: u64) -> Option<Time> {
+        self.shards[(key as usize) % NUM_OF_SHARDS].read().get(&key).map(|val| val.expiration)
+    }
+
+    pub fn clear(&self) {
+        // TODO: item call back
+        self.shards.iter().for_each(|shard| {
+            shard.write().clear()
+        });
+    }
+
+
 }
 
 #[cfg(test)]
 mod test {
-    use crate::store::ShardedMap;
-    use parking_lot::RwLock;
-    use std::collections::HashMap;
-    use crate::cache::{Item, ItemFlag, ItemMeta};
+    use crate::store::{ShardedMap};
+    use std::sync::Arc;
+    use crate::ttl::Time;
+    use std::thread::sleep;
+    use std::time::Duration;
 
     #[test]
     fn test_store() {
-        let s: ShardedMap<u64> = ShardedMap::new();
-        let mut v = 3;
-        let r = &v as *const i32;
-        v = 6;
-        unsafe {
-            println!("{}", &*r);
-        }
+        let _s: ShardedMap<u64> = ShardedMap::new();
     }
 
     #[test]
     fn test_store_set_get() {
-        let mut s: ShardedMap<u64> = ShardedMap::new();
+        let s: ShardedMap<u64> = ShardedMap::new();
 
-        let item = Item {
-            flag: ItemFlag::New,
-            meta: ItemMeta::new(1, 2, 2),
-            value: 2,
-            expiration: None,
-            wg: None,
-        };
-
-        s.insert(item);
-        let val = s.get(1, 2).unwrap();
+        s.insert(1, 2, 0, Time::now());
+        let val = s.get(1, 0).unwrap();
         assert_eq!(&2, val.value());
-        drop(val);
+        val.release();
 
-        let mut val = s.get_mut(1, 2).unwrap();
-
+        let mut val = s.get_mut(1, 0).unwrap();
         *val.value_mut() = 3;
+        val.release();
 
-        drop(val);
-        let v = s.get(1, 2).unwrap();
+        let v = s.get(1, 0).unwrap();
         assert_eq!(&3, v.value());
+    }
 
+
+    #[test]
+    fn test_concurrent_get_insert() {
+        let s = Arc::new(ShardedMap::new());
+        let s1 = s.clone();
+
+        std::thread::spawn(move || {
+            s.insert(1, 2, 0, Time::now());
+        });
+        sleep(Duration::from_millis(10));
+        assert_eq!(s1.get(1, 0).unwrap().read(), 2);
+    }
+
+
+    #[test]
+    fn test_concurrent_get_mut_insert() {
+        let s = Arc::new(ShardedMap::new());
+        let s1 = s.clone();
+
+        std::thread::spawn(move || {
+            s.insert(1, 2, 0, Time::now());
+            sleep(Duration::from_millis(20));
+            assert_eq!(s.get(1, 0).unwrap().read(), 7);
+        });
+        sleep(Duration::from_millis(10));
+        assert_eq!(s1.get(1, 0).unwrap().read(), 2);
+        s1.get_mut(1, 0).unwrap().write(7);
+    }
+
+    #[test]
+    fn test_store_remove() {
+        let s: ShardedMap<u64> = ShardedMap::new();
+
+        s.insert(1, 2, 0, Time::now());
+        assert_eq!(s.remove(1, 0), (0, Some(2)));
+        let v = s.get(1, 0);
+        assert!(v.is_none());
+        assert_eq!(s.remove(2, 0), (0, None));
     }
 }

@@ -1,12 +1,9 @@
-use crate::policy::LFUPolicy;
 use parking_lot::RwLock;
 use std::cell::RefCell;
 use std::collections::{hash_map::RandomState, HashMap};
 use std::hash::BuildHasher;
 use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use crate::SharedRef;
 
 /// (1969*365 + 1969/4 - 1969/100 + 1969/400) * (60 * 60 * 24)
 const UNIX_TO_INTERNAL: u64 = 62135596800;
@@ -30,6 +27,20 @@ pub struct Time {
 }
 
 impl Time {
+    pub fn now() -> Self {
+        Self {
+            d: Duration::ZERO,
+            created_at: SystemTime::now()
+        }
+    }
+
+    pub fn now_with_expiration(duration: Duration) -> Self {
+        Self {
+            d: duration,
+            created_at: SystemTime::now(),
+        }
+    }
+
     pub fn is_zero(&self) -> bool {
         self.d.is_zero()
     }
@@ -118,10 +129,6 @@ impl<BS: BuildHasher + Default, S: BuildHasher> ExpirationMap<BS, S> {
     //     }
     // }
 
-    pub fn shared_ref(&self) -> SharedRef<Self> {
-        SharedRef::new(self)
-    }
-
     pub fn insert(&self, key: u64, conflict: u64, expiration: Time) {
         // Items that don't expire don't need to be in the expiration map.
         if expiration.is_zero() {
@@ -177,15 +184,14 @@ impl<BS: BuildHasher + Default, S: BuildHasher> ExpirationMap<BS, S> {
 
     pub fn remove(&self, key: u64, expiration: Time) {
         let bucket_num = storage_bucket::<BUCKET_DURATION_SECS>(expiration);
-        let mut m = self.buckets.read();
+        let m = self.buckets.read();
         if let Some(bucket) = m.borrow_mut().get_mut(&bucket_num) {
             bucket.remove(&key);
         };
     }
 }
 
-#[cfg(test)]
-mod test {
-    #[test]
-    fn test_expiration_map() {}
-}
+unsafe impl<BS: BuildHasher, S: BuildHasher> Send for ExpirationMap<BS, S> {}
+
+unsafe impl<BS: BuildHasher, S: BuildHasher> Sync
+for ExpirationMap<BS, S> {}

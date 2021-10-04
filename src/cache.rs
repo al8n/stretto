@@ -1,6 +1,5 @@
 use crate::ttl::Time;
 use crossbeam::sync::WaitGroup;
-use std::time::Duration;
 
 #[derive(Debug, Copy, Clone)]
 #[repr(u8)]
