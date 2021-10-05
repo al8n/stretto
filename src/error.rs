@@ -10,6 +10,7 @@ pub enum CacheError {
     InvalidFalsePositiveRatio(f64),
 
     SendError(String),
+    RecvError(String),
 }
 
 impl CacheError {
@@ -25,6 +26,7 @@ impl CacheError {
                 *v
             ),
             CacheError::SendError(msg) => write!(f, "fail to send msg to channel: {}", msg),
+            CacheError::RecvError(msg) => write!(f, "fail to receive msg from channel: {}", msg),
         }
     }
 }

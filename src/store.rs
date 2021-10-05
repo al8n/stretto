@@ -1,11 +1,11 @@
 use crate::ttl::{ExpirationMap, Time};
-use parking_lot::{RwLock};
+use crate::utils::{change_lifetime_const, SharedValue, ValueRef, ValueRefMut};
+use parking_lot::RwLock;
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
-use std::mem;
 use std::convert::TryInto;
 use std::fmt::{Debug, Formatter};
-use crate::utils::{change_lifetime_const, SharedValue, ValueRef, ValueRefMut};
+use std::mem;
 
 const NUM_OF_SHARDS: usize = 256;
 
@@ -35,19 +35,21 @@ impl<V> ShardedMap<V> {
     pub fn new() -> Self {
         let em = ExpirationMap::new();
 
-        let shards = Box::new((0..NUM_OF_SHARDS).map(|_| RwLock::new(HashMap::new())).collect::<Vec<_>>().try_into().unwrap());
+        let shards = Box::new(
+            (0..NUM_OF_SHARDS)
+                .map(|_| RwLock::new(HashMap::new()))
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+        );
 
-
-        Self {
-            shards,
-            em,
-        }
+        Self { shards, em }
     }
 
     pub fn get(&self, key: u64, conflict: u64) -> Option<ValueRef<'_, V>> {
         let data = self.shards[(key as usize) % NUM_OF_SHARDS].read();
 
-        if let Some(item) =  data.get(&key) {
+        if let Some(item) = data.get(&key) {
             if conflict != 0 && (conflict != item.conflict) {
                 return None;
             }
@@ -69,7 +71,7 @@ impl<V> ShardedMap<V> {
     pub fn get_mut(&self, key: u64, conflict: u64) -> Option<ValueRefMut<'_, V>> {
         let data = self.shards[(key as usize) % NUM_OF_SHARDS].write();
 
-        if let Some(item) =  data.get(&key) {
+        if let Some(item) = data.get(&key) {
             if conflict != 0 && (conflict != item.conflict) {
                 return None;
             }
@@ -120,14 +122,13 @@ impl<V> ShardedMap<V> {
         );
     }
 
-    pub fn update(&self, key: u64, mut val: V, conflict: u64, expiration: Time) -> Option<V> {
-
+    pub fn update(&self, key: u64, mut val: V, conflict: u64, expiration: Time) -> UpdateResult<V> {
         let mut data = self.shards[(key as usize) % NUM_OF_SHARDS].write();
         match data.get_mut(&key) {
-            None => None,
+            None => UpdateResult::NotExist(val),
             Some(item) => {
                 if conflict != 0 && (conflict != item.conflict) {
-                    return None;
+                    return UpdateResult::Conflict(val);
                 }
 
                 // TODO: check update
@@ -136,7 +137,7 @@ impl<V> ShardedMap<V> {
                 //TODO: should update check
                 self.em.update(key, conflict, item.expiration, expiration);
 
-                Some(val)
+                UpdateResult::Update(val)
             }
         }
     }
@@ -155,34 +156,39 @@ impl<V> ShardedMap<V> {
                     self.em.remove(key, item.expiration);
                 }
 
-                data
-                    .remove(&key)
-                    .map_or((0, None), |item| (item.conflict, Some(item.value.into_inner())))
+                data.remove(&key).map_or((0, None), |item| {
+                    (item.conflict, Some(item.value.into_inner()))
+                })
             }
         }
     }
 
     pub fn expiration(&self, key: u64) -> Option<Time> {
-        self.shards[(key as usize) % NUM_OF_SHARDS].read().get(&key).map(|val| val.expiration)
+        self.shards[(key as usize) % NUM_OF_SHARDS]
+            .read()
+            .get(&key)
+            .map(|val| val.expiration)
     }
 
     pub fn clear(&self) {
         // TODO: item call back
-        self.shards.iter().for_each(|shard| {
-            shard.write().clear()
-        });
+        self.shards.iter().for_each(|shard| shard.write().clear());
     }
+}
 
-
+pub(crate) enum UpdateResult<V> {
+    NotExist(V),
+    Conflict(V),
+    Update(V),
 }
 
 #[cfg(test)]
 mod test {
     use crate::store::{ShardedMap, StoreItem};
     use crate::ttl::Time;
+    use crate::utils::SharedValue;
     use std::sync::Arc;
     use std::time::Duration;
-    use crate::utils::SharedValue;
 
     #[test]
     fn test_store() {
@@ -205,7 +211,6 @@ mod test {
         let v = s.get(1, 0).unwrap();
         assert_eq!(&3, v.value());
     }
-
 
     #[test]
     fn test_concurrent_get_insert() {
@@ -318,12 +323,15 @@ mod test {
     fn test_store_collision() {
         let s = ShardedMap::new();
         let mut data1 = s.shards[1].write();
-        data1.insert(1, StoreItem {
-            key: 1,
-            conflict: 0,
-            value: SharedValue::new(1),
-            expiration: Time::now(),
-        });
+        data1.insert(
+            1,
+            StoreItem {
+                key: 1,
+                conflict: 0,
+                value: SharedValue::new(1),
+                expiration: Time::now(),
+            },
+        );
         drop(data1);
         assert!(s.get(1, 1).is_none());
 

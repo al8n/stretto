@@ -1,10 +1,10 @@
-use std::convert::TryInto;
-use std::cell::UnsafeCell;
-use std::hash::BuildHasher;
-use parking_lot::{RwLockWriteGuard, RwLockReadGuard};
-use std::collections::HashMap;
-use std::collections::hash_map::RandomState;
 use crate::store::StoreItem;
+use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
+use std::cell::UnsafeCell;
+use std::collections::hash_map::RandomState;
+use std::collections::HashMap;
+use std::convert::TryInto;
+use std::hash::BuildHasher;
 
 pub struct ValueRef<'a, V, S = RandomState> {
     guard: RwLockReadGuard<'a, HashMap<u64, StoreItem<V>, S>>,
@@ -13,15 +13,14 @@ pub struct ValueRef<'a, V, S = RandomState> {
 
 unsafe impl<'a, V: Send, S: BuildHasher> Send for ValueRef<'a, V, S> {}
 
-unsafe impl<'a, V: Send + Sync, S: BuildHasher> Sync
-for ValueRef<'a, V, S> {}
+unsafe impl<'a, V: Send + Sync, S: BuildHasher> Sync for ValueRef<'a, V, S> {}
 
 impl<'a, V, S: BuildHasher> ValueRef<'a, V, S> {
-    pub(crate) fn new(guard: RwLockReadGuard<'a, HashMap<u64, StoreItem<V>, S>>, val: &'a V) -> Self {
-        Self {
-            guard,
-            val,
-        }
+    pub(crate) fn new(
+        guard: RwLockReadGuard<'a, HashMap<u64, StoreItem<V>, S>>,
+        val: &'a V,
+    ) -> Self {
+        Self { guard, val }
     }
 
     pub fn value(&self) -> &V {
@@ -48,15 +47,14 @@ pub struct ValueRefMut<'a, V, S = RandomState> {
 
 unsafe impl<'a, V: Send, S: BuildHasher> Send for ValueRefMut<'a, V, S> {}
 
-unsafe impl<'a, V: Send + Sync, S: BuildHasher> Sync
-for ValueRefMut<'a, V, S> {}
+unsafe impl<'a, V: Send + Sync, S: BuildHasher> Sync for ValueRefMut<'a, V, S> {}
 
 impl<'a, V, S: BuildHasher> ValueRefMut<'a, V, S> {
-    pub(crate) fn new(guard: RwLockWriteGuard<'a, HashMap<u64, StoreItem<V>, S>>, val: &'a mut V) -> Self {
-        Self {
-            guard,
-            val,
-        }
+    pub(crate) fn new(
+        guard: RwLockWriteGuard<'a, HashMap<u64, StoreItem<V>, S>>,
+        val: &'a mut V,
+    ) -> Self {
+        Self { guard, val }
     }
 
     pub fn value(&self) -> &V {
@@ -138,7 +136,6 @@ impl<T> SharedValue<T> {
         self.value.get()
     }
 }
-
 
 pub(crate) fn vec_to_array<T, const N: usize>(v: Vec<T>) -> [T; N] {
     v.try_into()

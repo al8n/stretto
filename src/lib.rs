@@ -30,9 +30,17 @@ extern crate crossbeam;
 extern crate log;
 extern crate serde;
 
-use std::collections::hash_map::{RandomState, DefaultHasher};
-use std::hash::{BuildHasher, Hash, Hasher, BuildHasherDefault};
-use twox_hash::{XxHash64};
+use std::collections::hash_map::{DefaultHasher, RandomState};
+use std::hash::{BuildHasher, BuildHasherDefault, Hash, Hasher};
+use std::marker::PhantomData;
+use twox_hash::XxHash64;
+
+pub trait Coster<V> {
+    /// cost evaluates a value and outputs a corresponding cost. This function
+    /// is ran after insert is called for a new item or an item update with a cost
+    /// param of 0.
+    fn cost(&self, val: &V) -> i64;
+}
 
 pub trait KeyHasher<K: Hash + Eq + ?Sized> {
     fn hash_key(&self, k: &K) -> (u64, u64);
@@ -148,6 +156,48 @@ impl_passthrough! {
     i64,
     isize
 }
+
+pub struct Item<V> {
+    pub val: Option<V>,
+}
+
+impl<V> Item<V> {}
+
+pub trait UpdateValidator<V> {
+    /// should_update is called when a value already exists in cache and is being updated.
+    fn should_update(&self, prev: &V, curr: &V) -> bool;
+}
+
+pub trait CacheCallback<V> {
+    /// on_evict is called for every eviction and passes the hashed key, value,
+    /// and cost to the function.
+    fn on_exit(&self, val: Option<V>);
+
+    /// on_exit is called whenever a value is removed from cache. This can be
+    /// used to do manual memory deallocation. Would also be called on eviction
+    /// and rejection of the value.
+    fn on_evict(&self, item: Item<V>);
+
+    /// on_reject is called for every rejection done via the policy.
+    fn on_reject(&self, item: Item<V>);
+}
+
+// #[derive(Copy, Clone, Debug)]
+// pub struct DefaultCacheCallback<T>{_marker: PhantomData<T>}
+//
+// impl<T> CacheCallback for DefaultCacheCallback<T> {
+//     type Value = T;
+//
+//     fn on_exit(&self, _val: Option<Self::Value>) {}
+//
+//     fn on_evict(&self, item: Item<Self::Value>) {
+//         self.on_exit(item.val)
+//     }
+//
+//     fn on_reject(&self, item: Item<Self::Value>) {
+//         self.on_exit(item.val)
+//     }
+// }
 
 #[cfg(test)]
 mod test {

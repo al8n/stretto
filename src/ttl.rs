@@ -30,7 +30,7 @@ impl Time {
     pub fn now() -> Self {
         Self {
             d: Duration::ZERO,
-            created_at: SystemTime::now()
+            created_at: SystemTime::now(),
         }
     }
 
@@ -192,5 +192,4 @@ impl<BS: BuildHasher + Default, S: BuildHasher> ExpirationMap<BS, S> {
 
 unsafe impl<BS: BuildHasher, S: BuildHasher> Send for ExpirationMap<BS, S> {}
 
-unsafe impl<BS: BuildHasher, S: BuildHasher> Sync
-for ExpirationMap<BS, S> {}
+unsafe impl<BS: BuildHasher, S: BuildHasher> Sync for ExpirationMap<BS, S> {}
