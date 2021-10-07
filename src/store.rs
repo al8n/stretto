@@ -1,19 +1,22 @@
+use crate::policy::LFUPolicy;
 use crate::ttl::{ExpirationMap, Time};
 use crate::utils::{change_lifetime_const, SharedValue, ValueRef, ValueRefMut};
+use crate::{DefaultUpdateValidator, Item as CrateItem, UpdateValidator};
 use parking_lot::RwLock;
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fmt::{Debug, Formatter};
 use std::mem;
+use std::sync::Arc;
 
 const NUM_OF_SHARDS: usize = 256;
 
 pub(crate) struct StoreItem<V> {
     key: u64,
-    conflict: u64,
-    value: SharedValue<V>,
-    expiration: Time,
+    pub(crate) conflict: u64,
+    pub(crate) value: SharedValue<V>,
+    pub(crate) expiration: Time,
 }
 
 impl<V> Debug for StoreItem<V> {
@@ -26,13 +29,21 @@ impl<V> Debug for StoreItem<V> {
     }
 }
 
-pub(crate) struct ShardedMap<V, DS = RandomState, S = RandomState> {
+pub(crate) struct ShardedMap<V, U = DefaultUpdateValidator<V>, DS = RandomState, S = RandomState> {
     shards: Box<[RwLock<HashMap<u64, StoreItem<V>, DS>>; NUM_OF_SHARDS]>,
     em: ExpirationMap<S>,
+    store_item_size: usize,
+    validator: U,
 }
 
-impl<V> ShardedMap<V> {
+impl<V: Send + Sync + 'static> ShardedMap<V> {
     pub fn new() -> Self {
+        Self::with_validator(DefaultUpdateValidator::default())
+    }
+}
+
+impl<V: Send + Sync + 'static, U: UpdateValidator<V>> ShardedMap<V, U> {
+    pub fn with_validator(validator: U) -> Self {
         let em = ExpirationMap::new();
 
         let shards = Box::new(
@@ -43,13 +54,19 @@ impl<V> ShardedMap<V> {
                 .unwrap(),
         );
 
-        Self { shards, em }
+        let size = mem::size_of::<StoreItem<V>>();
+        Self {
+            shards,
+            em,
+            store_item_size: size,
+            validator,
+        }
     }
 
-    pub fn get(&self, key: u64, conflict: u64) -> Option<ValueRef<'_, V>> {
-        let data = self.shards[(key as usize) % NUM_OF_SHARDS].read();
+    pub fn get(&self, key: &u64, conflict: u64) -> Option<ValueRef<'_, V>> {
+        let data = self.shards[(*key as usize) % NUM_OF_SHARDS].read();
 
-        if let Some(item) = data.get(&key) {
+        if let Some(item) = data.get(key) {
             if conflict != 0 && (conflict != item.conflict) {
                 return None;
             }
@@ -68,10 +85,10 @@ impl<V> ShardedMap<V> {
         }
     }
 
-    pub fn get_mut(&self, key: u64, conflict: u64) -> Option<ValueRefMut<'_, V>> {
-        let data = self.shards[(key as usize) % NUM_OF_SHARDS].write();
+    pub fn get_mut(&self, key: &u64, conflict: u64) -> Option<ValueRefMut<'_, V>> {
+        let data = self.shards[(*key as usize) % NUM_OF_SHARDS].write();
 
-        if let Some(item) = data.get(&key) {
+        if let Some(item) = data.get(key) {
             if conflict != 0 && (conflict != item.conflict) {
                 return None;
             }
@@ -106,7 +123,10 @@ impl<V> ShardedMap<V> {
                     return;
                 }
 
-                //TODO: should update check
+                if !self.validator.should_update(sitem.value.get(), &val) {
+                    return;
+                }
+
                 self.em.update(key, conflict, sitem.expiration, expiration);
             }
         }
@@ -131,55 +151,96 @@ impl<V> ShardedMap<V> {
                     return UpdateResult::Conflict(val);
                 }
 
-                // TODO: check update
-                mem::swap(&mut val, &mut item.value.get_mut());
+                if !self.validator.should_update(item.value.get(), &val) {
+                    return UpdateResult::Reject(val);
+                }
 
-                //TODO: should update check
                 self.em.update(key, conflict, item.expiration, expiration);
-
+                mem::swap(&mut val, &mut item.value.get_mut());
                 UpdateResult::Update(val)
             }
         }
     }
 
-    pub fn remove(&self, key: u64, conflict: u64) -> (u64, Option<V>) {
-        let mut data = self.shards[(key as usize) % NUM_OF_SHARDS].write();
+    pub fn remove(&self, key: &u64, conflict: u64) -> Option<StoreItem<V>> {
+        let mut data = self.shards[(*key as usize) % NUM_OF_SHARDS].write();
 
         match data.get(&key) {
-            None => (0, None),
+            None => None,
             Some(item) => {
                 if conflict != 0 && (conflict != item.conflict) {
-                    return (0, None);
+                    return None;
                 }
 
                 if !item.expiration.is_zero() {
                     self.em.remove(key, item.expiration);
                 }
 
-                data.remove(&key).map_or((0, None), |item| {
-                    (item.conflict, Some(item.value.into_inner()))
-                })
+                data.remove(key)
             }
         }
     }
 
-    pub fn expiration(&self, key: u64) -> Option<Time> {
-        self.shards[(key as usize) % NUM_OF_SHARDS]
+    pub fn expiration(&self, key: &u64) -> Option<Time> {
+        self.shards[((*key) as usize) % NUM_OF_SHARDS]
             .read()
-            .get(&key)
+            .get(key)
             .map(|val| val.expiration)
+    }
+
+    pub fn clean_up(&self, policy: Arc<LFUPolicy>) -> Vec<CrateItem<V>> {
+        let now = Time::now();
+        self.em.cleanup(now).map_or(Vec::with_capacity(0), |m| {
+            m.iter()
+                // Sanity check. Verify that the store agrees that this key is expired.
+                .filter_map(|(k, v)| {
+                    self.expiration(k).and_then(|t| {
+                        if t.is_expired() {
+                            let cost = policy.cost(k);
+                            policy.remove(k);
+                            self.remove(k, *v).map(|sitem| CrateItem {
+                                val: Some(sitem.value.into_inner()),
+                                key: sitem.key,
+                                conflict: sitem.conflict,
+                                cost,
+                                exp: t,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect()
+        })
     }
 
     pub fn clear(&self) {
         // TODO: item call back
         self.shards.iter().for_each(|shard| shard.write().clear());
     }
+
+    pub fn item_size(&self) -> usize {
+        self.store_item_size
+    }
 }
 
 pub(crate) enum UpdateResult<V> {
     NotExist(V),
+    Reject(V),
     Conflict(V),
     Update(V),
+}
+
+#[cfg(test)]
+impl<V> UpdateResult<V> {
+    fn into_inner(self) -> V {
+        match self {
+            UpdateResult::NotExist(v) => v,
+            UpdateResult::Reject(v) => v,
+            UpdateResult::Conflict(v) => v,
+            UpdateResult::Update(v) => v,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -200,15 +261,15 @@ mod test {
         let s: ShardedMap<u64> = ShardedMap::new();
 
         s.insert(1, 2, 0, Time::now());
-        let val = s.get(1, 0).unwrap();
+        let val = s.get(&1, 0).unwrap();
         assert_eq!(&2, val.value());
         val.release();
 
-        let mut val = s.get_mut(1, 0).unwrap();
+        let mut val = s.get_mut(&1, 0).unwrap();
         *val.value_mut() = 3;
         val.release();
 
-        let v = s.get(1, 0).unwrap();
+        let v = s.get(&1, 0).unwrap();
         assert_eq!(&3, v.value());
     }
 
@@ -222,7 +283,7 @@ mod test {
         });
 
         loop {
-            match s1.get(1, 0) {
+            match s1.get(&1, 0) {
                 None => continue,
                 Some(val) => {
                     assert_eq!(val.read(), 2);
@@ -240,7 +301,7 @@ mod test {
         std::thread::spawn(move || {
             s.insert(1, 2, 0, Time::now());
             loop {
-                match s.get(1, 0) {
+                match s.get(&1, 0) {
                     None => continue,
                     Some(val) => {
                         let val = val.read();
@@ -257,7 +318,7 @@ mod test {
         });
 
         loop {
-            match s1.get(1, 0) {
+            match s1.get(&1, 0) {
                 None => continue,
                 Some(val) => {
                     assert_eq!(val.read(), 2);
@@ -266,7 +327,7 @@ mod test {
             }
         }
 
-        s1.get_mut(1, 0).unwrap().write(7);
+        s1.get_mut(&1, 0).unwrap().write(7);
     }
 
     #[test]
@@ -274,10 +335,10 @@ mod test {
         let s: ShardedMap<u64> = ShardedMap::new();
 
         s.insert(1, 2, 0, Time::now());
-        assert_eq!(s.remove(1, 0), (0, Some(2)));
-        let v = s.get(1, 0);
+        assert_eq!(s.remove(&1, 0).unwrap().value.into_inner(), 2);
+        let v = s.get(&1, 0);
         assert!(v.is_none());
-        assert_eq!(s.remove(2, 0), (0, None));
+        assert!(s.remove(&2, 0).is_none());
     }
 
     #[test]
@@ -285,18 +346,18 @@ mod test {
         let s = ShardedMap::new();
         s.insert(1, 1, 0, Time::now());
         let v = s.update(1, 2, 0, Time::now());
-        assert_eq!(v, Some(1));
+        assert_eq!(v.into_inner(), 1);
 
-        assert_eq!(s.get(1, 0).unwrap().read(), 2);
+        assert_eq!(s.get(&1, 0).unwrap().read(), 2);
 
         let v = s.update(1, 3, 0, Time::now());
-        assert_eq!(v, Some(2));
+        assert_eq!(v.into_inner(), 2);
 
-        assert_eq!(s.get(1, 0).unwrap().read(), 3);
+        assert_eq!(s.get(&1, 0).unwrap().read(), 3);
 
         let v = s.update(2, 2, 0, Time::now());
-        assert!(v.is_none());
-        let v = s.get(2, 0);
+        assert_eq!(v.into_inner(), 2);
+        let v = s.get(&2, 0);
         assert!(v.is_none());
     }
 
@@ -306,17 +367,17 @@ mod test {
         let s = ShardedMap::new();
         s.insert(1, 1, 0, exp);
 
-        assert_eq!(s.get(1, 0).unwrap().read(), 1);
+        assert_eq!(s.get(&1, 0).unwrap().read(), 1);
 
-        let ttl = s.expiration(1);
+        let ttl = s.expiration(&1);
         assert_eq!(exp, ttl.unwrap());
 
-        s.remove(1, 0);
-        assert!(s.get(1, 0).is_none());
-        let ttl = s.expiration(1);
+        s.remove(&1, 0);
+        assert!(s.get(&1, 0).is_none());
+        let ttl = s.expiration(&1);
         assert!(ttl.is_none());
 
-        assert!(s.expiration(4340958203495).is_none());
+        assert!(s.expiration(&4340958203495).is_none());
     }
 
     #[test]
@@ -333,16 +394,16 @@ mod test {
             },
         );
         drop(data1);
-        assert!(s.get(1, 1).is_none());
+        assert!(s.get(&1, 1).is_none());
 
         s.insert(1, 2, 1, Time::now());
-        assert_ne!(s.get(1, 0).unwrap().read(), 2);
+        assert_ne!(s.get(&1, 0).unwrap().read(), 2);
 
         let v = s.update(1, 2, 1, Time::now());
-        assert!(v.is_none());
-        assert_ne!(s.get(1, 0).unwrap().read(), 2);
+        assert_eq!(v.into_inner(), 2);
+        assert_ne!(s.get(&1, 0).unwrap().read(), 2);
 
-        assert_eq!(s.remove(1, 1), (0, None));
-        assert_eq!(s.get(1, 0).unwrap().read(), 1);
+        assert!(s.remove(&1, 1).is_none());
+        assert_eq!(s.get(&1, 0).unwrap().read(), 1);
     }
 }

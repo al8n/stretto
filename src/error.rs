@@ -9,6 +9,14 @@ pub enum CacheError {
     /// Invalid false positive ratio for TinyLFU
     InvalidFalsePositiveRatio(f64),
 
+    InvalidNumCounters,
+
+    InvalidMaxCost,
+
+    InvalidBufferSize,
+
+    ClosedChannel,
+
     SendError(String),
     RecvError(String),
 }
@@ -27,6 +35,10 @@ impl CacheError {
             ),
             CacheError::SendError(msg) => write!(f, "fail to send msg to channel: {}", msg),
             CacheError::RecvError(msg) => write!(f, "fail to receive msg from channel: {}", msg),
+            CacheError::InvalidNumCounters => write!(f, "num_counters can't be zero"),
+            CacheError::InvalidMaxCost => write!(f, "max_cost can't be zero"),
+            CacheError::InvalidBufferSize => write!(f, "buffer_size can't be zero"),
+            CacheError::ClosedChannel => write!(f, "channel has been closed."),
         }
     }
 }

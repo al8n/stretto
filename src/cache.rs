@@ -1,11 +1,20 @@
+mod async_impl;
+mod sync_impl;
+#[cfg(test)]
+mod test;
+
 use crate::error::CacheError;
 use crate::metrics::{MetricType, Metrics};
 use crate::policy::LFUPolicy;
 use crate::store::{ShardedMap, UpdateResult};
 use crate::ttl::Time;
-use crate::{CacheCallback, Coster, KeyHasher, UpdateValidator, ValueCost};
+use crate::utils::{CloseableSender, ValueRef, ValueRefMut};
+use crate::{
+    CacheCallback, Coster, DefaultCacheCallback, DefaultCoster, DefaultUpdateValidator,
+    Item as CrateItem, KeyHasher, UpdateValidator,
+};
 use crossbeam::{
-    channel::{tick, Receiver, RecvError, SendError, Sender},
+    channel::{bounded, tick, Receiver, RecvError},
     sync::WaitGroup,
 };
 use std::collections::HashMap;
@@ -17,35 +26,10 @@ use std::thread::{spawn, JoinHandle};
 use std::time::{Duration, Instant};
 
 // TODO: find the optimal value for this or make it configurable
-const SET_BUF_SIZE: usize = 32 * 1024;
-const DEFAULT_BUFFER_ITEMS: u64 = 64;
-
-pub type ItemCallback<V> = fn(&Item<V>);
-
-#[derive(Debug, Copy, Clone)]
-#[repr(u8)]
-pub(crate) enum ItemFlag {
-    New,
-    Delete,
-    Update,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ItemMeta {
-    key: u64,
-    conflict: u64,
-    cost: i64,
-}
-
-impl ItemMeta {
-    pub(crate) fn new(k: u64, cost: i64, conflict: u64) -> Self {
-        Self {
-            key: k,
-            conflict,
-            cost,
-        }
-    }
-}
+const DEFAULT_INSERT_BUF_SIZE: usize = 32 * 1024;
+const DEFAULT_BUFFER_ITEMS: usize = 64;
+const DEFAULT_CLEANUP_DURATION: Duration = Duration::from_millis(500);
+pub(crate) const DEFAULT_CLEANUP_DURATION_FACTOR: u64 = 5;
 
 enum Item<V> {
     New {
@@ -58,6 +42,7 @@ enum Item<V> {
     Update {
         key: u64,
         cost: i64,
+        external_cost: i64,
     },
     Delete {
         key: u64,
@@ -77,8 +62,12 @@ impl<V> Item<V> {
         }
     }
 
-    fn update(kh: u64, cost: i64) -> Self {
-        Self::Update { key: kh, cost }
+    fn update(kh: u64, cost: i64, external_cost: i64) -> Self {
+        Self::Update {
+            key: kh,
+            cost,
+            external_cost,
+        }
     }
 
     fn delete(kh: u64, conflict: u64) -> Self {
@@ -94,42 +83,18 @@ impl<V> Item<V> {
 }
 
 pub struct CacheBuilder<
-    K: Hash + Eq + ?Sized,
-    V,
+    K: Hash + Eq,
+    V: Send + Sync,
     KH: KeyHasher<K>,
     C: Coster<V>,
     U: UpdateValidator<V>,
     CB: CacheCallback<V>,
 > {
-    num_counters: i64,
-    max_cost: i64,
-
-    /// buffer_items determines the size of Get buffers.
-    ///
-    /// Unless you have a rare use case, using `64` as the BufferItems value
-    /// results in good performance.
-    buffer_items: u64,
-
     /// metrics determines whether cache statistics are kept during the cache's
     /// lifetime. There *is* some overhead to keeping statistics, so you should
     /// only set this flag to true when testing or throughput performance isn't a
     /// major factor.
     metrics: bool,
-
-    callback: Option<CB>,
-
-    /// key_to_hash is used to customize the key hashing algorithm.
-    /// Each key will be hashed using the provided function. If keyToHash value
-    /// is not set, the default keyToHash function is used.
-    key_to_hash: KH,
-
-    /// should_update is called when a value already exists in cache and is being updated.
-    should_update: Option<U>,
-
-    /// cost evaluates a value and outputs a corresponding cost. This function
-    /// is ran after insert is called for a new item or an item update with a cost
-    /// param of 0.
-    cost: Option<C>,
 
     /// ignore_internal_cost set to true indicates to the cache that the cost of
     /// internally storing the value should be ignored. This is useful when the
@@ -137,46 +102,438 @@ pub struct CacheBuilder<
     /// this to true will increase the memory usage.
     ignore_internal_cost: bool,
 
-    marker: PhantomData<fn(K)>,
+    num_counters: usize,
+
+    max_cost: i64,
+
+    // buffer_items determines the size of Get buffers.
+    //
+    // Unless you have a rare use case, using `64` as the BufferItems value
+    // results in good performance.
+    // buffer_items: usize,
+    /// `insert_buffer_size` determines the size of insert buffers.
+    ///
+    /// Default is 32 * 1024 (**TODO:** need to figure out the optimal size.).
+    insert_buffer_size: usize,
+
+    /// `cleanup_duration` is the duration for internal store to cleanup expired entry.
+    ///
+    /// Default is 2500ms.
+    cleanup_duration: Duration,
+
+    /// key_to_hash is used to customize the key hashing algorithm.
+    /// Each key will be hashed using the provided function. If keyToHash value
+    /// is not set, the default keyToHash function is used.
+    key_to_hash: KH,
+
+    /// cost evaluates a value and outputs a corresponding cost. This function
+    /// is ran after insert is called for a new item or an item update with a cost
+    /// param of 0.
+    coster: Option<C>,
+
+    /// update_validator is called when a value already exists in cache and is being updated.
+    update_validator: Option<U>,
+
+    callback: Option<CB>,
+
+    marker_k: PhantomData<fn(K)>,
+    marker_v: PhantomData<fn(V)>,
+}
+
+impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyHasher<K>>
+    CacheBuilder<K, V, KH, DefaultCoster<V>, DefaultUpdateValidator<V>, DefaultCacheCallback<V>>
+{
+    pub fn new(num_counters: usize, max_cost: i64, kh: KH) -> Self {
+        Self {
+            num_counters,
+            max_cost,
+            // buffer_items: DEFAULT_BUFFER_ITEMS,
+            insert_buffer_size: DEFAULT_INSERT_BUF_SIZE,
+            metrics: false,
+            callback: Some(DefaultCacheCallback::default()),
+            key_to_hash: kh,
+            update_validator: Some(DefaultUpdateValidator::default()),
+            coster: Some(DefaultCoster::default()),
+            ignore_internal_cost: false,
+            cleanup_duration: DEFAULT_CLEANUP_DURATION,
+            marker_k: Default::default(),
+            marker_v: Default::default(),
+        }
+    }
+}
+
+impl<
+        K: Hash + Eq,
+        V: Send + Sync + 'static,
+        KH: KeyHasher<K>,
+        C: Coster<V>,
+        U: UpdateValidator<V>,
+        CB: CacheCallback<V>,
+    > CacheBuilder<K, V, KH, C, U, CB>
+{
+    pub fn set_num_counters(self, num_counters: usize) -> Self {
+        Self {
+            num_counters,
+            max_cost: self.max_cost,
+            insert_buffer_size: self.insert_buffer_size,
+            metrics: self.metrics,
+            callback: self.callback,
+            key_to_hash: self.key_to_hash,
+            update_validator: self.update_validator,
+            coster: self.coster,
+            ignore_internal_cost: self.ignore_internal_cost,
+            cleanup_duration: self.cleanup_duration,
+            marker_k: self.marker_k,
+            marker_v: self.marker_v,
+        }
+    }
+
+    pub fn set_max_cost(self, max_cost: i64) -> Self {
+        Self {
+            num_counters: self.num_counters,
+            max_cost,
+            insert_buffer_size: self.insert_buffer_size,
+            metrics: self.metrics,
+            callback: self.callback,
+            key_to_hash: self.key_to_hash,
+            update_validator: self.update_validator,
+            coster: self.coster,
+            ignore_internal_cost: self.ignore_internal_cost,
+            cleanup_duration: self.cleanup_duration,
+            marker_k: self.marker_k,
+            marker_v: self.marker_v,
+        }
+    }
+
+    pub fn set_buffer_size(self, sz: usize) -> Self {
+        Self {
+            num_counters: self.num_counters,
+            max_cost: self.max_cost,
+            insert_buffer_size: sz,
+            metrics: self.metrics,
+            callback: self.callback,
+            key_to_hash: self.key_to_hash,
+            update_validator: self.update_validator,
+            coster: self.coster,
+            ignore_internal_cost: self.ignore_internal_cost,
+            cleanup_duration: self.cleanup_duration,
+            marker_k: self.marker_k,
+            marker_v: self.marker_v,
+        }
+    }
+
+    pub fn set_metrics(self, val: bool) -> Self {
+        Self {
+            num_counters: self.num_counters,
+            max_cost: self.max_cost,
+            insert_buffer_size: self.insert_buffer_size,
+            metrics: val,
+            callback: self.callback,
+            key_to_hash: self.key_to_hash,
+            update_validator: self.update_validator,
+            coster: self.coster,
+            ignore_internal_cost: self.ignore_internal_cost,
+            cleanup_duration: self.cleanup_duration,
+            marker_k: self.marker_k,
+            marker_v: self.marker_v,
+        }
+    }
+
+    pub fn set_ignore_internal_cost(self, val: bool) -> Self {
+        Self {
+            num_counters: self.num_counters,
+            max_cost: self.max_cost,
+            insert_buffer_size: self.insert_buffer_size,
+            metrics: self.metrics,
+            callback: self.callback,
+            key_to_hash: self.key_to_hash,
+            update_validator: self.update_validator,
+            coster: self.coster,
+            ignore_internal_cost: val,
+            cleanup_duration: self.cleanup_duration,
+            marker_k: self.marker_k,
+            marker_v: self.marker_v,
+        }
+    }
+
+    pub fn set_cleanup_duration(self, d: Duration) -> Self {
+        Self {
+            num_counters: self.num_counters,
+            max_cost: self.max_cost,
+            insert_buffer_size: self.insert_buffer_size,
+            metrics: self.metrics,
+            callback: self.callback,
+            key_to_hash: self.key_to_hash,
+            update_validator: self.update_validator,
+            coster: self.coster,
+            ignore_internal_cost: self.ignore_internal_cost,
+            cleanup_duration: d,
+            marker_k: self.marker_k,
+            marker_v: self.marker_v,
+        }
+    }
+
+    pub fn set_key_hasher<NKH: KeyHasher<K>>(self, kh: NKH) -> CacheBuilder<K, V, NKH, C, U, CB> {
+        CacheBuilder {
+            num_counters: self.num_counters,
+            max_cost: self.max_cost,
+            insert_buffer_size: self.insert_buffer_size,
+            metrics: self.metrics,
+            callback: self.callback,
+            key_to_hash: kh,
+            update_validator: self.update_validator,
+            coster: self.coster,
+            ignore_internal_cost: self.ignore_internal_cost,
+            cleanup_duration: self.cleanup_duration,
+            marker_k: self.marker_k,
+            marker_v: self.marker_v,
+        }
+    }
+
+    pub fn set_coster<NC: Coster<V>>(self, coster: NC) -> CacheBuilder<K, V, KH, NC, U, CB> {
+        CacheBuilder {
+            num_counters: self.num_counters,
+            max_cost: self.max_cost,
+            insert_buffer_size: self.insert_buffer_size,
+            metrics: self.metrics,
+            callback: self.callback,
+            key_to_hash: self.key_to_hash,
+            update_validator: self.update_validator,
+            coster: Some(coster),
+            ignore_internal_cost: self.ignore_internal_cost,
+            cleanup_duration: self.cleanup_duration,
+            marker_k: self.marker_k,
+            marker_v: self.marker_v,
+        }
+    }
+
+    pub fn set_update_validator<NU: UpdateValidator<V>>(
+        self,
+        uv: NU,
+    ) -> CacheBuilder<K, V, KH, C, NU, CB> {
+        CacheBuilder {
+            num_counters: self.num_counters,
+            max_cost: self.max_cost,
+            insert_buffer_size: self.insert_buffer_size,
+            metrics: self.metrics,
+            callback: self.callback,
+            key_to_hash: self.key_to_hash,
+            update_validator: Some(uv),
+            coster: self.coster,
+            ignore_internal_cost: self.ignore_internal_cost,
+            cleanup_duration: self.cleanup_duration,
+            marker_k: self.marker_k,
+            marker_v: self.marker_v,
+        }
+    }
+
+    pub fn set_callback<NCB: CacheCallback<V>>(self, cb: NCB) -> CacheBuilder<K, V, KH, C, U, NCB> {
+        CacheBuilder {
+            num_counters: self.num_counters,
+            max_cost: self.max_cost,
+            insert_buffer_size: self.insert_buffer_size,
+            metrics: self.metrics,
+            callback: Some(cb),
+            key_to_hash: self.key_to_hash,
+            update_validator: self.update_validator,
+            coster: self.coster,
+            ignore_internal_cost: self.ignore_internal_cost,
+            cleanup_duration: self.cleanup_duration,
+            marker_k: self.marker_k,
+            marker_v: self.marker_v,
+        }
+    }
+
+    pub fn finalize(self) -> Result<Cache<K, V, KH, C, U, CB>, CacheError> {
+        let num_counters = self.num_counters;
+
+        if num_counters == 0 {
+            return Err(CacheError::InvalidNumCounters);
+        }
+
+        let max_cost = self.max_cost;
+        if max_cost == 0 {
+            return Err(CacheError::InvalidMaxCost);
+        }
+
+        let insert_buffer_size = self.insert_buffer_size;
+        if insert_buffer_size == 0 {
+            return Err(CacheError::InvalidBufferSize);
+        }
+
+        let (buf_tx, buf_rx) = bounded(insert_buffer_size);
+        let (stop_tx, stop_rx) = bounded(0);
+
+        let store = Arc::new(ShardedMap::with_validator(self.update_validator.unwrap()));
+        let mut policy = LFUPolicy::new(num_counters, max_cost)?;
+        let item_size = store.item_size();
+
+        let coster = Arc::new(self.coster.unwrap());
+        let callback = Arc::new(self.callback.unwrap());
+        let metrics = if self.metrics {
+            let m = Arc::new(Metrics::new_op());
+            policy.collect_metrics(m.clone());
+            m
+        } else {
+            Arc::new(Metrics::new())
+        };
+
+        let policy = Arc::new(policy);
+        CacheProcessor::spawn(
+            100000,
+            self.ignore_internal_cost,
+            self.cleanup_duration,
+            store.clone(),
+            policy.clone(),
+            buf_rx.clone(),
+            stop_rx.clone(),
+            metrics.clone(),
+            coster.clone(),
+            callback.clone(),
+        );
+
+        let this = Cache {
+            store,
+            policy,
+            insert_buf_tx: CloseableSender::new(buf_tx),
+            insert_buf_rx: buf_rx,
+            callback,
+            key_to_hash: self.key_to_hash,
+            stop_tx: CloseableSender::new(stop_tx),
+            stop_rx,
+            is_closed: AtomicBool::new(false),
+            coster,
+            ignore_internal_cost: self.ignore_internal_cost,
+            cleanup_duration: self.cleanup_duration,
+            metrics,
+            item_size,
+            _marker: Default::default(),
+        };
+
+        Ok(this)
+    }
 }
 
 /// Cache is a thread-safe implementation of a hashmap with a TinyLFU admission
 /// policy and a Sampled LFU eviction policy. You can use the same Cache instance
 /// from as many threads as you want.
-pub struct Cache<K: Hash + Eq + ?Sized, V, KH: KeyHasher<K>, VC: ValueCost<V>> {
+pub struct Cache<
+    K: Hash + Eq,
+    V: Send + Sync,
+    KH: KeyHasher<K>,
+    C = DefaultCoster<V>,
+    U = DefaultUpdateValidator<V>,
+    CB = DefaultCacheCallback<V>,
+> {
     /// store is the central concurrent hashmap where key-value items are stored.
-    store: Arc<ShardedMap<V>>,
+    store: Arc<ShardedMap<V, U>>,
 
     /// policy determines what gets let in to the cache and what gets kicked out.
     policy: Arc<LFUPolicy>,
 
     /// set_buf is a buffer allowing us to batch/drop Sets during times of high
     /// contention.
-    set_buf_tx: Sender<Item<V>>,
+    insert_buf_tx: CloseableSender<Item<V>>,
+    insert_buf_rx: Receiver<Item<V>>,
 
-    on_evict: Box<ItemCallback<V>>,
-
-    on_reject: Box<ItemCallback<V>>,
-
-    on_exit: Box<fn(&V)>,
+    callback: Arc<CB>,
 
     key_to_hash: KH,
 
-    stop_tx: Sender<()>,
+    stop_tx: CloseableSender<()>,
     stop_rx: Receiver<()>,
 
     is_closed: AtomicBool,
 
-    cost: VC,
+    coster: Arc<C>,
 
     ignore_internal_cost: bool,
 
     cleanup_duration: Duration,
 
-    metrics: Option<Arc<Metrics>>,
+    metrics: Arc<Metrics>,
+
+    item_size: usize,
+
+    _marker: PhantomData<fn(K)>,
 }
 
-impl<K: Hash + Eq, V, KH: KeyHasher<K>, VC: ValueCost<V>> Cache<K, V, KH, VC> {
+impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyHasher<K>> Cache<K, V, KH> {
+    pub fn new(num_counters: usize, max_cost: i64, kh: KH) -> Result<Self, CacheError> {
+        CacheBuilder::new(num_counters, max_cost, kh).finalize()
+    }
+
+    pub fn builder(
+        num_counters: usize,
+        max_cost: i64,
+        kh: KH,
+    ) -> CacheBuilder<K, V, KH, DefaultCoster<V>, DefaultUpdateValidator<V>, DefaultCacheCallback<V>>
+    {
+        CacheBuilder::new(num_counters, max_cost, kh)
+    }
+}
+
+impl<
+        K: Hash + Eq,
+        V: Send + Sync + 'static,
+        KH: KeyHasher<K>,
+        C: Coster<V>,
+        U: UpdateValidator<V>,
+        CB: CacheCallback<V>,
+    > Cache<K, V, KH, C, U, CB>
+{
+    /// `get` returns the value (if any) and a boolean representing whether the
+    /// value was found or not. The value can be nil and the boolean can be true at
+    /// the same time.
+    pub fn get(&self, key: &K) -> Option<ValueRef<V>> {
+        if self.is_closed.load(Ordering::SeqCst) {
+            return None;
+        }
+
+        let (kh, ch) = self.key_to_hash.hash_key(key);
+        match self.store.get(&kh, ch) {
+            None => {
+                self.metrics.add(MetricType::Hit, kh, 1);
+                None
+            }
+            Some(v) => {
+                self.metrics.add(MetricType::Miss, kh, 1);
+                Some(v)
+            }
+        }
+    }
+
+    /// `get_mut` returns the mutable value (if any) and a boolean representing whether the
+    /// value was found or not. The value can be nil and the boolean can be true at
+    /// the same time.
+    pub fn get_mut(&self, key: &K) -> Option<ValueRefMut<V>> {
+        if self.is_closed.load(Ordering::SeqCst) {
+            return None;
+        }
+
+        let (kh, ch) = self.key_to_hash.hash_key(key);
+        match self.store.get_mut(&kh, ch) {
+            None => {
+                self.metrics.add(MetricType::Hit, kh, 1);
+                None
+            }
+            Some(v) => {
+                self.metrics.add(MetricType::Miss, kh, 1);
+                Some(v)
+            }
+        }
+    }
+
+    // GetTTL returns the TTL for the specified key and a bool that is true if the
+    // item was found and is not expired.
+    pub fn get_ttl(&self, key: K) -> Option<Time> {
+        let (kh, ch) = self.key_to_hash.hash_key(&key);
+        match self.store.get(&kh, ch) {
+            None => None,
+            Some(_) => self.store.expiration(&kh),
+        }
+    }
+
     /// `insert` attempts to add the key-value item to the cache. If it returns false,
     /// then the `insert` was dropped and the key-value item isn't added to the cache. If
     /// it returns true, there's still a chance it could be dropped by the policy if
@@ -199,8 +556,6 @@ impl<K: Hash + Eq, V, KH: KeyHasher<K>, VC: ValueCost<V>> Cache<K, V, KH, VC> {
 
     /// `insert_if_present` is like `insert`, but only updates the value of an existing key. It
     /// does NOT add the key to cache if it's absent.
-    ///
-    ///
     pub fn insert_if_present(&self, key: K, val: V, cost: i64) -> bool {
         self.insert_in(key, val, cost, Duration::ZERO, true)
     }
@@ -212,11 +567,10 @@ impl<K: Hash + Eq, V, KH: KeyHasher<K>, VC: ValueCost<V>> Cache<K, V, KH, VC> {
 
         let wg = WaitGroup::new();
         let wait_item = Item::Wait(wg.clone());
-        self.set_buf_tx
+        self.insert_buf_tx
             .send(wait_item)
-            .map(|| {
+            .map(|_| {
                 wg.wait();
-                ()
             })
             .map_err(|e| CacheError::SendError(format!("cache set buf sender: {}", e.to_string())))
     }
@@ -228,17 +582,71 @@ impl<K: Hash + Eq, V, KH: KeyHasher<K>, VC: ValueCost<V>> Cache<K, V, KH, VC> {
 
         let (kh, ch) = self.key_to_hash.hash_key(&k);
         // delete immediately
-        let (_, prev) = self.store.remove(kh, ch);
-        match prev {
-            None => {}
-            Some(v) => self.on_exit.call(v),
-        };
+        let prev = self.store.remove(&kh, ch);
 
+        if let Some(prev) = prev {
+            self.callback.on_exit(Some(prev.value.into_inner()));
+        }
         // If we've set an item, it would be applied slightly later.
         // So we must push the same item to `setBuf` with the deletion flag.
         // This ensures that if a set is followed by a delete, it will be
         // applied in the correct order.
-        let _ = self.set_buf_tx.send(Item::delete(kh, ch));
+        let _ = self.insert_buf_tx.send(Item::delete(kh, ch));
+    }
+
+    pub fn clear(&self) -> Result<(), CacheError> {
+        if self.is_closed.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        // stop the process item thread.
+        self.stop_tx.send(()).map_err(|e| {
+            CacheError::SendError(format!(
+                "fail to send stop signal to working thread {}",
+                e.to_string()
+            ))
+        })?;
+
+        // clear out the insert buffer channel.
+        loop {
+            select! {
+                recv(self.insert_buf_rx) -> res => if let Ok(item) = res {
+                    match item {
+                        Item::New { key, conflict, cost, value, expiration } => {
+                            self.callback.on_evict(CrateItem {
+                                val: Some(value),
+                                key,
+                                conflict,
+                                cost,
+                                exp: expiration,
+                            })
+                        }
+                        Item::Delete { .. } | Item::Update { .. } => {}
+                        Item::Wait(wg) => drop(wg),
+                    }
+                },
+                default => break,
+            }
+        }
+
+        self.policy.clear();
+        self.store.clear();
+        self.metrics.clear();
+
+        CacheProcessor::spawn(
+            100000,
+            self.ignore_internal_cost,
+            self.cleanup_duration,
+            self.store.clone(),
+            self.policy.clone(),
+            self.insert_buf_rx.clone(),
+            self.stop_rx.clone(),
+            self.metrics.clone(),
+            self.coster.clone(),
+            self.callback.clone(),
+        );
+
+        Ok(())
     }
 
     /// `close` stops all threads and closes all channels.
@@ -246,7 +654,14 @@ impl<K: Hash + Eq, V, KH: KeyHasher<K>, VC: ValueCost<V>> Cache<K, V, KH, VC> {
         if self.is_closed.load(Ordering::SeqCst) {
             return Ok(());
         }
-        todo!()
+
+        self.clear()?;
+        // Block until processItems thread is returned
+        self.stop_tx.send(())?;
+        self.stop_tx.close();
+        self.insert_buf_tx.close();
+        self.is_closed.store(true, Ordering::SeqCst);
+        Ok(())
     }
 
     /// `max_cost` returns the max cost of the cache.
@@ -274,27 +689,26 @@ impl<K: Hash + Eq, V, KH: KeyHasher<K>, VC: ValueCost<V>> Cache<K, V, KH, VC> {
 
         // cost is eventually updated. The expiration must also be immediately updated
         // to prevent items from being prematurely removed from the map.
-        let item = match self.store.update(key_hash, val, conflict_hash, expiration) {
-            UpdateResult::NotExist(v) => {
+        let external_cost = if cost == 0 { self.coster.cost(&val) } else { 0 };
+        match self.store.update(key_hash, val, conflict_hash, expiration) {
+            UpdateResult::NotExist(v) | UpdateResult::Reject(v) | UpdateResult::Conflict(v) => {
                 if only_update {
                     None
                 } else {
                     Some(Item::new(key_hash, conflict_hash, cost, v, expiration))
                 }
             }
-            UpdateResult::Conflict(v) => {
-                Some(Item::new(key_hash, conflict_hash, cost, v, expiration))
-            }
             UpdateResult::Update(v) => {
-                self.on_evict.call(v);
-                Some(Item::update(key_hash, cost))
+                eprintln!("asdasdasd");
+                self.callback.on_exit(Some(v));
+                Some(Item::update(key_hash, cost, external_cost))
             }
-        };
-
-        item.map_or(false, |item| {
+        }
+        .map_or(false, |item| {
             // Attempt to send item to policy.
             select! {
-                send(self.set_buf_tx, item) -> res => {
+                send(self.insert_buf_tx.tx, item) -> res => {
+
                     res.map_or(false, |_| true)
                 },
                 default => {
@@ -304,6 +718,7 @@ impl<K: Hash + Eq, V, KH: KeyHasher<K>, VC: ValueCost<V>> Cache<K, V, KH, VC> {
                         // return false which means the item was not inserted.
                         true
                     } else {
+                        self.metrics.add(MetricType::DropSets, key_hash, 1);
                         false
                     }
                 }
@@ -312,51 +727,67 @@ impl<K: Hash + Eq, V, KH: KeyHasher<K>, VC: ValueCost<V>> Cache<K, V, KH, VC> {
     }
 }
 
-struct CacheProcessor<V> {
-    set_buf_rx: Receiver<Item<V>>,
+struct CacheProcessor<V: Send + Sync, C: Coster<V>, U: UpdateValidator<V>, CB: CacheCallback<V>> {
+    insert_buf_rx: Receiver<Item<V>>,
     stop_rx: Receiver<()>,
     metrics: Arc<Metrics>,
     ticker: Receiver<Instant>,
-    store: Arc<ShardedMap<V>>,
+    store: Arc<ShardedMap<V, U>>,
     policy: Arc<LFUPolicy>,
     start_ts: HashMap<u64, Time>,
-    num_to_keep: u64,
+    num_to_keep: usize,
+    callback: Arc<CB>,
+    coster: Arc<C>,
+    ignore_internal_cost: bool,
+    item_size: usize,
 }
 
-impl<V> CacheProcessor<V> {
+impl<V: Send + Sync + 'static, C: Coster<V>, U: UpdateValidator<V>, CB: CacheCallback<V>>
+    CacheProcessor<V, C, U, CB>
+{
     pub fn spawn(
-        store: Arc<ShardedMap<V>>,
+        num_to_keep: usize,
+        ignore_internal_cost: bool,
+        cleanup_duration: Duration,
+        store: Arc<ShardedMap<V, U>>,
         policy: Arc<LFUPolicy>,
-        set_buf_rx: Receiver<Item<V>>,
+        insert_buf_rx: Receiver<Item<V>>,
         stop_rx: Receiver<()>,
         metrics: Arc<Metrics>,
-        clean_up_ticker: Receiver<Instant>,
-        num_to_keep: u64,
+        coster: Arc<C>,
+        callback: Arc<CB>,
     ) -> JoinHandle<Result<(), CacheError>> {
+        let ticker = tick(cleanup_duration);
+        let item_size = store.item_size();
         let mut this = Self {
-            set_buf_rx,
+            insert_buf_rx,
             stop_rx,
             metrics,
-            ticker: clean_up_ticker,
+            ticker,
             store,
             policy,
             start_ts: HashMap::<u64, Time>::new(),
             num_to_keep,
+            callback,
+            ignore_internal_cost,
+            coster,
+            item_size,
         };
 
         spawn(move || loop {
             select! {
-                recv(this.set_buf_rx) -> res => {
+                recv(this.insert_buf_rx) -> res => {
                     let _ = this.handle_insert_buf(res)?;
                 },
                 recv(this.ticker) -> res => {
                     let _ = this.handle_clean_up(res)?;
                 },
-                recv(this.stop_rx) -> _ => return,
+                recv(this.stop_rx) -> _ => return Ok(()),
             }
         })
     }
 
+    #[inline]
     fn handle_insert_buf(&mut self, res: Result<Item<V>, RecvError>) -> Result<(), CacheError> {
         res.map(|item| self.handle_item(item)).map_err(|e| {
             CacheError::RecvError(format!(
@@ -366,6 +797,7 @@ impl<V> CacheProcessor<V> {
         })
     }
 
+    #[inline]
     fn handle_item(&mut self, item: Item<V>) {
         match item {
             Item::New {
@@ -375,31 +807,51 @@ impl<V> CacheProcessor<V> {
                 value,
                 expiration,
             } => {
-                // TODO: Calculate item cost value if new or update.
-
+                let cost = self.recalculate_cost(cost, &value);
                 let (victims, added) = self.policy.add(key, cost);
 
                 if added {
                     self.store.insert(key, value, conflict, expiration);
-                    self.metrics.add(MetricType::KeyAdd, key, 1);
                     self.track_admission(key);
                 } else {
-                    // TODO: onReject
+                    self.callback.on_reject(CrateItem {
+                        val: Some(value),
+                        key,
+                        conflict,
+                        cost,
+                        exp: expiration,
+                    });
                 }
 
-                victims.map(|victims| {
+                victims.iter().for_each(|victims| {
                     victims.iter().for_each(|victim| {
-                        let (conflict, value) = self.store.remove(victim.key, 0);
-
-                        // TODO: on_evict(victim)
+                        let sitem = self.store.remove(&victim.key, 0);
+                        if let Some(sitem) = sitem {
+                            let item = CrateItem {
+                                key: victim.key,
+                                val: Some(sitem.value.into_inner()),
+                                cost: victim.cost,
+                                conflict: sitem.conflict,
+                                exp: sitem.expiration,
+                            };
+                            self.on_evict(item);
+                        }
                     })
                 });
             }
-            Item::Update { key, cost } => self.policy.update(key, cost),
+            Item::Update {
+                key,
+                cost,
+                external_cost,
+            } => {
+                let cost = self.calculate_internal_cost(cost) + external_cost;
+                self.policy.update(&key, cost)
+            }
             Item::Delete { key, conflict } => {
-                self.policy.remove(key); // deals with metrics updates.
-                let (_, val) = self.store.remove(key, conflict);
-                // TODO: on_exit(val)
+                self.policy.remove(&key); // deals with metrics updates.
+                if let Some(sitem) = self.store.remove(&key, conflict) {
+                    self.callback.on_exit(Some(sitem.value.into_inner()));
+                }
             }
             Item::Wait(wg) => {
                 drop(wg);
@@ -407,20 +859,65 @@ impl<V> CacheProcessor<V> {
         }
     }
 
-    fn track_admission(&self, key: u64) {}
+    #[inline]
+    fn recalculate_cost(&self, cost: i64, val: &V) -> i64 {
+        let cost = self.coster.cost(val);
+        self.calculate_internal_cost(cost)
+    }
 
-    fn handle_clean_up(&self, res: Result<Instant, RecvError>) -> Result<(), CacheError> {
-        res.map(|i| ()).map_err(|e| {
+    #[inline]
+    fn calculate_internal_cost(&self, cost: i64) -> i64 {
+        if !self.ignore_internal_cost {
+            // Add the cost of internally storing the object.
+            cost + (self.item_size as i64)
+        } else {
+            cost
+        }
+    }
+
+    #[inline]
+    fn track_admission(&mut self, key: u64) {
+        let added = self.metrics.add(MetricType::KeyAdd, key, 1);
+
+        if added {
+            if self.start_ts.len() > self.num_to_keep {
+                self.start_ts = self.start_ts.drain().take(self.num_to_keep - 1).collect();
+                self.start_ts.insert(key, Time::now());
+            }
+        }
+    }
+
+    #[inline]
+    fn prepare_evict(&mut self, item: &CrateItem<V>) {
+        if let Some(ts) = self.start_ts.get(&item.key) {
+            self.metrics.track_eviction(ts.elapsed().as_secs() as i64);
+
+            self.start_ts.remove(&item.key);
+        }
+    }
+
+    #[inline]
+    fn on_evict(&mut self, item: CrateItem<V>) {
+        self.prepare_evict(&item);
+        self.callback.on_evict(item);
+    }
+
+    #[inline]
+    fn handle_clean_up(&mut self, res: Result<Instant, RecvError>) -> Result<(), CacheError> {
+        res.map(|_| {
+            self.store
+                .clean_up(self.policy.clone())
+                .into_iter()
+                .for_each(|victim| {
+                    self.prepare_evict(&victim);
+                    self.callback.on_evict(victim);
+                })
+        })
+        .map_err(|e| {
             CacheError::RecvError(format!(
                 "fail to receive msg from ticker: {}",
                 e.to_string()
             ))
         })
     }
-}
-
-#[cfg(test)]
-mod test {
-    #[test]
-    fn test_builder() {}
 }

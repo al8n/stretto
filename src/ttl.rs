@@ -5,19 +5,14 @@ use std::hash::BuildHasher;
 use std::ops::{Deref, DerefMut};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// (1969*365 + 1969/4 - 1969/100 + 1969/400) * (60 * 60 * 24)
-const UNIX_TO_INTERNAL: u64 = 62135596800;
-
-const BUCKET_DURATION_SECS: i64 = 5;
-
-fn storage_bucket<const N: i64>(t: Time) -> i64 {
-    (t.unix() / N) + 1
+fn storage_bucket(t: Time) -> i64 {
+    (t.unix() + 1) as i64
 }
 
 fn cleanup_bucket(t: Time) -> i64 {
     // The bucket to cleanup is always behind the storage bucket by one so that
     // no elements in that bucket (which might not have expired yet) are deleted.
-    storage_bucket::<BUCKET_DURATION_SECS>(t) - 1
+    storage_bucket(t) - 1
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
@@ -45,12 +40,16 @@ impl Time {
         self.d.is_zero()
     }
 
-    pub fn unix(&self) -> i64 {
-        (self
-            .created_at
+    pub fn unix(&self) -> u64 {
+        self.created_at
             .duration_since(UNIX_EPOCH)
+            .map(|d| d + self.d)
             .unwrap()
-            .as_secs()) as i64
+            .as_secs()
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        self.created_at.elapsed().unwrap()
     }
 
     pub fn is_expired(&self) -> bool {
@@ -117,7 +116,9 @@ impl Default for ExpirationMap {
 
 impl ExpirationMap {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            buckets: RwLock::new(RefCell::new(HashMap::new())),
+        }
     }
 }
 
@@ -134,7 +135,7 @@ impl<BS: BuildHasher + Default, S: BuildHasher> ExpirationMap<BS, S> {
             return;
         }
 
-        let bucket_num = storage_bucket::<BUCKET_DURATION_SECS>(expiration);
+        let bucket_num = storage_bucket(expiration);
 
         let m = self.buckets.read();
 
@@ -157,11 +158,10 @@ impl<BS: BuildHasher + Default, S: BuildHasher> ExpirationMap<BS, S> {
         }
 
         let m = self.buckets.read();
-        let (old_bucket_num, new_bucket_num) = (
-            storage_bucket::<BUCKET_DURATION_SECS>(old_exp_time),
-            storage_bucket::<BUCKET_DURATION_SECS>(new_exp_time),
-        );
-
+        let (old_bucket_num, new_bucket_num) =
+            (storage_bucket(old_exp_time), storage_bucket(new_exp_time));
+        eprintln!("old: {} {:?}", old_bucket_num, old_exp_time);
+        eprintln!("new: {} {:?}", new_bucket_num, new_exp_time);
         if old_bucket_num == new_bucket_num {
             return;
         }
@@ -181,12 +181,21 @@ impl<BS: BuildHasher + Default, S: BuildHasher> ExpirationMap<BS, S> {
         }
     }
 
-    pub fn remove(&self, key: u64, expiration: Time) {
-        let bucket_num = storage_bucket::<BUCKET_DURATION_SECS>(expiration);
+    pub fn remove(&self, key: &u64, expiration: Time) {
+        let bucket_num = storage_bucket(expiration);
         let m = self.buckets.read();
         if let Some(bucket) = m.borrow_mut().get_mut(&bucket_num) {
-            bucket.remove(&key);
+            bucket.remove(key);
         };
+    }
+
+    pub fn cleanup(&self, now: Time) -> Option<HashMap<u64, u64, BS>> {
+        let bucket_num = cleanup_bucket(now);
+        self.buckets
+            .read()
+            .borrow_mut()
+            .remove(&bucket_num)
+            .map(|bucket| bucket.map)
     }
 }
 

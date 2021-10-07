@@ -38,9 +38,9 @@ impl<const BS: usize, const CPB: usize> Histogram<BS, CPB> {
 
     /// Returns HistogramData base on the min exponent and max exponent. The bounds are powers of two of the form
     /// [2^min_exponent, ..., 2^max_exponent].
-    pub fn from_exponents(min_exp: u32, max_exp: u32) -> Self {
-        Self::new((min_exp..=max_exp).map(|idx| (1 << idx) as f64).collect())
-    }
+    // pub fn from_exponents(min_exp: u32, max_exp: u32) -> Self {
+    //     Self::new((min_exp..=max_exp).map(|idx| (1 << idx) as f64).collect())
+    // }
 
     /// `update` changes the Min and Max fields if value is less than or greater than the current values.
     pub fn update(&self, val: i64) {

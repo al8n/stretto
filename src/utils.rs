@@ -1,10 +1,15 @@
+use crate::error::CacheError;
 use crate::store::StoreItem;
+use crossbeam::channel::Sender;
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
 use std::cell::UnsafeCell;
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::hash::BuildHasher;
+use std::ptr::NonNull;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 pub struct ValueRef<'a, V, S = RandomState> {
     guard: RwLockReadGuard<'a, HashMap<u64, StoreItem<V>, S>>,
@@ -75,8 +80,10 @@ impl<'a, V, S: BuildHasher> ValueRefMut<'a, V, S> {
 }
 
 impl<'a, V: Copy, S: BuildHasher> ValueRefMut<'a, V, S> {
-    pub fn read(&self) -> V {
-        *self.val
+    pub fn read(self) -> V {
+        let v = *self.val;
+        drop(self);
+        v
     }
 }
 
@@ -168,4 +175,70 @@ pub(crate) unsafe fn change_lifetime_const<'a, 'b, T>(x: &'a T) -> &'b T {
 /// The object has to outlive the reference.
 pub(crate) unsafe fn change_lifetime_mut<'a, 'b, T>(x: &'a mut T) -> &'b mut T {
     &mut *(x as *mut T)
+}
+
+#[repr(transparent)]
+pub(crate) struct SharedNonNull<T: ?Sized> {
+    ptr: NonNull<T>,
+}
+
+impl<T> SharedNonNull<T> {
+    pub fn new(ptr: *mut T) -> Self {
+        unsafe {
+            Self {
+                ptr: NonNull::new_unchecked(ptr),
+            }
+        }
+    }
+
+    pub unsafe fn as_ref(&self) -> &T {
+        self.ptr.as_ref()
+    }
+}
+
+impl<T: ?Sized> Copy for SharedNonNull<T> {}
+
+impl<T: ?Sized> Clone for SharedNonNull<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+unsafe impl<T> Send for SharedNonNull<T> {}
+unsafe impl<T> Sync for SharedNonNull<T> {}
+
+pub(crate) struct CloseableSender<T> {
+    pub tx: Sender<T>,
+    closed: Arc<AtomicBool>,
+}
+
+impl<T> CloseableSender<T> {
+    pub fn new(tx: Sender<T>) -> Self {
+        Self {
+            tx,
+            closed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub(crate) fn send(&self, msg: T) -> Result<(), CacheError> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(CacheError::ClosedChannel);
+        }
+        self.tx
+            .send(msg)
+            .map_err(|e| CacheError::SendError(format!("{}", e)))
+    }
+
+    pub(crate) fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst)
+    }
+}
+
+impl<T> Clone for CloseableSender<T> {
+    fn clone(&self) -> Self {
+        Self {
+            tx: self.tx.clone(),
+            closed: self.closed.clone(),
+        }
+    }
 }

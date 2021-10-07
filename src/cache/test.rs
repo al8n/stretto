@@ -1,0 +1,379 @@
+use crate::cache::{Cache, Item};
+use crate::{
+    CacheCallback, CacheKeyHasher, Coster, Item as CrateItem, KeyHasher, TransparentCacheKeyHasher,
+};
+use crossbeam::channel::bounded;
+use parking_lot::Mutex;
+use rand::{thread_rng, Rng};
+use std::collections::HashSet;
+use std::hash::Hash;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::thread::{sleep, spawn};
+use std::time::Duration;
+
+static CHARSET: &'static [u8] = "abcdefghijklmnopqrstuvwxyz0123456789".as_bytes();
+
+fn new_test_cache<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyHasher<K>>(
+    kh: KH,
+) -> Cache<K, V, KH> {
+    Cache::new(100, 10, kh).unwrap()
+}
+
+fn retry_set(
+    c: Arc<Cache<u64, u64, TransparentCacheKeyHasher>>,
+    key: u64,
+    val: u64,
+    cost: i64,
+    ttl: Duration,
+) {
+    loop {
+        let insert = c.insert_with_ttl(key, val, cost, ttl);
+        if !insert {
+            sleep(Duration::from_millis(100));
+            continue;
+        }
+        sleep(Duration::from_millis(100));
+        assert_eq!(c.get(&key).unwrap().read(), val);
+        return;
+    }
+}
+
+#[test]
+fn test_cache_key_to_hash() {
+    let ctr = Arc::new(AtomicU64::new(0));
+
+    struct KHTest {
+        ctr: Arc<AtomicU64>,
+    }
+
+    impl KeyHasher<u64> for KHTest {
+        fn hash_key(&self, k: &u64) -> (u64, u64) {
+            self.ctr.fetch_add(1, Ordering::SeqCst);
+            (*k, 0)
+        }
+    }
+
+    let c: Cache<u64, u64, KHTest> = Cache::new(10, 1000, KHTest { ctr: ctr.clone() }).unwrap();
+
+    assert!(c.insert(1, 1, 1));
+    sleep(Duration::from_millis(10));
+
+    loop {
+        match c.get(&1) {
+            None => continue,
+            Some(val) => {
+                assert_eq!(val.read(), 1);
+                c.remove(&1);
+                assert_eq!(3, ctr.load(Ordering::SeqCst));
+                break;
+            }
+        }
+    }
+}
+
+#[test]
+fn test_cache_max_cost() {
+    fn key() -> [u8; 2] {
+        let mut rng = thread_rng();
+        let k1 = CHARSET[rng.gen::<usize>() % CHARSET.len()];
+        let k2 = CHARSET[rng.gen::<usize>() % CHARSET.len()];
+        [k1, k2]
+    }
+
+    let c = Cache::builder(12960, 1e6 as i64, CacheKeyHasher::default())
+        .set_buffer_size(64)
+        .set_metrics(true)
+        .finalize()
+        .unwrap();
+
+    let c = Arc::new(c);
+    let (stop_tx, stop_rx) = bounded::<()>(8);
+
+    for _ in 0..8 {
+        let rx = stop_rx.clone();
+        let tc = c.clone();
+
+        spawn(move || loop {
+            select! {
+                recv(rx) -> _ => return,
+                default => {
+                    let k = key();
+                    match tc.get(&k) {
+                        None => {
+                            let mut rng = thread_rng();
+                            let rv = rng.gen::<usize>() % 100;
+                            let val: String;
+                            if rv < 10 {
+                                val = "test".to_string();
+                            } else {
+                                val = vec!["a"; 1000].join("");
+                            }
+                            let cost = val.len() + 2;
+                            tc.insert(key(), val, cost as i64);
+                        },
+                        Some(_) => {},
+                    }
+                }
+            }
+        });
+    }
+
+    for _ in 0..20 {
+        sleep(Duration::from_secs(1));
+        let cost = c.metrics.get_cost_added().unwrap() - c.metrics.get_cost_evicted().unwrap();
+        eprintln!("total cache cost: {}", cost);
+        // assert!(cost as f64 <= (1e6 * 1.05));
+    }
+    for _ in 0..8 {
+        let _ = stop_tx.send(());
+    }
+}
+
+#[test]
+fn test_cache_update_max_cost() {
+    let c = Cache::builder(10, 10, TransparentCacheKeyHasher::default())
+        .finalize()
+        .unwrap();
+
+    assert_eq!(c.max_cost(), 10);
+    assert!(c.insert(1, 1, 1));
+
+    sleep(Duration::from_secs(1));
+    // Set is rejected because the cost of the entry is too high
+    // when accounting for the internal cost of storing the entry.
+    assert!(c.get(&1).is_none());
+
+    // Update the max cost of the cache and retry.
+    c.update_max_cost(1000);
+    assert_eq!(c.max_cost(), 1000);
+    assert!(c.insert(1, 1, 1));
+
+    loop {
+        match c.get(&1) {
+            None => continue,
+            Some(val) => {
+                assert_eq!(val.read(), 1);
+                break;
+            }
+        }
+    }
+    c.remove(&1);
+}
+
+#[test]
+fn test_cache_clear() {
+    let c: Cache<i64, i64, TransparentCacheKeyHasher> =
+        Cache::new(100, 10, TransparentCacheKeyHasher::default()).unwrap();
+    c.clear().unwrap();
+}
+
+#[test]
+fn test_cache_multiple_close() {
+    let c: Cache<i64, i64, TransparentCacheKeyHasher> =
+        Cache::new(100, 10, TransparentCacheKeyHasher::default()).unwrap();
+
+    let _ = c.close();
+    let _ = c.close();
+}
+
+#[test]
+fn test_cache_insert_after_close() {
+    let c =
+        new_test_cache::<u64, u64, TransparentCacheKeyHasher>(TransparentCacheKeyHasher::default());
+    let _ = c.close();
+    assert!(!c.insert(1, 1, 1));
+}
+
+#[test]
+fn test_cache_clear_after_close() {
+    let c =
+        new_test_cache::<u64, u64, TransparentCacheKeyHasher>(TransparentCacheKeyHasher::default());
+    let _ = c.close();
+    let _ = c.clear();
+}
+
+#[test]
+fn test_cache_get_after_close() {
+    let c =
+        new_test_cache::<u64, u64, TransparentCacheKeyHasher>(TransparentCacheKeyHasher::default());
+    assert!(c.insert(1, 1, 1));
+    let _ = c.close();
+
+    assert!(c.get(&1).is_none());
+}
+
+#[test]
+fn test_cache_remove_after_close() {
+    let c =
+        new_test_cache::<u64, u64, TransparentCacheKeyHasher>(TransparentCacheKeyHasher::default());
+    assert!(c.insert(1, 1, 1));
+    let _ = c.close();
+
+    c.remove(&1);
+}
+
+#[test]
+fn test_cache_process_items() {
+    #[derive(Default)]
+    struct TestCoster {}
+
+    impl Coster<u64> for TestCoster {
+        fn cost(&self, val: &u64) -> i64 {
+            *val as i64
+        }
+    }
+
+    struct TestCallback {
+        evicted: Arc<Mutex<HashSet<u64>>>,
+    }
+
+    impl Default for TestCallback {
+        fn default() -> Self {
+            Self {
+                evicted: Arc::new(Mutex::new(HashSet::new())),
+            }
+        }
+    }
+
+    impl TestCallback {
+        fn new(map: Arc<Mutex<HashSet<u64>>>) -> Self {
+            Self { evicted: map }
+        }
+    }
+
+    impl CacheCallback<u64> for TestCallback {
+        fn on_exit(&self, _val: Option<u64>) {}
+
+        fn on_evict(&self, item: CrateItem<u64>) {
+            let mut evicted = self.evicted.lock();
+            evicted.insert(item.key);
+            self.on_exit(item.val)
+        }
+    }
+
+    let cb = Arc::new(Mutex::new(HashSet::new()));
+    let c = Cache::builder(100, 10, TransparentCacheKeyHasher::default())
+        .set_coster(TestCoster::default())
+        .set_callback(TestCallback::new(cb.clone()))
+        .set_ignore_internal_cost(true)
+        .finalize()
+        .unwrap();
+
+    assert!(c.insert(1, 1, 0));
+
+    sleep(Duration::from_secs(1));
+    assert!(c.policy.contains(&1));
+    assert_eq!(c.policy.cost(&1), 1);
+
+    let _ = c.insert_if_present(1, 2, 0);
+    sleep(Duration::from_secs(1));
+    assert_eq!(c.policy.cost(&1), 2);
+
+    c.remove(&1);
+    sleep(Duration::from_secs(1));
+    assert!(c.store.get(&1, 0).is_none());
+    assert!(!c.policy.contains(&1));
+
+    c.insert(2, 2, 3);
+    c.insert(3, 3, 3);
+    c.insert(4, 3, 3);
+    c.insert(5, 3, 5);
+    sleep(Duration::from_secs(1));
+    assert_ne!(cb.lock().len(), 0);
+
+    let _ = c.close();
+    assert!(c.insert_buf_tx.send(Item::delete(1, 1)).is_err());
+}
+
+#[test]
+fn test_cache_get() {
+    let c = Cache::builder(100, 10, TransparentCacheKeyHasher::default())
+        .set_ignore_internal_cost(true)
+        .set_metrics(true)
+        .finalize()
+        .unwrap();
+
+    c.insert(1, 1, 0);
+    sleep(Duration::from_secs(1));
+    match c.get_mut(&1) {
+        None => {}
+        Some(mut val) => {
+            val.write(10);
+        }
+    }
+
+    assert!(c.get_mut(&2).is_none());
+
+    // 0.5 and not 1.0 because we tried Getting each item twice
+    assert_eq!(c.metrics.ratio().unwrap(), 0.5);
+
+    assert_eq!(c.get_mut(&1).unwrap().read(), 10);
+}
+
+#[test]
+fn test_cache_set() {
+    let c = Cache::builder(100, 10, TransparentCacheKeyHasher::default())
+        .set_ignore_internal_cost(true)
+        .set_metrics(true)
+        .finalize()
+        .unwrap();
+    let c = Arc::new(c);
+
+    retry_set(c.clone(), 1, 1, 1, Duration::ZERO);
+
+    c.insert(1, 2, 2);
+    assert_eq!(c.get(&1).unwrap().read(), 2);
+
+    let _ = c.stop_tx.send(());
+    (0..32768).for_each(|_| {
+        c.insert_buf_tx.send(Item::update(1, 1, 0));
+    });
+
+    assert!(!c.insert(2, 2, 1));
+    assert_eq!(c.metrics.get_sets_dropped().unwrap(), 1);
+}
+
+#[test]
+fn test_cache_internal_cost() {
+    let c = Cache::builder(100, 10, TransparentCacheKeyHasher::default())
+        .set_metrics(true)
+        .finalize()
+        .unwrap();
+
+    // Get should return None because the cache's cost is too small to store the item
+    // when accounting for the internal cost.
+    c.insert_with_ttl(1, 1, 1, Duration::ZERO);
+    sleep(Duration::from_millis(100));
+    assert!(c.get(&1).is_none())
+}
+
+#[test]
+fn test_recache_with_ttl() {
+    let c = Cache::builder(100, 10, TransparentCacheKeyHasher::default())
+        .set_ignore_internal_cost(true)
+        .set_metrics(true)
+        .finalize()
+        .unwrap();
+
+    // Set initial value for key = 1
+    assert!(c.insert_with_ttl(1, 1, 1, Duration::from_secs(5)));
+
+    sleep(Duration::from_secs(2));
+
+    // Get value from cache for key = 1
+    assert_eq!(c.get(&1).unwrap().read(), 1);
+
+    // wait for expiration
+    sleep(Duration::from_secs(5));
+
+    // The cached value for key = 1 should be gone
+    assert!(c.get(&1).is_none());
+
+    // set new value for key = 1
+    assert!(c.insert_with_ttl(1, 2, 1, Duration::from_secs(5)));
+
+    sleep(Duration::from_secs(2));
+    // get value from cache for key = 1;
+    assert_eq!(c.get(&1).unwrap().read(), 2);
+}

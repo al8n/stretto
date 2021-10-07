@@ -1,6 +1,5 @@
 use crate::{
     bbloom::Bloom,
-    cache::ItemMeta,
     error::CacheError,
     metrics::{MetricType, Metrics},
     sketch::CountMinSketch,
@@ -20,9 +19,9 @@ use std::{
 const DEFAULT_SAMPLES: usize = 5;
 
 #[derive(Copy, Clone, Debug, Default)]
-struct PolicyPair {
-    key: u64,
-    cost: i64,
+pub(crate) struct PolicyPair {
+    pub(crate) key: u64,
+    pub(crate) cost: i64,
 }
 
 impl PolicyPair {
@@ -105,7 +104,7 @@ impl LFUPolicy {
         }
     }
 
-    pub fn add(&self, key: u64, cost: i64) -> (Option<Vec<ItemMeta>>, bool) {
+    pub fn add(&self, key: u64, cost: i64) -> (Option<Vec<PolicyPair>>, bool) {
         let mut inner = self.inner.lock();
         let max_cost = inner.costs.get_max_cost();
 
@@ -115,7 +114,7 @@ impl LFUPolicy {
         }
 
         // no need to go any further if the item is already in the cache
-        if inner.costs.update(key, cost) {
+        if inner.costs.update(&key, cost) {
             // an update does not count as an addition, so return false.
             return (None, false);
         }
@@ -171,14 +170,14 @@ impl LFUPolicy {
             }
 
             // Delete the victim from metadata.
-            inner.costs.remove(min_key);
+            inner.costs.remove(&min_key);
 
             // Delete the victim from sample.
             let new_len = sample.len() - 1;
             sample[min_id] = sample[new_len];
             sample.drain(new_len..);
             // store victim in evicted victims slice
-            victims.push(ItemMeta::new(min_key, min_cost, 0));
+            victims.push(PolicyPair::new(min_key, min_cost));
 
             room = inner.costs.room_left(cost);
         }
@@ -190,12 +189,12 @@ impl LFUPolicy {
         (Some(victims), true)
     }
 
-    pub fn contains(&self, k: u64) -> bool {
+    pub fn contains(&self, k: &u64) -> bool {
         let inner = self.inner.lock();
         inner.costs.contains(k)
     }
 
-    pub fn remove(&self, k: u64) {
+    pub fn remove(&self, k: &u64) {
         let mut inner = self.inner.lock();
         inner.costs.remove(k);
     }
@@ -205,17 +204,17 @@ impl LFUPolicy {
         inner.costs.get_max_cost() - inner.costs.used
     }
 
-    pub fn update(&self, k: u64, cost: i64) {
+    pub fn update(&self, k: &u64, cost: i64) {
         let mut inner = self.inner.lock();
         inner.costs.update(k, cost);
     }
 
-    pub fn cost(&self, k: u64) -> i64 {
+    pub fn cost(&self, k: &u64) -> i64 {
         let inner = self.inner.lock();
-        inner.costs.key_costs.get(&k).map_or(-1, |cost| *cost)
+        inner.costs.key_costs.get(k).map_or(-1, |cost| *cost)
     }
 
-    pub fn clear(&mut self) {
+    pub fn clear(&self) {
         let mut inner = self.inner.lock();
         inner.admit.clear();
         inner.costs.clear();
@@ -402,16 +401,16 @@ impl<S: BuildHasher> SampledLFU<S> {
 
     /// Remove an entry from SampledLFU by hashed key
     #[inline]
-    pub fn remove(&mut self, kh: u64) -> Option<i64> {
-        self.key_costs.remove(&kh).map(|cost| {
+    pub fn remove(&mut self, kh: &u64) -> Option<i64> {
+        self.key_costs.remove(kh).map(|cost| {
             self.used -= cost;
             cost
         })
     }
 
     #[inline]
-    pub fn contains(&self, k: u64) -> bool {
-        self.key_costs.contains_key(&k)
+    pub fn contains(&self, k: &u64) -> bool {
+        self.key_costs.contains_key(k)
     }
 
     /// Clear the SampledLFU
@@ -422,13 +421,14 @@ impl<S: BuildHasher> SampledLFU<S> {
     }
 
     /// Update the cost by hashed key. If the provided key in SampledLFU, then update it and return true, otherwise false.
-    pub fn update(&mut self, k: u64, cost: i64) -> bool {
+    pub fn update(&mut self, k: &u64, cost: i64) -> bool {
         // Update the cost of an existing key, but don't worry about evicting.
         // Evictions will be handled the next time a new item is added
-        match self.key_costs.get_mut(&k) {
+        match self.key_costs.get_mut(k) {
             None => false,
             Some(prev) => {
                 let prev_val = *prev;
+                let k = *k;
                 if let Some(ref m) = self.metrics {
                     m.add(MetricType::KeyUpdate, k, 1);
                     if prev_val > cost {
@@ -636,18 +636,18 @@ mod test {
     fn test_policy_has() {
         let p = LFUPolicy::new(100, 10).unwrap();
         p.add(1, 1);
-        assert!(p.contains(1));
-        assert!(!p.contains(2));
+        assert!(p.contains(&1));
+        assert!(!p.contains(&2));
     }
 
     #[test]
     fn test_policy_del() {
         let p = LFUPolicy::new(100, 10).unwrap();
         p.add(1, 1);
-        p.remove(1);
-        p.remove(2);
-        assert!(!p.contains(1));
-        assert!(!p.contains(2));
+        p.remove(&1);
+        p.remove(&2);
+        assert!(!p.contains(&1));
+        assert!(!p.contains(&2));
     }
 
     #[test]
@@ -661,7 +661,7 @@ mod test {
     fn test_policy_update() {
         let p = LFUPolicy::new(100, 10).unwrap();
         p.add(1, 1);
-        p.update(1, 2);
+        p.update(&1, 2);
         let inner = p.inner.lock();
         assert_eq!(inner.costs.key_costs.get(&1).unwrap(), &2);
     }
@@ -670,22 +670,22 @@ mod test {
     fn test_policy_cost() {
         let p = LFUPolicy::new(100, 10).unwrap();
         p.add(1, 2);
-        assert_eq!(p.cost(1), 2);
-        assert_eq!(p.cost(2), -1);
+        assert_eq!(p.cost(&1), 2);
+        assert_eq!(p.cost(&2), -1);
     }
 
     #[test]
     fn test_policy_clear() {
-        let mut p = LFUPolicy::new(100, 10).unwrap();
+        let p = LFUPolicy::new(100, 10).unwrap();
         p.add(1, 1);
         p.add(2, 2);
         p.add(3, 3);
         p.clear();
 
         assert_eq!(p.cap(), 10);
-        assert!(!p.contains(2));
-        assert!(!p.contains(2));
-        assert!(!p.contains(3));
+        assert!(!p.contains(&2));
+        assert!(!p.contains(&2));
+        assert!(!p.contains(&3));
     }
 
     #[test]
@@ -716,10 +716,10 @@ mod test {
         let mut lfu = SampledLFU::new(4);
         lfu.increment(1, 1);
         lfu.increment(2, 2);
-        assert_eq!(lfu.remove(2), Some(2));
+        assert_eq!(lfu.remove(&2), Some(2));
         assert_eq!(lfu.used, 1);
         assert_eq!(lfu.key_costs.get(&2), None);
-        assert_eq!(lfu.remove(4), None);
+        assert_eq!(lfu.remove(&4), None);
     }
 
     #[test]
@@ -747,11 +747,11 @@ mod test {
         let mut l = SampledLFU::new(5);
         l.increment(1, 1);
         l.increment(2, 2);
-        assert!(l.update(1, 2));
+        assert!(l.update(&1, 2));
         assert_eq!(4, l.used);
-        assert!(l.update(2, 3));
+        assert!(l.update(&2, 3));
         assert_eq!(5, l.used);
-        assert!(!l.update(3, 3));
+        assert!(!l.update(&3, 3));
     }
 
     #[test]
@@ -766,7 +766,7 @@ mod test {
         assert_ne!(2, k);
         assert_ne!(3, k);
         assert_eq!(sample.len(), l.fill_sample(sample.clone()).len());
-        l.remove(5);
+        l.remove(&5);
         let sample = l.fill_sample(sample[0..(sample.len() - 2)].to_vec());
         assert_eq!(4, sample.len())
     }

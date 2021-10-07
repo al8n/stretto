@@ -85,8 +85,125 @@ impl Display for MetricType {
 /// Metrics is a snapshot of performance statistics for the lifetime of a cache instance.
 ///
 /// Metrics promises thread-safe.
+pub enum Metrics {
+    Noop,
+    Op(MetricsInner),
+}
+
+impl Metrics {
+    pub fn new() -> Self {
+        Self::Noop
+    }
+
+    pub fn new_op() -> Self {
+        Self::Op(MetricsInner::new())
+    }
+
+    pub(crate) fn track_eviction(&self, num_seconds: i64) {
+        match self {
+            Metrics::Noop => return,
+            Metrics::Op(m) => m.life.update(num_seconds),
+        }
+    }
+
+    pub(crate) fn add(&self, typ: MetricType, hash: u64, delta: u64) -> bool {
+        match self {
+            Metrics::Noop => false,
+            Metrics::Op(m) => {
+                m.add(typ, hash, delta);
+                true
+            }
+        }
+    }
+
+    /// Returns the number of Get calls where a value was found for the corresponding key.
+    pub fn get_hits(&self) -> Option<u64> {
+        self.map(|ref m| m.get(&MetricType::Hit))
+    }
+
+    /// Returns the number of Get calls where a value was not found for the corresponding key.
+    pub fn get_misses(&self) -> Option<u64> {
+        self.map(|ref m| m.get(&MetricType::Miss))
+    }
+
+    /// Returns the total number of Set calls where a new key-value item was added.
+    pub fn get_keys_added(&self) -> Option<u64> {
+        self.map(|ref m| m.get(&MetricType::KeyAdd))
+    }
+
+    /// Returns the total number of Set calls where a new key-value item was updated.
+    pub fn get_keys_updated(&self) -> Option<u64> {
+        self.map(|ref m| m.get(&MetricType::KeyUpdate))
+    }
+
+    /// Returns the total number of keys evicted.
+    pub fn get_keys_evicted(&self) -> Option<u64> {
+        self.map(|ref m| m.get(&MetricType::KeyEvict))
+    }
+
+    /// Returns the sum of costs that have been added (successful Set calls).
+    pub fn get_cost_added(&self) -> Option<u64> {
+        self.map(|ref m| m.get(&MetricType::CostAdd))
+    }
+
+    /// Returns the sum of all costs that have been evicted.
+    pub fn get_cost_evicted(&self) -> Option<u64> {
+        self.map(|ref m| m.get(&MetricType::CostEvict))
+    }
+
+    /// Returns the number of Set calls that don't make it into internal
+    /// buffers (due to contention or some other reason).
+    pub fn get_sets_dropped(&self) -> Option<u64> {
+        self.map(|ref m| m.get(&MetricType::DropSets))
+    }
+
+    /// Returns the number of Set calls rejected by the policy (TinyLFU).
+    pub fn get_sets_rejected(&self) -> Option<u64> {
+        self.map(|ref m| m.get(&MetricType::RejectSets))
+    }
+
+    /// Returns the number of Get counter increments that are dropped
+    /// internally.
+    pub fn get_gets_dropped(&self) -> Option<u64> {
+        self.map(|ref m| m.get(&MetricType::DropGets))
+    }
+
+    /// Returns the number of Get counter increments that are kept.
+    pub fn get_gets_kept(&self) -> Option<u64> {
+        self.map(|ref m| m.get(&MetricType::KeepGets))
+    }
+
+    /// Ratio is the number of Hits over all accesses (Hits + Misses). This is the
+    /// percentage of successful Get calls.
+    pub fn ratio(&self) -> Option<f64> {
+        self.map(|ref m| m.ratio())
+    }
+
+    /// Returns the histogram data of this metrics
+    pub fn life_expectancy_seconds(
+        &self,
+    ) -> Option<Histogram<HISTOGRAM_BOUND_SIZE, HISTOGRAM_COUNT_PER_BUCKET_SIZE>> {
+        self.map(|ref m| m.life.clone())
+    }
+
+    /// clear resets all the metrics
+    pub fn clear(&self) {
+        match self {
+            Metrics::Noop => {}
+            Metrics::Op(m) => m.clear(),
+        }
+    }
+
+    fn map<U, F: FnOnce(&MetricsInner) -> U>(&self, f: F) -> Option<U> {
+        match self {
+            Metrics::Noop => None,
+            Metrics::Op(m) => Some(f(m)),
+        }
+    }
+}
+
 #[derive(Clone)]
-pub struct Metrics {
+pub struct MetricsInner {
     /// use Arc and AtomicU64 implement lock-free fearless-concurrency
     all: Arc<BTreeMap<MetricType, [AtomicU64; SIZE_FOR_EACH_TYPE]>>,
 
@@ -94,7 +211,7 @@ pub struct Metrics {
     life: Histogram<HISTOGRAM_BOUND_SIZE, HISTOGRAM_COUNT_PER_BUCKET_SIZE>,
 }
 
-impl Metrics {
+impl MetricsInner {
     pub fn new() -> Self {
         let h = Histogram::<HISTOGRAM_BOUND_SIZE, HISTOGRAM_COUNT_PER_BUCKET_SIZE>::new(
             new_histogram_bound(),
@@ -228,10 +345,10 @@ impl Metrics {
 }
 
 cfg_not_serde! {
-    impl Display for Metrics {
+    impl Display for MetricsInner {
         fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
             let mut buf = Vec::new();
-            buf.extend("Metrics {\n".as_bytes());
+            buf.extend("MetricsInner {\n".as_bytes());
             METRIC_TYPES_ARRAY.iter().for_each(|typ| {
                 buf.extend(format!("  \"{}\": {},\n", typ, self.get(typ)).as_bytes());
             });
@@ -247,16 +364,16 @@ cfg_serde! {
     use serde::{Serialize, Serializer};
     use serde::ser::{SerializeStruct, Error};
 
-    impl Display for Metrics {
+    impl Display for MetricsInner {
         fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
             let str = serde_json::to_string_pretty(self).map_err( std::fmt::Error::custom)?;
-            write!(f, "Metrics {}", str)
+            write!(f, "MetricsInner {}", str)
         }
     }
 
-    impl Serialize for Metrics {
+    impl Serialize for MetricsInner {
         fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
-            let mut s = serializer.serialize_struct("Metrics", 13)?;
+            let mut s = serializer.serialize_struct("MetricsInner", 13)?;
 
             let types: [&'static str; 11] = ["hit", "miss", "keys-added", "keys-updated", "keys-evicted", "cost-added", "cost-evicted", "sets-dropped", "sets-rejected", "gets-dropped", "gets-kept"];
 
@@ -278,12 +395,12 @@ fn new_histogram_bound() -> Vec<f64> {
 
 #[cfg(test)]
 mod test {
-    use crate::metrics::{MetricType, Metrics};
+    use crate::metrics::{MetricType, MetricsInner};
     use crate::{cfg_not_serde, cfg_serde};
 
     #[test]
     fn test_metrics() {
-        let m = Metrics::new();
+        let m = MetricsInner::new();
         println!(
             "{:?}",
             m.all.keys().map(|typ| *typ).collect::<Vec<MetricType>>()
@@ -294,17 +411,17 @@ mod test {
     cfg_serde!(
         #[test]
         fn test_display() {
-            let m = Metrics::new();
+            let m = MetricsInner::new();
             let ms = serde_json::to_string_pretty(&m).unwrap();
-            assert_eq!(format!("{}", m), format!("Metrics {}", ms));
+            assert_eq!(format!("{}", m), format!("MetricsInner {}", ms));
         }
     );
 
     cfg_not_serde!(
         #[test]
         fn test_display() {
-            let m = Metrics::new();
-            let exp = "Metrics {
+            let m = MetricsInner::new();
+            let exp = "MetricsInner {
   \"hit\": 0,
   \"miss\": 0,
   \"keys-added\": 0,
