@@ -57,6 +57,18 @@ impl Time {
             .elapsed()
             .map_or(false, |d| if d >= self.d { true } else { false })
     }
+
+    pub fn get_ttl(&self) -> Duration {
+        if self.d.is_zero() {
+            return Duration::MAX;
+        }
+        let elapsed = self.created_at.elapsed().unwrap();
+        if elapsed >= self.d {
+            Duration::ZERO
+        } else {
+            self.d - elapsed
+        }
+    }
 }
 
 /// Bucket is a map of key to conflict.
@@ -160,8 +172,7 @@ impl<BS: BuildHasher + Default, S: BuildHasher> ExpirationMap<BS, S> {
         let m = self.buckets.read();
         let (old_bucket_num, new_bucket_num) =
             (storage_bucket(old_exp_time), storage_bucket(new_exp_time));
-        eprintln!("old: {} {:?}", old_bucket_num, old_exp_time);
-        eprintln!("new: {} {:?}", new_bucket_num, new_exp_time);
+
         if old_bucket_num == new_bucket_num {
             return;
         }

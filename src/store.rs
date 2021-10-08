@@ -157,6 +157,7 @@ impl<V: Send + Sync + 'static, U: UpdateValidator<V>> ShardedMap<V, U> {
 
                 self.em.update(key, conflict, item.expiration, expiration);
                 mem::swap(&mut val, &mut item.value.get_mut());
+                item.expiration = expiration;
                 UpdateResult::Update(val)
             }
         }

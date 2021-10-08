@@ -145,43 +145,7 @@ pub trait KeyHasher<K: Hash + Eq + ?Sized> {
     fn hash_key(&self, k: &K) -> (u64, u64);
 }
 
-/// DefaultKeyHasher supports some popular type for cache's key:
-///
-/// For the below types, the DefaultKeyHasher will do nothing but passthrough, the result is (T as u64, 0)
-/// - `u8`, `u16`, `u32`, `u64`, `usize`
-/// - `i8`, `i16`, `i32`, `i64`, `isize`
-/// - `bool`
-///
-/// For the below types, DefaultKeyHasher will use SipHasher and XxHash64 to hash key
-/// - `String`, `&str`, `Vec<u8>`, `[u8]`
-///
-/// If you want to use other type as key, you can use `impl_default_key_hasher` macro or write a new impl.
-///
-/// For example:
-/// ```rust
-/// use ristretto::{impl_default_key_hasher, KeyHasher, DefaultKeyHasher};
-/// use std::hash::{Hash, Hasher};
-///
-/// #[derive(Hash, Eq)]
-/// struct Bytes([u8]);
-/// impl_default_key_hasher! {
-///     Bytes
-/// }
-///
-/// struct NewImpl;
-///
-/// impl KeyHasher<NewImpl> for DefaultKeyHasher {
-///
-///     fn hash_key(&self, k: &NewImpl) -> (u64, u64) {
-///         let mut s = self.build_sip_hasher();
-///         k.hash(&mut s);
-///         let mut x = self.build_xx_hasher();
-///         k.hash(&mut x);
-///         (s.finish(), !x.finish())
-///     }
-/// }
-///
-/// ```
+/// CacheKeyHasher supports some popular type for cache's key:
 #[derive(Debug)]
 pub struct CacheKeyHasher {
     s: RandomState,

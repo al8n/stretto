@@ -524,14 +524,14 @@ impl<
         }
     }
 
-    // GetTTL returns the TTL for the specified key and a bool that is true if the
+    // GetTTL returns the TTL for the specified key if the
     // item was found and is not expired.
-    pub fn get_ttl(&self, key: K) -> Option<Time> {
-        let (kh, ch) = self.key_to_hash.hash_key(&key);
-        match self.store.get(&kh, ch) {
-            None => None,
-            Some(_) => self.store.expiration(&kh),
-        }
+    pub fn get_ttl(&self, key: &K) -> Option<Duration> {
+        let (kh, ch) = self.key_to_hash.hash_key(key);
+        self.store.get(&kh, ch)
+            .and_then(|_| self.store.expiration(&kh)
+                .map(|time| time.get_ttl())
+            )
     }
 
     /// `insert` attempts to add the key-value item to the cache. If it returns false,
@@ -695,11 +695,10 @@ impl<
                 if only_update {
                     None
                 } else {
-                    Some(Item::new(key_hash, conflict_hash, cost, v, expiration))
+                    Some(Item::new(key_hash, conflict_hash, cost + external_cost, v, expiration))
                 }
             }
             UpdateResult::Update(v) => {
-                eprintln!("asdasdasd");
                 self.callback.on_exit(Some(v));
                 Some(Item::update(key_hash, cost, external_cost))
             }
@@ -807,7 +806,7 @@ impl<V: Send + Sync + 'static, C: Coster<V>, U: UpdateValidator<V>, CB: CacheCal
                 value,
                 expiration,
             } => {
-                let cost = self.recalculate_cost(cost, &value);
+                let cost = self.calculate_internal_cost(cost);
                 let (victims, added) = self.policy.add(key, cost);
 
                 if added {
@@ -857,12 +856,6 @@ impl<V: Send + Sync + 'static, C: Coster<V>, U: UpdateValidator<V>, CB: CacheCal
                 drop(wg);
             }
         }
-    }
-
-    #[inline]
-    fn recalculate_cost(&self, cost: i64, val: &V) -> i64 {
-        let cost = self.coster.cost(val);
-        self.calculate_internal_cost(cost)
     }
 
     #[inline]

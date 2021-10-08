@@ -1,7 +1,5 @@
 use crate::cache::{Cache, Item};
-use crate::{
-    CacheCallback, CacheKeyHasher, Coster, Item as CrateItem, KeyHasher, TransparentCacheKeyHasher,
-};
+use crate::{CacheCallback, CacheKeyHasher, Coster, Item as CrateItem, KeyHasher, TransparentCacheKeyHasher, UpdateValidator};
 use crossbeam::channel::bounded;
 use parking_lot::Mutex;
 use rand::{thread_rng, Rng};
@@ -20,8 +18,8 @@ fn new_test_cache<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyHasher<K>>(
     Cache::new(100, 10, kh).unwrap()
 }
 
-fn retry_set(
-    c: Arc<Cache<u64, u64, TransparentCacheKeyHasher>>,
+fn retry_set<C: Coster<u64>, U: UpdateValidator<u64>,CB: CacheCallback<u64>>(
+    c: Arc<Cache<u64, u64, TransparentCacheKeyHasher, C, U, CB>>,
     key: u64,
     val: u64,
     cost: i64,
@@ -36,6 +34,24 @@ fn retry_set(
         sleep(Duration::from_millis(100));
         assert_eq!(c.get(&key).unwrap().read(), val);
         return;
+    }
+}
+
+struct TestCallback {
+    evicted: Arc<Mutex<HashSet<u64>>>,
+}
+
+impl Default for TestCallback {
+    fn default() -> Self {
+        Self {
+            evicted: Arc::new(Mutex::new(HashSet::new())),
+        }
+    }
+}
+
+impl TestCallback {
+    fn new(map: Arc<Mutex<HashSet<u64>>>) -> Self {
+        Self { evicted: map }
     }
 }
 
@@ -162,13 +178,6 @@ fn test_cache_update_max_cost() {
 }
 
 #[test]
-fn test_cache_clear() {
-    let c: Cache<i64, i64, TransparentCacheKeyHasher> =
-        Cache::new(100, 10, TransparentCacheKeyHasher::default()).unwrap();
-    c.clear().unwrap();
-}
-
-#[test]
 fn test_cache_multiple_close() {
     let c: Cache<i64, i64, TransparentCacheKeyHasher> =
         Cache::new(100, 10, TransparentCacheKeyHasher::default()).unwrap();
@@ -221,24 +230,6 @@ fn test_cache_process_items() {
     impl Coster<u64> for TestCoster {
         fn cost(&self, val: &u64) -> i64 {
             *val as i64
-        }
-    }
-
-    struct TestCallback {
-        evicted: Arc<Mutex<HashSet<u64>>>,
-    }
-
-    impl Default for TestCallback {
-        fn default() -> Self {
-            Self {
-                evicted: Arc::new(Mutex::new(HashSet::new())),
-            }
-        }
-    }
-
-    impl TestCallback {
-        fn new(map: Arc<Mutex<HashSet<u64>>>) -> Self {
-            Self { evicted: map }
         }
     }
 
@@ -327,7 +318,7 @@ fn test_cache_set() {
 
     let _ = c.stop_tx.send(());
     (0..32768).for_each(|_| {
-        c.insert_buf_tx.send(Item::update(1, 1, 0));
+        let _ = c.insert_buf_tx.send(Item::update(1, 1, 0));
     });
 
     assert!(!c.insert(2, 2, 1));
@@ -376,4 +367,251 @@ fn test_recache_with_ttl() {
     sleep(Duration::from_secs(2));
     // get value from cache for key = 1;
     assert_eq!(c.get(&1).unwrap().read(), 2);
+}
+
+
+#[test]
+fn test_cache_set_with_ttl() {
+    let cb = Arc::new(Mutex::new(HashSet::new()));
+    let c = Arc::new(Cache::builder(100, 10, TransparentCacheKeyHasher::default())
+        .set_callback(TestCallback::new(cb.clone()))
+        .set_ignore_internal_cost(true)
+        .finalize()
+        .unwrap());
+
+    retry_set(c.clone(), 1, 1, 1, Duration::from_secs(1));
+
+    // Sleep to make sure the item has expired after execution resumes.
+    sleep(Duration::from_secs(2));
+    assert!(c.get(&1).is_none());
+
+    // Sleep to ensure that the bucket where the item was stored has been cleared
+    // from the expiration map.
+    sleep(Duration::from_secs(5));
+    assert_eq!(cb.lock().len(), 1);
+
+    // Verify that expiration times are overwritten.
+    retry_set(c.clone(), 2, 1, 1, Duration::from_secs(1));
+    retry_set(c.clone(), 2, 2, 1, Duration::from_secs(100));
+    sleep(Duration::from_secs(3));
+    assert_eq!(c.get(&2).unwrap().read(), 2);
+
+    // Verify that entries with no expiration are overwritten.
+    retry_set(c.clone(), 3, 1, 1, Duration::ZERO);
+    retry_set(c.clone(), 3, 1, 1, Duration::from_secs(1));
+    sleep(Duration::from_secs(3));
+    assert!(c.get(&3).is_none());
+}
+
+#[test]
+fn test_cache_remove() {
+    let c = new_test_cache(TransparentCacheKeyHasher::default());
+
+    c.insert(1, 1, 1);
+    c.remove(&1);
+
+    // The deletes and sets are pushed through the setbuf. It might be possible
+    // that the delete is not processed before the following get is called. So
+    // wait for a millisecond for things to be processed.
+    sleep(Duration::from_millis(1));
+    assert!(c.get(&1).is_none());
+}
+
+#[test]
+fn test_cache_remove_with_ttl() {
+    let c = Arc::new(Cache::builder(100, 10, TransparentCacheKeyHasher::default())
+        .set_ignore_internal_cost(true)
+        .finalize()
+        .unwrap());
+
+    retry_set(c.clone(), 3, 1, 1, Duration::from_secs(10));
+    sleep(Duration::from_secs(1));
+
+    // remove the item
+    c.remove(&3);
+
+    // ensure the key is deleted
+    assert!(c.get(&3).is_none());
+}
+
+#[test]
+fn test_cache_get_ttl() {
+    let c = Arc::new(Cache::builder(100, 10, TransparentCacheKeyHasher::default())
+        .set_metrics(true)
+        .set_ignore_internal_cost(true)
+        .finalize()
+        .unwrap());
+
+    // try expiration with valid ttl item
+    {
+        let expiration = Duration::from_secs(5);
+        retry_set(c.clone(), 1, 1, 1, expiration);
+
+        assert_eq!(c.get(&1).unwrap().read(), 1);
+        assert!(c.get_ttl(&1).unwrap() < expiration);
+
+        c.remove(&1);
+
+        assert!(c.get_ttl(&1).is_none());
+    }
+
+    // try expiration with no ttl
+    {
+        retry_set(c.clone(), 2, 2, 1, Duration::ZERO);
+        assert_eq!(c.get(&2).unwrap().read(), 2);
+        assert_eq!(c.get_ttl(&2).unwrap(), Duration::MAX);
+    }
+
+    // try expiration with missing item
+    {
+        assert!(c.get_ttl(&3).is_none());
+    }
+
+    // try expiration with expired item
+    {
+        let expiration = Duration::from_secs(1);
+        retry_set(c.clone(), 3, 3, 1, expiration);
+
+        assert_eq!(c.get(&3).unwrap().read(), 3);
+        sleep(Duration::from_secs(1));
+        assert!(c.get_ttl(&3).is_none());
+    }
+}
+
+#[test]
+fn test_cache_clear() {
+    let c =
+        Cache::builder(100, 10, TransparentCacheKeyHasher::default())
+            .set_metrics(true)
+            .set_ignore_internal_cost(true)
+            .finalize()
+            .unwrap();
+
+    (0..10).for_each(|i| {
+        c.insert(i, i, 1);
+    });
+    sleep(Duration::from_millis(100));
+    assert_eq!(c.metrics.get_keys_added(), Some(10));
+    c.clear().unwrap();
+    assert_eq!(c.metrics.get_keys_added(), Some(0));
+
+    (0..10).for_each(|i| {
+        assert!(c.get(&i).is_none());
+    })
+}
+
+#[test]
+fn test_cache_metrics_clear() {
+    let c =
+        Cache::builder(100, 10, TransparentCacheKeyHasher::default())
+            .set_metrics(true)
+            .finalize()
+            .unwrap();
+
+    let c = Arc::new(c);
+    c.insert(1, 1, 1);
+
+    let (stop_tx, stop_rx) = bounded(0);
+    let tc = c.clone();
+    spawn(move || {
+        loop {
+            select! {
+                recv(stop_rx) -> _ => return,
+                default => {
+                    tc.get(&1);
+                }
+            }
+        }
+    });
+
+    sleep(Duration::from_millis(100));
+    let  _ = c.clear();
+    stop_tx.send(()).unwrap();
+    c.metrics.clear();
+}
+
+// Regression test for bug https://github.com/dgraph-io/ristretto/issues/167
+#[test]
+fn test_cache_drop_updates() {
+
+    struct TestCallback {
+        set: Arc<Mutex<HashSet<u64>>>,
+    }
+
+    impl CacheCallback<String> for TestCallback {
+        fn on_exit(&self, _val: Option<String>) {}
+
+        fn on_evict(&self, item: CrateItem<String>) {
+            let last_evicted_insert = item.val.unwrap();
+
+            assert!(!self.set.lock().contains(&last_evicted_insert.parse().unwrap()), "val = {} was dropped but it got evicted. Dropped items: {:?}", last_evicted_insert, self.set.lock().iter().map(|v| *v).collect::<Vec<u64>>());
+        }
+    }
+
+    fn test() {
+        let set = Arc::new(Mutex::new(HashSet::new()));
+        let c =
+            Cache::builder(100, 10, CacheKeyHasher::default())
+                .set_callback(TestCallback {
+                    set: set.clone(),
+                })
+                .set_metrics(true)
+                // This is important. The race condition shows up only when the insert buf
+                // is full and that's why we reduce the buf size here. The test will
+                // try to fill up the insert buf to it's capacity and then perform an
+                // update on a key.
+                .set_buffer_size(10)
+                .finalize()
+                .unwrap();
+
+        for i in 0..50 {
+            let v = format!("{:0100}", i);
+            // We're updating the same key.
+            if !c.insert(0, v, 1) {
+                // The race condition doesn't show up without this sleep.
+                sleep(Duration::from_millis(1));
+                set.lock().insert(i);
+            }
+        }
+
+        // Wait for all the items to be processed.
+        sleep(Duration::from_millis(1));
+        // This will cause eviction from the cache.
+        assert!(c.insert(1, "0".to_string(), 10));
+        let _ = c.close();
+    }
+
+
+    // Run the test 100 times since it's not reliable.
+    (0..100).for_each(|_| test())
+}
+
+#[test]
+fn test_cache_with_ttl() {
+    let mut process_win = 0;
+    let mut clean_win = 0;
+
+    for _ in 0..10 {
+        let c =
+            Cache::builder(100, 1000, TransparentCacheKeyHasher::default())
+                .set_metrics(true)
+                .finalize()
+                .unwrap();
+
+        // Set initial value for key = 1
+        assert!(c.insert_with_ttl(1, 1, 0, Duration::from_millis(800)));
+
+        sleep(Duration::from_millis(100));
+
+        // Get value from cache for key = 1
+        match c.get(&1) {
+            None => {clean_win += 1;}
+            Some(_) => {process_win += 1;}
+        }
+        // assert_eq!(c.get(&1).unwrap().read(), 1);
+
+        sleep(Duration::from_millis(1200));
+        assert!(c.get(&1).is_none());
+    }
+    eprintln!("process: {} cleanup: {}", process_win, clean_win);
 }

@@ -79,6 +79,12 @@ impl<'a, V, S: BuildHasher> ValueRefMut<'a, V, S> {
     }
 }
 
+impl<'a, V: Clone, S: BuildHasher> ValueRefMut<'a, V, S> {
+    pub fn clone_inner(&self) -> V {
+        self.val.clone()
+    }
+}
+
 impl<'a, V: Copy, S: BuildHasher> ValueRefMut<'a, V, S> {
     pub fn read(self) -> V {
         let v = *self.val;
@@ -86,6 +92,7 @@ impl<'a, V: Copy, S: BuildHasher> ValueRefMut<'a, V, S> {
         v
     }
 }
+
 
 /// A simple wrapper around `T`
 ///
