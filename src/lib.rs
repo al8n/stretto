@@ -141,18 +141,18 @@ impl<V: 'static> Coster<V> for DefaultCoster<V> {
     }
 }
 
-pub trait KeyHasher<K: Hash + Eq + ?Sized> {
+pub trait KeyBuilder<K: Hash + Eq + ?Sized> {
     fn hash_key(&self, k: &K) -> (u64, u64);
 }
 
-/// CacheKeyHasher supports some popular type for cache's key:
+/// DefaultKeyBuilder supports some popular type for cache's key:
 #[derive(Debug)]
-pub struct CacheKeyHasher {
+pub struct DefaultKeyBuilder {
     s: RandomState,
     xx: BuildHasherDefault<XxHash64>,
 }
 
-impl CacheKeyHasher {
+impl DefaultKeyBuilder {
     pub fn build_sip_hasher(&self) -> DefaultHasher {
         self.s.build_hasher()
     }
@@ -162,7 +162,7 @@ impl CacheKeyHasher {
     }
 }
 
-impl Default for CacheKeyHasher {
+impl Default for DefaultKeyBuilder {
     fn default() -> Self {
         Self {
             s: Default::default(),
@@ -171,7 +171,7 @@ impl Default for CacheKeyHasher {
     }
 }
 
-impl<K: Hash + Eq + ?Sized> KeyHasher<K> for CacheKeyHasher {
+impl<K: Hash + Eq + ?Sized> KeyBuilder<K> for DefaultKeyBuilder {
     fn hash_key(&self, k: &K) -> (u64, u64) {
         let mut s = self.s.build_hasher();
         k.hash(&mut s);
@@ -181,14 +181,14 @@ impl<K: Hash + Eq + ?Sized> KeyHasher<K> for CacheKeyHasher {
     }
 }
 
-pub trait TransparentCacheKey: Hash + Eq {
+pub trait TransparentKey: Hash + Eq {
     fn to_u64(&self) -> u64;
 }
 
 #[derive(Default)]
-pub struct TransparentCacheKeyHasher;
+pub struct TransparentKeyBuilder;
 
-impl<K: TransparentCacheKey> KeyHasher<K> for TransparentCacheKeyHasher {
+impl<K: TransparentKey> KeyBuilder<K> for TransparentKeyBuilder {
     fn hash_key(&self, k: &K) -> (u64, u64) {
         (k.to_u64(), 0)
     }
@@ -197,7 +197,7 @@ impl<K: TransparentCacheKey> KeyHasher<K> for TransparentCacheKeyHasher {
 macro_rules! impl_transparent_key {
     ($($t:ty),*) => {
         $(
-            impl TransparentCacheKey for $t {
+            impl TransparentKey for $t {
                 fn to_u64(&self) -> u64 {
                     *self as u64
                 }
@@ -222,11 +222,11 @@ impl_transparent_key! {
 
 #[cfg(test)]
 mod test {
-    use crate::{CacheKeyHasher, KeyHasher};
+    use crate::{DefaultKeyBuilder, KeyBuilder};
 
     #[test]
     fn test_default_key_hasher() {
-        let kh = CacheKeyHasher::default();
+        let kh = DefaultKeyBuilder::default();
         let v1 = kh.hash_key(&vec![8u8; 8]);
         let v2 = kh.hash_key(&vec![8u8; 8]);
         assert_eq!(v1, v2);

@@ -1,18 +1,13 @@
-use crate::{
-    bbloom::Bloom,
-    error::CacheError,
-    metrics::{MetricType, Metrics},
-    sketch::CountMinSketch,
-};
+use crate::{bbloom::Bloom, error::CacheError, metrics::{MetricType, Metrics}, sketch::CountMinSketch};
 use crossbeam::channel::{bounded, unbounded, Receiver, RecvError, Sender};
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{spawn, JoinHandle};
 use std::{
     collections::{hash_map::RandomState, HashMap},
-    hash::BuildHasher,
     sync::Arc,
 };
+use std::hash::BuildHasher;
 
 /// DEFAULT_SAMPLES is the number of items to sample when looking at eviction
 /// candidates. 5 seems to be the most optimal number [citation needed].
@@ -39,8 +34,8 @@ impl Into<PolicyPair> for (u64, i64) {
     }
 }
 
-pub(crate) struct LFUPolicy {
-    inner: Arc<Mutex<PolicyInner>>,
+pub(crate) struct LFUPolicy<S = RandomState> {
+    inner: Arc<Mutex<PolicyInner<S>>>,
     processor_handle: JoinHandle<()>,
     items_tx: Sender<Vec<u64>>,
     stop_tx: Sender<()>,
@@ -68,6 +63,29 @@ impl LFUPolicy {
 
         Ok(this)
     }
+}
+
+impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
+    pub fn with_hasher(ctrs: usize, max_cost: i64, hasher: S) ->  Result<Self, CacheError> {
+        let inner = PolicyInner::with_hasher(ctrs, max_cost, hasher)?;
+
+        let (items_tx, items_rx) = unbounded();
+        let (stop_tx, stop_rx) = bounded(1);
+
+        let handle = PolicyProcessor::spawn(inner.clone(), items_rx, stop_rx);
+
+        let this = Self {
+            inner: inner.clone(),
+            processor_handle: handle,
+            items_tx,
+            stop_tx,
+            is_closed: AtomicBool::new(false),
+            metrics: None,
+        };
+
+        Ok(this)
+    }
+
 
     pub fn collect_metrics(&mut self, metrics: Arc<Metrics>) {
         self.metrics = Some(metrics.clone());
@@ -241,9 +259,13 @@ impl LFUPolicy {
     }
 }
 
-struct PolicyInner {
+unsafe impl<S: BuildHasher + Clone + 'static> Send for  LFUPolicy<S> {}
+unsafe impl<S: BuildHasher + Clone + 'static> Sync for  LFUPolicy<S> {}
+
+
+struct PolicyInner<S = RandomState> {
     admit: TinyLFU,
-    costs: SampledLFU,
+    costs: SampledLFU<S>,
 }
 
 impl PolicyInner {
@@ -254,21 +276,34 @@ impl PolicyInner {
         };
         Ok(Arc::new(Mutex::new(this)))
     }
+}
 
+impl<S: BuildHasher + Clone + 'static> PolicyInner<S> {
     fn set_metrics(&mut self, metrics: Arc<Metrics>) {
         self.costs.metrics = Some(metrics);
     }
+
+    fn with_hasher(ctrs: usize, max_cost: i64, hasher: S) -> Result<Arc<Mutex<Self>>, CacheError> {
+        let this = Self {
+            admit: TinyLFU::new(ctrs)?,
+            costs: SampledLFU::with_hasher(max_cost, hasher),
+        };
+        Ok(Arc::new(Mutex::new(this)))
+    }
 }
 
-struct PolicyProcessor {
-    inner: Arc<Mutex<PolicyInner>>,
+unsafe impl<S: BuildHasher + Clone + 'static> Send for PolicyInner<S> {}
+unsafe impl<S: BuildHasher + Clone + 'static> Sync for PolicyInner<S>{}
+
+struct PolicyProcessor<S: BuildHasher + Clone + 'static> {
+    inner: Arc<Mutex<PolicyInner<S>>>,
     items_rx: Receiver<Vec<u64>>,
     stop_rx: Receiver<()>,
 }
 
-impl PolicyProcessor {
+impl<S: BuildHasher + Clone + 'static> PolicyProcessor<S> {
     fn spawn(
-        inner: Arc<Mutex<PolicyInner>>,
+        inner: Arc<Mutex<PolicyInner<S>>>,
         items_rx: Receiver<Vec<u64>>,
         stop_rx: Receiver<()>,
     ) -> JoinHandle<()> {
@@ -299,6 +334,10 @@ impl PolicyProcessor {
         }
     }
 }
+
+unsafe impl<S: BuildHasher + Clone + 'static> Send for PolicyProcessor<S> {}
+unsafe impl<S: BuildHasher + Clone + 'static> Sync for PolicyProcessor<S> {}
+
 
 /// SampledLFU stores key-costs paris.
 struct SampledLFU<S = RandomState> {
@@ -334,7 +373,7 @@ impl SampledLFU {
     }
 }
 
-impl<S: BuildHasher> SampledLFU<S> {
+impl<S: BuildHasher + Clone + 'static> SampledLFU<S> {
     /// Create a new SampledLFU with specific hasher
     #[inline]
     pub fn with_hasher(max_cost: i64, hasher: S) -> Self {
@@ -447,6 +486,9 @@ impl<S: BuildHasher> SampledLFU<S> {
         }
     }
 }
+
+unsafe impl<S: BuildHasher + Clone + 'static> Send for SampledLFU<S> {}
+unsafe impl<S: BuildHasher + Clone + 'static> Sync for SampledLFU<S> {}
 
 /// TinyLFU is an admission helper that keeps track of access frequency using
 /// tiny (4-bit) counters in the form of a count-min sketch.

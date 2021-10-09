@@ -1,5 +1,5 @@
 use crate::cache::{Cache, Item};
-use crate::{CacheCallback, CacheKeyHasher, Coster, Item as CrateItem, KeyHasher, TransparentCacheKeyHasher, UpdateValidator};
+use crate::{CacheCallback, DefaultKeyBuilder, Coster, Item as CrateItem, KeyBuilder, TransparentKeyBuilder, UpdateValidator};
 use crossbeam::channel::bounded;
 use parking_lot::Mutex;
 use rand::{thread_rng, Rng};
@@ -12,14 +12,14 @@ use std::time::Duration;
 
 static CHARSET: &'static [u8] = "abcdefghijklmnopqrstuvwxyz0123456789".as_bytes();
 
-fn new_test_cache<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyHasher<K>>(
+fn new_test_cache<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>>(
     kh: KH,
 ) -> Cache<K, V, KH> {
     Cache::new(100, 10, kh).unwrap()
 }
 
 fn retry_set<C: Coster<u64>, U: UpdateValidator<u64>,CB: CacheCallback<u64>>(
-    c: Arc<Cache<u64, u64, TransparentCacheKeyHasher, C, U, CB>>,
+    c: Arc<Cache<u64, u64, TransparentKeyBuilder, C, U, CB>>,
     key: u64,
     val: u64,
     cost: i64,
@@ -63,7 +63,7 @@ fn test_cache_key_to_hash() {
         ctr: Arc<AtomicU64>,
     }
 
-    impl KeyHasher<u64> for KHTest {
+    impl KeyBuilder<u64> for KHTest {
         fn hash_key(&self, k: &u64) -> (u64, u64) {
             self.ctr.fetch_add(1, Ordering::SeqCst);
             (*k, 0)
@@ -97,7 +97,7 @@ fn test_cache_max_cost() {
         [k1, k2]
     }
 
-    let c = Cache::builder(12960, 1e6 as i64, CacheKeyHasher::default())
+    let c = Cache::builder(12960, 1e6 as i64, DefaultKeyBuilder::default())
         .set_buffer_size(64)
         .set_metrics(true)
         .finalize()
@@ -148,7 +148,7 @@ fn test_cache_max_cost() {
 
 #[test]
 fn test_cache_update_max_cost() {
-    let c = Cache::builder(10, 10, TransparentCacheKeyHasher::default())
+    let c = Cache::builder(10, 10, TransparentKeyBuilder::default())
         .finalize()
         .unwrap();
 
@@ -179,8 +179,8 @@ fn test_cache_update_max_cost() {
 
 #[test]
 fn test_cache_multiple_close() {
-    let c: Cache<i64, i64, TransparentCacheKeyHasher> =
-        Cache::new(100, 10, TransparentCacheKeyHasher::default()).unwrap();
+    let c: Cache<i64, i64, TransparentKeyBuilder> =
+        Cache::new(100, 10, TransparentKeyBuilder::default()).unwrap();
 
     let _ = c.close();
     let _ = c.close();
@@ -189,7 +189,7 @@ fn test_cache_multiple_close() {
 #[test]
 fn test_cache_insert_after_close() {
     let c =
-        new_test_cache::<u64, u64, TransparentCacheKeyHasher>(TransparentCacheKeyHasher::default());
+        new_test_cache::<u64, u64, TransparentKeyBuilder>(TransparentKeyBuilder::default());
     let _ = c.close();
     assert!(!c.insert(1, 1, 1));
 }
@@ -197,7 +197,7 @@ fn test_cache_insert_after_close() {
 #[test]
 fn test_cache_clear_after_close() {
     let c =
-        new_test_cache::<u64, u64, TransparentCacheKeyHasher>(TransparentCacheKeyHasher::default());
+        new_test_cache::<u64, u64, TransparentKeyBuilder>(TransparentKeyBuilder::default());
     let _ = c.close();
     let _ = c.clear();
 }
@@ -205,7 +205,7 @@ fn test_cache_clear_after_close() {
 #[test]
 fn test_cache_get_after_close() {
     let c =
-        new_test_cache::<u64, u64, TransparentCacheKeyHasher>(TransparentCacheKeyHasher::default());
+        new_test_cache::<u64, u64, TransparentKeyBuilder>(TransparentKeyBuilder::default());
     assert!(c.insert(1, 1, 1));
     let _ = c.close();
 
@@ -215,7 +215,7 @@ fn test_cache_get_after_close() {
 #[test]
 fn test_cache_remove_after_close() {
     let c =
-        new_test_cache::<u64, u64, TransparentCacheKeyHasher>(TransparentCacheKeyHasher::default());
+        new_test_cache::<u64, u64, TransparentKeyBuilder>(TransparentKeyBuilder::default());
     assert!(c.insert(1, 1, 1));
     let _ = c.close();
 
@@ -244,7 +244,7 @@ fn test_cache_process_items() {
     }
 
     let cb = Arc::new(Mutex::new(HashSet::new()));
-    let c = Cache::builder(100, 10, TransparentCacheKeyHasher::default())
+    let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
         .set_coster(TestCoster::default())
         .set_callback(TestCallback::new(cb.clone()))
         .set_ignore_internal_cost(true)
@@ -279,7 +279,7 @@ fn test_cache_process_items() {
 
 #[test]
 fn test_cache_get() {
-    let c = Cache::builder(100, 10, TransparentCacheKeyHasher::default())
+    let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
         .set_ignore_internal_cost(true)
         .set_metrics(true)
         .finalize()
@@ -304,7 +304,7 @@ fn test_cache_get() {
 
 #[test]
 fn test_cache_set() {
-    let c = Cache::builder(100, 10, TransparentCacheKeyHasher::default())
+    let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
         .set_ignore_internal_cost(true)
         .set_metrics(true)
         .finalize()
@@ -327,7 +327,7 @@ fn test_cache_set() {
 
 #[test]
 fn test_cache_internal_cost() {
-    let c = Cache::builder(100, 10, TransparentCacheKeyHasher::default())
+    let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
         .set_metrics(true)
         .finalize()
         .unwrap();
@@ -341,7 +341,7 @@ fn test_cache_internal_cost() {
 
 #[test]
 fn test_recache_with_ttl() {
-    let c = Cache::builder(100, 10, TransparentCacheKeyHasher::default())
+    let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
         .set_ignore_internal_cost(true)
         .set_metrics(true)
         .finalize()
@@ -373,7 +373,7 @@ fn test_recache_with_ttl() {
 #[test]
 fn test_cache_set_with_ttl() {
     let cb = Arc::new(Mutex::new(HashSet::new()));
-    let c = Arc::new(Cache::builder(100, 10, TransparentCacheKeyHasher::default())
+    let c = Arc::new(Cache::builder(100, 10, TransparentKeyBuilder::default())
         .set_callback(TestCallback::new(cb.clone()))
         .set_ignore_internal_cost(true)
         .finalize()
@@ -405,7 +405,7 @@ fn test_cache_set_with_ttl() {
 
 #[test]
 fn test_cache_remove() {
-    let c = new_test_cache(TransparentCacheKeyHasher::default());
+    let c = new_test_cache(TransparentKeyBuilder::default());
 
     c.insert(1, 1, 1);
     c.remove(&1);
@@ -419,7 +419,7 @@ fn test_cache_remove() {
 
 #[test]
 fn test_cache_remove_with_ttl() {
-    let c = Arc::new(Cache::builder(100, 10, TransparentCacheKeyHasher::default())
+    let c = Arc::new(Cache::builder(100, 10, TransparentKeyBuilder::default())
         .set_ignore_internal_cost(true)
         .finalize()
         .unwrap());
@@ -436,7 +436,7 @@ fn test_cache_remove_with_ttl() {
 
 #[test]
 fn test_cache_get_ttl() {
-    let c = Arc::new(Cache::builder(100, 10, TransparentCacheKeyHasher::default())
+    let c = Arc::new(Cache::builder(100, 10, TransparentKeyBuilder::default())
         .set_metrics(true)
         .set_ignore_internal_cost(true)
         .finalize()
@@ -479,9 +479,51 @@ fn test_cache_get_ttl() {
 }
 
 #[test]
+fn test_cache_drop_clear() {
+    let c =
+        Cache::builder(100, 10, TransparentKeyBuilder::default())
+            .set_buffer_size(4096)
+            .set_metrics(true)
+            .set_ignore_internal_cost(true)
+            .finalize()
+            .unwrap();
+    let c = Arc::new(c);
+    let (stop_tx, stop_rx) = bounded(0);
+    let tc = c.clone();
+
+    let ctr = Arc::new(AtomicU64::new(0));
+
+    let tctr = ctr.clone();
+    spawn(move || {
+        let mut rng = thread_rng();
+        loop {
+            select! {
+                recv(stop_rx) -> _ => return,
+                default => {
+                    let i = rng.gen::<u64>();
+                    if tc.insert(i, i, 1) {
+                        tctr.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            }
+        }
+    });
+
+
+    sleep(Duration::from_millis(100));
+    let _  = stop_tx.send(());
+    c.clear().unwrap();
+    assert_eq!(c.metrics.get_keys_added(), Some(0));
+
+    (0..10).for_each(|i| {
+        assert!(c.get(&i).is_none());
+    })
+}
+
+#[test]
 fn test_cache_clear() {
     let c =
-        Cache::builder(100, 10, TransparentCacheKeyHasher::default())
+        Cache::builder(100, 10, TransparentKeyBuilder::default())
             .set_metrics(true)
             .set_ignore_internal_cost(true)
             .finalize()
@@ -503,7 +545,7 @@ fn test_cache_clear() {
 #[test]
 fn test_cache_metrics_clear() {
     let c =
-        Cache::builder(100, 10, TransparentCacheKeyHasher::default())
+        Cache::builder(100, 10, TransparentKeyBuilder::default())
             .set_metrics(true)
             .finalize()
             .unwrap();
@@ -551,7 +593,7 @@ fn test_cache_drop_updates() {
     fn test() {
         let set = Arc::new(Mutex::new(HashSet::new()));
         let c =
-            Cache::builder(100, 10, CacheKeyHasher::default())
+            Cache::builder(100, 10, DefaultKeyBuilder::default())
                 .set_callback(TestCallback {
                     set: set.clone(),
                 })
@@ -593,7 +635,7 @@ fn test_cache_with_ttl() {
 
     for _ in 0..10 {
         let c =
-            Cache::builder(100, 1000, TransparentCacheKeyHasher::default())
+            Cache::builder(100, 1000, TransparentKeyBuilder::default())
                 .set_metrics(true)
                 .finalize()
                 .unwrap();

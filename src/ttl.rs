@@ -114,32 +114,50 @@ impl<S: BuildHasher> DerefMut for Bucket<S> {
 }
 
 #[derive(Debug)]
-pub(crate) struct ExpirationMap<BS = RandomState, S = RandomState> {
-    buckets: RwLock<RefCell<HashMap<i64, Bucket<BS>, S>>>,
+pub(crate) struct Buckets<S = RandomState>(HashMap<i64, Bucket<S>, S>);
+
+impl<S: BuildHasher> Buckets<S> {
+    fn new(hasher: S) -> Self {
+        Self(HashMap::with_hasher(hasher))
+    }
+}
+
+unsafe impl<S: BuildHasher> Send for Buckets<S> {}
+unsafe impl<S: BuildHasher> Sync for Buckets<S> {}
+
+#[derive(Debug)]
+pub(crate) struct ExpirationMap<S = RandomState> {
+    buckets: RwLock<RefCell<HashMap<i64, Bucket<S>, S>>>,
+    hasher: S,
 }
 
 impl Default for ExpirationMap {
     fn default() -> Self {
+        let hasher = RandomState::default();
         Self {
-            buckets: RwLock::new(RefCell::new(HashMap::new())),
+            buckets: RwLock::new(RefCell::new(HashMap::with_hasher(hasher.clone()))),
+            hasher,
         }
     }
 }
 
 impl ExpirationMap {
     pub fn new() -> Self {
-        Self {
-            buckets: RwLock::new(RefCell::new(HashMap::new())),
-        }
+        Self::default()
     }
 }
 
-impl<BS: BuildHasher + Default, S: BuildHasher> ExpirationMap<BS, S> {
-    // fn with_hasher(hasher: S) -> ExpirationMap<BS, S> {
-    //     ExpirationMap {
-    //         buckets: RwLock::new(RefCell::new(HashMap::<i64, Bucket<BS>>::with_hasher(hasher))),
-    //     }
-    // }
+impl<S: BuildHasher + Clone + 'static> ExpirationMap<S> {
+    pub fn hasher(&self) -> &S {
+        &self.hasher
+    }
+
+    pub(crate) fn with_hasher(hasher: S) -> ExpirationMap<S> {
+        ExpirationMap {
+            buckets: RwLock::new(RefCell::new(HashMap::with_hasher(hasher.clone()))),
+            hasher,
+        }
+    }
 
     pub fn insert(&self, key: u64, conflict: u64, expiration: Time) {
         // Items that don't expire don't need to be in the expiration map.
@@ -154,7 +172,7 @@ impl<BS: BuildHasher + Default, S: BuildHasher> ExpirationMap<BS, S> {
         let mut m = m.borrow_mut();
         match m.get_mut(&bucket_num) {
             None => {
-                let mut bucket = Bucket::with_hasher(BS::default());
+                let mut bucket = Bucket::with_hasher(self.hasher.clone());
                 bucket.map.insert(key, conflict);
                 m.insert(bucket_num, bucket);
             }
@@ -182,7 +200,7 @@ impl<BS: BuildHasher + Default, S: BuildHasher> ExpirationMap<BS, S> {
 
         match m.get_mut(&new_bucket_num) {
             None => {
-                let mut bucket = Bucket::with_hasher(BS::default());
+                let mut bucket = Bucket::with_hasher(self.hasher.clone());
                 bucket.map.insert(key, conflict);
                 m.insert(new_bucket_num, bucket);
             }
@@ -200,7 +218,7 @@ impl<BS: BuildHasher + Default, S: BuildHasher> ExpirationMap<BS, S> {
         };
     }
 
-    pub fn cleanup(&self, now: Time) -> Option<HashMap<u64, u64, BS>> {
+    pub fn cleanup(&self, now: Time) -> Option<HashMap<u64, u64, S>> {
         let bucket_num = cleanup_bucket(now);
         self.buckets
             .read()
@@ -210,6 +228,6 @@ impl<BS: BuildHasher + Default, S: BuildHasher> ExpirationMap<BS, S> {
     }
 }
 
-unsafe impl<BS: BuildHasher, S: BuildHasher> Send for ExpirationMap<BS, S> {}
+unsafe impl<S: BuildHasher + Clone + 'static> Send for ExpirationMap<S> {}
 
-unsafe impl<BS: BuildHasher, S: BuildHasher> Sync for ExpirationMap<BS, S> {}
+unsafe impl<S: BuildHasher + Clone + 'static> Sync for ExpirationMap<S> {}

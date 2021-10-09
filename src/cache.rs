@@ -7,23 +7,21 @@ use crate::error::CacheError;
 use crate::metrics::{MetricType, Metrics};
 use crate::policy::LFUPolicy;
 use crate::store::{ShardedMap, UpdateResult};
-use crate::ttl::Time;
+use crate::ttl::{Time, ExpirationMap};
 use crate::utils::{CloseableSender, ValueRef, ValueRefMut};
-use crate::{
-    CacheCallback, Coster, DefaultCacheCallback, DefaultCoster, DefaultUpdateValidator,
-    Item as CrateItem, KeyHasher, UpdateValidator,
-};
+use crate::{CacheCallback, Coster, DefaultCacheCallback, DefaultCoster, DefaultUpdateValidator, Item as CrateItem, KeyBuilder, UpdateValidator};
 use crossbeam::{
     channel::{bounded, tick, Receiver, RecvError},
     sync::WaitGroup,
 };
 use std::collections::HashMap;
-use std::hash::Hash;
+use std::hash::{Hash, BuildHasher};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{spawn, JoinHandle};
 use std::time::{Duration, Instant};
+use std::collections::hash_map::RandomState;
 
 // TODO: find the optimal value for this or make it configurable
 const DEFAULT_INSERT_BUF_SIZE: usize = 32 * 1024;
@@ -84,11 +82,14 @@ impl<V> Item<V> {
 
 pub struct CacheBuilder<
     K: Hash + Eq,
-    V: Send + Sync,
-    KH: KeyHasher<K>,
+    V: Send + Sync + 'static,
+    KH: KeyBuilder<K>,
     C: Coster<V>,
     U: UpdateValidator<V>,
     CB: CacheCallback<V>,
+    PS: BuildHasher + Clone + 'static,
+    ES: BuildHasher + Clone + 'static,
+    SS: BuildHasher + Clone + 'static,
 > {
     /// metrics determines whether cache statistics are kept during the cache's
     /// lifetime. There *is* some overhead to keeping statistics, so you should
@@ -136,12 +137,18 @@ pub struct CacheBuilder<
 
     callback: Option<CB>,
 
+    policy_hasher: Option<PS>,
+
+    expiration_hasher: Option<ES>,
+
+    store_hasher: Option<SS>,
+
     marker_k: PhantomData<fn(K)>,
     marker_v: PhantomData<fn(V)>,
 }
 
-impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyHasher<K>>
-    CacheBuilder<K, V, KH, DefaultCoster<V>, DefaultUpdateValidator<V>, DefaultCacheCallback<V>>
+impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>>
+    CacheBuilder<K, V, KH, DefaultCoster<V>, DefaultUpdateValidator<V>, DefaultCacheCallback<V>, RandomState, RandomState, RandomState>
 {
     pub fn new(num_counters: usize, max_cost: i64, kh: KH) -> Self {
         Self {
@@ -151,6 +158,8 @@ impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyHasher<K>>
             insert_buffer_size: DEFAULT_INSERT_BUF_SIZE,
             metrics: false,
             callback: Some(DefaultCacheCallback::default()),
+            policy_hasher: Some(RandomState::default()),
+            expiration_hasher: Some(RandomState::default()),
             key_to_hash: kh,
             update_validator: Some(DefaultUpdateValidator::default()),
             coster: Some(DefaultCoster::default()),
@@ -158,6 +167,7 @@ impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyHasher<K>>
             cleanup_duration: DEFAULT_CLEANUP_DURATION,
             marker_k: Default::default(),
             marker_v: Default::default(),
+            store_hasher: Some(RandomState::default())
         }
     }
 }
@@ -165,11 +175,14 @@ impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyHasher<K>>
 impl<
         K: Hash + Eq,
         V: Send + Sync + 'static,
-        KH: KeyHasher<K>,
+        KH: KeyBuilder<K>,
         C: Coster<V>,
         U: UpdateValidator<V>,
         CB: CacheCallback<V>,
-    > CacheBuilder<K, V, KH, C, U, CB>
+        PS: BuildHasher + Clone + 'static,
+        ES: BuildHasher + Clone + 'static,
+        SS: BuildHasher + Clone + 'static,
+    > CacheBuilder<K, V, KH, C, U, CB, PS, ES, SS>
 {
     pub fn set_num_counters(self, num_counters: usize) -> Self {
         Self {
@@ -178,6 +191,8 @@ impl<
             insert_buffer_size: self.insert_buffer_size,
             metrics: self.metrics,
             callback: self.callback,
+            policy_hasher: self.policy_hasher,
+            expiration_hasher: self.expiration_hasher,
             key_to_hash: self.key_to_hash,
             update_validator: self.update_validator,
             coster: self.coster,
@@ -185,6 +200,7 @@ impl<
             cleanup_duration: self.cleanup_duration,
             marker_k: self.marker_k,
             marker_v: self.marker_v,
+            store_hasher: self.store_hasher,
         }
     }
 
@@ -200,8 +216,12 @@ impl<
             coster: self.coster,
             ignore_internal_cost: self.ignore_internal_cost,
             cleanup_duration: self.cleanup_duration,
+            policy_hasher: self.policy_hasher,
+            expiration_hasher: self.expiration_hasher,
+            store_hasher: self.store_hasher,
             marker_k: self.marker_k,
             marker_v: self.marker_v,
+
         }
     }
 
@@ -217,6 +237,9 @@ impl<
             coster: self.coster,
             ignore_internal_cost: self.ignore_internal_cost,
             cleanup_duration: self.cleanup_duration,
+            policy_hasher: self.policy_hasher,
+            expiration_hasher: self.expiration_hasher,
+            store_hasher: self.store_hasher,
             marker_k: self.marker_k,
             marker_v: self.marker_v,
         }
@@ -234,6 +257,9 @@ impl<
             coster: self.coster,
             ignore_internal_cost: self.ignore_internal_cost,
             cleanup_duration: self.cleanup_duration,
+            policy_hasher: self.policy_hasher,
+            expiration_hasher: self.expiration_hasher,
+            store_hasher: self.store_hasher,
             marker_k: self.marker_k,
             marker_v: self.marker_v,
         }
@@ -251,6 +277,9 @@ impl<
             coster: self.coster,
             ignore_internal_cost: val,
             cleanup_duration: self.cleanup_duration,
+            policy_hasher: self.policy_hasher,
+            expiration_hasher: self.expiration_hasher,
+            store_hasher: self.store_hasher,
             marker_k: self.marker_k,
             marker_v: self.marker_v,
         }
@@ -268,12 +297,15 @@ impl<
             coster: self.coster,
             ignore_internal_cost: self.ignore_internal_cost,
             cleanup_duration: d,
+            policy_hasher: self.policy_hasher,
+            expiration_hasher: self.expiration_hasher,
+            store_hasher: self.store_hasher,
             marker_k: self.marker_k,
             marker_v: self.marker_v,
         }
     }
 
-    pub fn set_key_hasher<NKH: KeyHasher<K>>(self, kh: NKH) -> CacheBuilder<K, V, NKH, C, U, CB> {
+    pub fn set_key_hasher<NKH: KeyBuilder<K>>(self, kh: NKH) -> CacheBuilder<K, V, NKH, C, U, CB, PS, ES, SS> {
         CacheBuilder {
             num_counters: self.num_counters,
             max_cost: self.max_cost,
@@ -285,12 +317,15 @@ impl<
             coster: self.coster,
             ignore_internal_cost: self.ignore_internal_cost,
             cleanup_duration: self.cleanup_duration,
+            policy_hasher: self.policy_hasher,
+            expiration_hasher: self.expiration_hasher,
+            store_hasher: self.store_hasher,
             marker_k: self.marker_k,
             marker_v: self.marker_v,
         }
     }
 
-    pub fn set_coster<NC: Coster<V>>(self, coster: NC) -> CacheBuilder<K, V, KH, NC, U, CB> {
+    pub fn set_coster<NC: Coster<V>>(self, coster: NC) -> CacheBuilder<K, V, KH, NC, U, CB, PS, ES, SS> {
         CacheBuilder {
             num_counters: self.num_counters,
             max_cost: self.max_cost,
@@ -302,6 +337,9 @@ impl<
             coster: Some(coster),
             ignore_internal_cost: self.ignore_internal_cost,
             cleanup_duration: self.cleanup_duration,
+            policy_hasher: self.policy_hasher,
+            expiration_hasher: self.expiration_hasher,
+            store_hasher: self.store_hasher,
             marker_k: self.marker_k,
             marker_v: self.marker_v,
         }
@@ -310,7 +348,7 @@ impl<
     pub fn set_update_validator<NU: UpdateValidator<V>>(
         self,
         uv: NU,
-    ) -> CacheBuilder<K, V, KH, C, NU, CB> {
+    ) -> CacheBuilder<K, V, KH, C, NU, CB, PS, ES, SS> {
         CacheBuilder {
             num_counters: self.num_counters,
             max_cost: self.max_cost,
@@ -322,12 +360,15 @@ impl<
             coster: self.coster,
             ignore_internal_cost: self.ignore_internal_cost,
             cleanup_duration: self.cleanup_duration,
+            policy_hasher: self.policy_hasher,
+            expiration_hasher: self.expiration_hasher,
+            store_hasher: self.store_hasher,
             marker_k: self.marker_k,
             marker_v: self.marker_v,
         }
     }
 
-    pub fn set_callback<NCB: CacheCallback<V>>(self, cb: NCB) -> CacheBuilder<K, V, KH, C, U, NCB> {
+    pub fn set_callback<NCB: CacheCallback<V>>(self, cb: NCB) -> CacheBuilder<K, V, KH, C, U, NCB, PS, ES, SS> {
         CacheBuilder {
             num_counters: self.num_counters,
             max_cost: self.max_cost,
@@ -339,12 +380,75 @@ impl<
             coster: self.coster,
             ignore_internal_cost: self.ignore_internal_cost,
             cleanup_duration: self.cleanup_duration,
+            policy_hasher: self.policy_hasher,
+            expiration_hasher: self.expiration_hasher,
+            store_hasher: self.store_hasher,
             marker_k: self.marker_k,
             marker_v: self.marker_v,
         }
     }
 
-    pub fn finalize(self) -> Result<Cache<K, V, KH, C, U, CB>, CacheError> {
+    pub fn set_policy_hasher<NPS: BuildHasher + Clone + 'static>(self, hasher: NPS) -> CacheBuilder<K, V, KH, C, U, CB, NPS, ES, SS> {
+        CacheBuilder {
+            num_counters: self.num_counters,
+            max_cost: self.max_cost,
+            insert_buffer_size: self.insert_buffer_size,
+            metrics: self.metrics,
+            callback: self.callback,
+            key_to_hash: self.key_to_hash,
+            update_validator: self.update_validator,
+            coster: self.coster,
+            ignore_internal_cost: self.ignore_internal_cost,
+            cleanup_duration: self.cleanup_duration,
+            policy_hasher: Some(hasher),
+            expiration_hasher: self.expiration_hasher,
+            store_hasher: self.store_hasher,
+            marker_k: self.marker_k,
+            marker_v: self.marker_v,
+        }
+    }
+
+    pub fn set_expiration_hasher<NES: BuildHasher + Clone + 'static>(self, hasher: NES) -> CacheBuilder<K, V, KH, C, U, CB, PS, NES, SS> {
+        CacheBuilder {
+            num_counters: self.num_counters,
+            max_cost: self.max_cost,
+            insert_buffer_size: self.insert_buffer_size,
+            metrics: self.metrics,
+            callback: self.callback,
+            key_to_hash: self.key_to_hash,
+            update_validator: self.update_validator,
+            coster: self.coster,
+            ignore_internal_cost: self.ignore_internal_cost,
+            cleanup_duration: self.cleanup_duration,
+            policy_hasher: self.policy_hasher,
+            expiration_hasher: Some(hasher),
+            store_hasher: self.store_hasher,
+            marker_k: self.marker_k,
+            marker_v: self.marker_v,
+        }
+    }
+
+    pub fn set_store_hasher<NSS: BuildHasher + Clone + 'static>(self, hasher: NSS) -> CacheBuilder<K, V, KH, C, U, CB, PS, ES, NSS> {
+        CacheBuilder {
+            num_counters: self.num_counters,
+            max_cost: self.max_cost,
+            insert_buffer_size: self.insert_buffer_size,
+            metrics: self.metrics,
+            callback: self.callback,
+            key_to_hash: self.key_to_hash,
+            update_validator: self.update_validator,
+            coster: self.coster,
+            ignore_internal_cost: self.ignore_internal_cost,
+            cleanup_duration: self.cleanup_duration,
+            policy_hasher: self.policy_hasher,
+            expiration_hasher: self.expiration_hasher,
+            store_hasher: Some(hasher),
+            marker_k: self.marker_k,
+            marker_v: self.marker_v,
+        }
+    }
+
+    pub fn finalize(self) -> Result<Cache<K, V, KH, C, U, CB, PS, ES, SS>, CacheError> {
         let num_counters = self.num_counters;
 
         if num_counters == 0 {
@@ -364,8 +468,12 @@ impl<
         let (buf_tx, buf_rx) = bounded(insert_buffer_size);
         let (stop_tx, stop_rx) = bounded(0);
 
-        let store = Arc::new(ShardedMap::with_validator(self.update_validator.unwrap()));
-        let mut policy = LFUPolicy::new(num_counters, max_cost)?;
+        let expiration_map = ExpirationMap::with_hasher( self.expiration_hasher.unwrap());
+
+        let store = Arc::new(ShardedMap::with_validator_and_hasher(expiration_map, self.update_validator.unwrap(), self.store_hasher.unwrap()));
+
+        let mut policy = LFUPolicy::with_hasher(num_counters, max_cost, self.policy_hasher.unwrap())?;
+
         let item_size = store.item_size();
 
         let coster = Arc::new(self.coster.unwrap());
@@ -419,17 +527,20 @@ impl<
 /// from as many threads as you want.
 pub struct Cache<
     K: Hash + Eq,
-    V: Send + Sync,
-    KH: KeyHasher<K>,
+    V: Send + Sync + 'static,
+    KH: KeyBuilder<K>,
     C = DefaultCoster<V>,
     U = DefaultUpdateValidator<V>,
     CB = DefaultCacheCallback<V>,
+    PS = RandomState,
+    ES = RandomState,
+    SS = RandomState,
 > {
     /// store is the central concurrent hashmap where key-value items are stored.
-    store: Arc<ShardedMap<V, U>>,
+    store: Arc<ShardedMap<V, U, SS, ES>>,
 
     /// policy determines what gets let in to the cache and what gets kicked out.
-    policy: Arc<LFUPolicy>,
+    policy: Arc<LFUPolicy<PS>>,
 
     /// set_buf is a buffer allowing us to batch/drop Sets during times of high
     /// contention.
@@ -458,7 +569,7 @@ pub struct Cache<
     _marker: PhantomData<fn(K)>,
 }
 
-impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyHasher<K>> Cache<K, V, KH> {
+impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>> Cache<K, V, KH> {
     pub fn new(num_counters: usize, max_cost: i64, kh: KH) -> Result<Self, CacheError> {
         CacheBuilder::new(num_counters, max_cost, kh).finalize()
     }
@@ -467,7 +578,7 @@ impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyHasher<K>> Cache<K, V, KH> {
         num_counters: usize,
         max_cost: i64,
         kh: KH,
-    ) -> CacheBuilder<K, V, KH, DefaultCoster<V>, DefaultUpdateValidator<V>, DefaultCacheCallback<V>>
+    ) -> CacheBuilder<K, V, KH, DefaultCoster<V>, DefaultUpdateValidator<V>, DefaultCacheCallback<V>, RandomState, RandomState, RandomState>
     {
         CacheBuilder::new(num_counters, max_cost, kh)
     }
@@ -476,16 +587,19 @@ impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyHasher<K>> Cache<K, V, KH> {
 impl<
         K: Hash + Eq,
         V: Send + Sync + 'static,
-        KH: KeyHasher<K>,
+        KH: KeyBuilder<K>,
         C: Coster<V>,
         U: UpdateValidator<V>,
         CB: CacheCallback<V>,
-    > Cache<K, V, KH, C, U, CB>
+        PS: BuildHasher + Clone + 'static,
+        ES: BuildHasher + Clone + 'static,
+        SS: BuildHasher + Clone + 'static,
+    > Cache<K, V, KH, C, U, CB, PS, ES, SS>
 {
     /// `get` returns the value (if any) and a boolean representing whether the
     /// value was found or not. The value can be nil and the boolean can be true at
     /// the same time.
-    pub fn get(&self, key: &K) -> Option<ValueRef<V>> {
+    pub fn get(&self, key: &K) -> Option<ValueRef<V, SS>> {
         if self.is_closed.load(Ordering::SeqCst) {
             return None;
         }
@@ -506,7 +620,7 @@ impl<
     /// `get_mut` returns the mutable value (if any) and a boolean representing whether the
     /// value was found or not. The value can be nil and the boolean can be true at
     /// the same time.
-    pub fn get_mut(&self, key: &K) -> Option<ValueRefMut<V>> {
+    pub fn get_mut(&self, key: &K) -> Option<ValueRefMut<V, SS>> {
         if self.is_closed.load(Ordering::SeqCst) {
             return None;
         }
@@ -726,13 +840,13 @@ impl<
     }
 }
 
-struct CacheProcessor<V: Send + Sync, C: Coster<V>, U: UpdateValidator<V>, CB: CacheCallback<V>> {
+struct CacheProcessor<V: Send + Sync + 'static, C: Coster<V>, U: UpdateValidator<V>, CB: CacheCallback<V>, PS: BuildHasher + Clone + 'static, ES: BuildHasher + Clone + 'static, SS: BuildHasher + Clone + 'static> {
     insert_buf_rx: Receiver<Item<V>>,
     stop_rx: Receiver<()>,
     metrics: Arc<Metrics>,
     ticker: Receiver<Instant>,
-    store: Arc<ShardedMap<V, U>>,
-    policy: Arc<LFUPolicy>,
+    store: Arc<ShardedMap<V, U, SS, ES>>,
+    policy: Arc<LFUPolicy<PS>>,
     start_ts: HashMap<u64, Time>,
     num_to_keep: usize,
     callback: Arc<CB>,
@@ -741,15 +855,15 @@ struct CacheProcessor<V: Send + Sync, C: Coster<V>, U: UpdateValidator<V>, CB: C
     item_size: usize,
 }
 
-impl<V: Send + Sync + 'static, C: Coster<V>, U: UpdateValidator<V>, CB: CacheCallback<V>>
-    CacheProcessor<V, C, U, CB>
+impl<V: Send + Sync + 'static, C: Coster<V>, U: UpdateValidator<V>, CB: CacheCallback<V>, PS: BuildHasher + Clone + 'static, ES: BuildHasher + Clone + 'static, SS: BuildHasher + Clone + 'static>
+    CacheProcessor<V, C, U, CB, PS, ES, SS>
 {
     pub fn spawn(
         num_to_keep: usize,
         ignore_internal_cost: bool,
         cleanup_duration: Duration,
-        store: Arc<ShardedMap<V, U>>,
-        policy: Arc<LFUPolicy>,
+        store: Arc<ShardedMap<V, U, SS, ES>>,
+        policy: Arc<LFUPolicy<PS>>,
         insert_buf_rx: Receiver<Item<V>>,
         stop_rx: Receiver<()>,
         metrics: Arc<Metrics>,
