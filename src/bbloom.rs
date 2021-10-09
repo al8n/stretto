@@ -80,6 +80,8 @@ impl Bloom {
     }
 
     /// `size` makes Bloom filter with as bitset of size sz.
+    #[inline]
+    #[allow(dead_code)]
     pub fn size(&mut self, sz: usize) {
         self.bitset = vec![0; sz >> 6]
     }
@@ -90,6 +92,8 @@ impl Bloom {
     }
 
     /// Returns the exp of the size
+    #[inline]
+    #[allow(dead_code)]
     pub fn size_exp(&self) -> u64 {
         self.size_exp
     }
@@ -156,6 +160,8 @@ impl Bloom {
     }
 
     /// `total_size` returns the total size of the bloom filter.
+    #[allow(dead_code)]
+    #[inline]
     pub fn total_size(&self) -> usize {
         // The bl struct has 5 members and each one is 8 byte. The bitset is a
         // uint64 byte slice.
@@ -204,7 +210,7 @@ mod test {
             }
         });
 
-        println!("Bloomfilter(size = {}) Check for 'false positives': {} wrong positive 'Has' results on 2^16 entries => {}%", bf.bitset.len() << 6, cnt, cnt as f64 / N as f64);
+        eprintln!("Bloomfilter(size = {}) Check for 'false positives': {} wrong positive 'Has' results on 2^16 entries => {}%", bf.bitset.len() << 6, cnt, cnt as f64 / N as f64);
     }
 
     #[test]

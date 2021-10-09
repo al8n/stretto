@@ -4,7 +4,6 @@
 //!
 //! I claim no additional copyright over the original implementation.
 use crate::error::CacheError;
-use crate::utils::next_power_of_2;
 use chrono::Utc;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::fmt::{Debug, Formatter};
@@ -85,7 +84,7 @@ impl CountMinSketch {
             return Err(CacheError::InvalidCountMinWidth(ctrs));
         }
 
-        let ctrs = next_power_of_2(ctrs);
+        let ctrs = ctrs.next_power_of_two();
         let hctrs = ctrs / 2;
 
         let mut source = StdRng::seed_from_u64(Utc::now().timestamp_nanos().unsigned_abs());

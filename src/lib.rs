@@ -1,4 +1,3 @@
-#![cfg_attr(feature = "nightly", feature(auto_traits, negative_impls))]
 /// This package includes multiple probabalistic data structures needed for
 /// admission/eviction metadata. Most are Counting Bloom Filter variations, but
 /// a caching-specific feature that is also required is a "freshness" mechanism,
@@ -42,7 +41,7 @@ use twox_hash::XxHash64;
 
 pub struct Item<V> {
     pub val: Option<V>,
-    pub key: u64,
+    pub index: u64,
     pub conflict: u64,
     pub cost: i64,
     pub exp: Time,
@@ -142,7 +141,13 @@ impl<V: 'static> Coster<V> for DefaultCoster<V> {
 }
 
 pub trait KeyBuilder<K: Hash + Eq + ?Sized> {
-    fn hash_key(&self, k: &K) -> (u64, u64);
+    fn hash_index(&self, key: &K) -> u64;
+
+    fn hash_conflict(&self, key: &K) -> u64;
+
+    fn build_key(&self, k: &K) -> (u64, u64) {
+        (self.hash_index(k), self.hash_conflict(k))
+    }
 }
 
 /// DefaultKeyBuilder supports some popular type for cache's key:
@@ -172,12 +177,18 @@ impl Default for DefaultKeyBuilder {
 }
 
 impl<K: Hash + Eq + ?Sized> KeyBuilder<K> for DefaultKeyBuilder {
-    fn hash_key(&self, k: &K) -> (u64, u64) {
+    #[inline]
+    fn hash_index(&self, key: &K) -> u64 {
         let mut s = self.s.build_hasher();
-        k.hash(&mut s);
+        key.hash(&mut s);
+        s.finish()
+    }
+
+    #[inline]
+    fn hash_conflict(&self, key: &K) -> u64 {
         let mut x = self.xx.build_hasher();
-        k.hash(&mut x);
-        (s.finish(), x.finish())
+        key.hash(&mut x);
+        x.finish()
     }
 }
 
@@ -189,8 +200,14 @@ pub trait TransparentKey: Hash + Eq {
 pub struct TransparentKeyBuilder;
 
 impl<K: TransparentKey> KeyBuilder<K> for TransparentKeyBuilder {
-    fn hash_key(&self, k: &K) -> (u64, u64) {
-        (k.to_u64(), 0)
+    #[inline]
+    fn hash_index(&self, key: &K) -> u64 {
+        key.to_u64()
+    }
+
+    #[inline]
+    fn hash_conflict(&self, _key: &K) -> u64 {
+        0
     }
 }
 
@@ -218,18 +235,4 @@ impl_transparent_key! {
     i32,
     i64,
     isize
-}
-
-#[cfg(test)]
-mod test {
-    use crate::{DefaultKeyBuilder, KeyBuilder};
-
-    #[test]
-    fn test_default_key_hasher() {
-        let kh = DefaultKeyBuilder::default();
-        let v1 = kh.hash_key(&vec![8u8; 8]);
-        let v2 = kh.hash_key(&vec![8u8; 8]);
-        assert_eq!(v1, v2);
-        println!("{:?} {:?}", v1, v2);
-    }
 }

@@ -7,21 +7,24 @@ use crate::error::CacheError;
 use crate::metrics::{MetricType, Metrics};
 use crate::policy::LFUPolicy;
 use crate::store::{ShardedMap, UpdateResult};
-use crate::ttl::{Time, ExpirationMap};
+use crate::ttl::{ExpirationMap, Time};
 use crate::utils::{CloseableSender, ValueRef, ValueRefMut};
-use crate::{CacheCallback, Coster, DefaultCacheCallback, DefaultCoster, DefaultUpdateValidator, Item as CrateItem, KeyBuilder, UpdateValidator};
+use crate::{
+    CacheCallback, Coster, DefaultCacheCallback, DefaultCoster, DefaultUpdateValidator,
+    Item as CrateItem, KeyBuilder, UpdateValidator,
+};
 use crossbeam::{
     channel::{bounded, tick, Receiver, RecvError},
     sync::WaitGroup,
 };
+use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
-use std::hash::{Hash, BuildHasher};
+use std::hash::{BuildHasher, Hash};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{spawn, JoinHandle};
 use std::time::{Duration, Instant};
-use std::collections::hash_map::RandomState;
 
 // TODO: find the optimal value for this or make it configurable
 const DEFAULT_INSERT_BUF_SIZE: usize = 32 * 1024;
@@ -50,26 +53,26 @@ enum Item<V> {
 }
 
 impl<V> Item<V> {
-    fn new(kh: u64, ch: u64, cost: i64, val: V, exp: Time) -> Self {
+    fn new(key: u64, conflict: u64, cost: i64, val: V, exp: Time) -> Self {
         Self::New {
-            key: kh,
-            conflict: ch,
+            key,
+            conflict,
             cost,
             value: val,
             expiration: exp,
         }
     }
 
-    fn update(kh: u64, cost: i64, external_cost: i64) -> Self {
+    fn update(key: u64, cost: i64, external_cost: i64) -> Self {
         Self::Update {
-            key: kh,
+            key,
             cost,
             external_cost,
         }
     }
 
-    fn delete(kh: u64, conflict: u64) -> Self {
-        Self::Delete { key: kh, conflict }
+    fn delete(key: u64, conflict: u64) -> Self {
+        Self::Delete { key, conflict }
     }
 
     fn is_update(&self) -> bool {
@@ -148,9 +151,19 @@ pub struct CacheBuilder<
 }
 
 impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>>
-    CacheBuilder<K, V, KH, DefaultCoster<V>, DefaultUpdateValidator<V>, DefaultCacheCallback<V>, RandomState, RandomState, RandomState>
+    CacheBuilder<
+        K,
+        V,
+        KH,
+        DefaultCoster<V>,
+        DefaultUpdateValidator<V>,
+        DefaultCacheCallback<V>,
+        RandomState,
+        RandomState,
+        RandomState,
+    >
 {
-    pub fn new(num_counters: usize, max_cost: i64, kh: KH) -> Self {
+    pub fn new(num_counters: usize, max_cost: i64, index: KH) -> Self {
         Self {
             num_counters,
             max_cost,
@@ -160,14 +173,14 @@ impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>>
             callback: Some(DefaultCacheCallback::default()),
             policy_hasher: Some(RandomState::default()),
             expiration_hasher: Some(RandomState::default()),
-            key_to_hash: kh,
+            key_to_hash: index,
             update_validator: Some(DefaultUpdateValidator::default()),
             coster: Some(DefaultCoster::default()),
             ignore_internal_cost: false,
             cleanup_duration: DEFAULT_CLEANUP_DURATION,
             marker_k: Default::default(),
             marker_v: Default::default(),
-            store_hasher: Some(RandomState::default())
+            store_hasher: Some(RandomState::default()),
         }
     }
 }
@@ -221,7 +234,6 @@ impl<
             store_hasher: self.store_hasher,
             marker_k: self.marker_k,
             marker_v: self.marker_v,
-
         }
     }
 
@@ -305,14 +317,17 @@ impl<
         }
     }
 
-    pub fn set_key_hasher<NKH: KeyBuilder<K>>(self, kh: NKH) -> CacheBuilder<K, V, NKH, C, U, CB, PS, ES, SS> {
+    pub fn set_indexer<NKH: KeyBuilder<K>>(
+        self,
+        index: NKH,
+    ) -> CacheBuilder<K, V, NKH, C, U, CB, PS, ES, SS> {
         CacheBuilder {
             num_counters: self.num_counters,
             max_cost: self.max_cost,
             insert_buffer_size: self.insert_buffer_size,
             metrics: self.metrics,
             callback: self.callback,
-            key_to_hash: kh,
+            key_to_hash: index,
             update_validator: self.update_validator,
             coster: self.coster,
             ignore_internal_cost: self.ignore_internal_cost,
@@ -325,7 +340,10 @@ impl<
         }
     }
 
-    pub fn set_coster<NC: Coster<V>>(self, coster: NC) -> CacheBuilder<K, V, KH, NC, U, CB, PS, ES, SS> {
+    pub fn set_coster<NC: Coster<V>>(
+        self,
+        coster: NC,
+    ) -> CacheBuilder<K, V, KH, NC, U, CB, PS, ES, SS> {
         CacheBuilder {
             num_counters: self.num_counters,
             max_cost: self.max_cost,
@@ -368,7 +386,10 @@ impl<
         }
     }
 
-    pub fn set_callback<NCB: CacheCallback<V>>(self, cb: NCB) -> CacheBuilder<K, V, KH, C, U, NCB, PS, ES, SS> {
+    pub fn set_callback<NCB: CacheCallback<V>>(
+        self,
+        cb: NCB,
+    ) -> CacheBuilder<K, V, KH, C, U, NCB, PS, ES, SS> {
         CacheBuilder {
             num_counters: self.num_counters,
             max_cost: self.max_cost,
@@ -388,7 +409,10 @@ impl<
         }
     }
 
-    pub fn set_policy_hasher<NPS: BuildHasher + Clone + 'static>(self, hasher: NPS) -> CacheBuilder<K, V, KH, C, U, CB, NPS, ES, SS> {
+    pub fn set_policy_hasher<NPS: BuildHasher + Clone + 'static>(
+        self,
+        hasher: NPS,
+    ) -> CacheBuilder<K, V, KH, C, U, CB, NPS, ES, SS> {
         CacheBuilder {
             num_counters: self.num_counters,
             max_cost: self.max_cost,
@@ -408,7 +432,10 @@ impl<
         }
     }
 
-    pub fn set_expiration_hasher<NES: BuildHasher + Clone + 'static>(self, hasher: NES) -> CacheBuilder<K, V, KH, C, U, CB, PS, NES, SS> {
+    pub fn set_expiration_hasher<NES: BuildHasher + Clone + 'static>(
+        self,
+        hasher: NES,
+    ) -> CacheBuilder<K, V, KH, C, U, CB, PS, NES, SS> {
         CacheBuilder {
             num_counters: self.num_counters,
             max_cost: self.max_cost,
@@ -428,7 +455,10 @@ impl<
         }
     }
 
-    pub fn set_store_hasher<NSS: BuildHasher + Clone + 'static>(self, hasher: NSS) -> CacheBuilder<K, V, KH, C, U, CB, PS, ES, NSS> {
+    pub fn set_store_hasher<NSS: BuildHasher + Clone + 'static>(
+        self,
+        hasher: NSS,
+    ) -> CacheBuilder<K, V, KH, C, U, CB, PS, ES, NSS> {
         CacheBuilder {
             num_counters: self.num_counters,
             max_cost: self.max_cost,
@@ -468,11 +498,16 @@ impl<
         let (buf_tx, buf_rx) = bounded(insert_buffer_size);
         let (stop_tx, stop_rx) = bounded(0);
 
-        let expiration_map = ExpirationMap::with_hasher( self.expiration_hasher.unwrap());
+        let expiration_map = ExpirationMap::with_hasher(self.expiration_hasher.unwrap());
 
-        let store = Arc::new(ShardedMap::with_validator_and_hasher(expiration_map, self.update_validator.unwrap(), self.store_hasher.unwrap()));
+        let store = Arc::new(ShardedMap::with_validator_and_hasher(
+            expiration_map,
+            self.update_validator.unwrap(),
+            self.store_hasher.unwrap(),
+        ));
 
-        let mut policy = LFUPolicy::with_hasher(num_counters, max_cost, self.policy_hasher.unwrap())?;
+        let mut policy =
+            LFUPolicy::with_hasher(num_counters, max_cost, self.policy_hasher.unwrap())?;
 
         let item_size = store.item_size();
 
@@ -570,17 +605,26 @@ pub struct Cache<
 }
 
 impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>> Cache<K, V, KH> {
-    pub fn new(num_counters: usize, max_cost: i64, kh: KH) -> Result<Self, CacheError> {
-        CacheBuilder::new(num_counters, max_cost, kh).finalize()
+    pub fn new(num_counters: usize, max_cost: i64, index: KH) -> Result<Self, CacheError> {
+        CacheBuilder::new(num_counters, max_cost, index).finalize()
     }
 
     pub fn builder(
         num_counters: usize,
         max_cost: i64,
-        kh: KH,
-    ) -> CacheBuilder<K, V, KH, DefaultCoster<V>, DefaultUpdateValidator<V>, DefaultCacheCallback<V>, RandomState, RandomState, RandomState>
-    {
-        CacheBuilder::new(num_counters, max_cost, kh)
+        index: KH,
+    ) -> CacheBuilder<
+        K,
+        V,
+        KH,
+        DefaultCoster<V>,
+        DefaultUpdateValidator<V>,
+        DefaultCacheCallback<V>,
+        RandomState,
+        RandomState,
+        RandomState,
+    > {
+        CacheBuilder::new(num_counters, max_cost, index)
     }
 }
 
@@ -604,14 +648,14 @@ impl<
             return None;
         }
 
-        let (kh, ch) = self.key_to_hash.hash_key(key);
-        match self.store.get(&kh, ch) {
+        let (index, conflict) = self.key_to_hash.build_key(key);
+        match self.store.get(&index, conflict) {
             None => {
-                self.metrics.add(MetricType::Hit, kh, 1);
+                self.metrics.add(MetricType::Hit, index, 1);
                 None
             }
             Some(v) => {
-                self.metrics.add(MetricType::Miss, kh, 1);
+                self.metrics.add(MetricType::Miss, index, 1);
                 Some(v)
             }
         }
@@ -625,14 +669,14 @@ impl<
             return None;
         }
 
-        let (kh, ch) = self.key_to_hash.hash_key(key);
-        match self.store.get_mut(&kh, ch) {
+        let (index, conflict) = self.key_to_hash.build_key(key);
+        match self.store.get_mut(&index, conflict) {
             None => {
-                self.metrics.add(MetricType::Hit, kh, 1);
+                self.metrics.add(MetricType::Hit, index, 1);
                 None
             }
             Some(v) => {
-                self.metrics.add(MetricType::Miss, kh, 1);
+                self.metrics.add(MetricType::Miss, index, 1);
                 Some(v)
             }
         }
@@ -641,11 +685,10 @@ impl<
     // GetTTL returns the TTL for the specified key if the
     // item was found and is not expired.
     pub fn get_ttl(&self, key: &K) -> Option<Duration> {
-        let (kh, ch) = self.key_to_hash.hash_key(key);
-        self.store.get(&kh, ch)
-            .and_then(|_| self.store.expiration(&kh)
-                .map(|time| time.get_ttl())
-            )
+        let (index, conflict) = self.key_to_hash.build_key(key);
+        self.store
+            .get(&index, conflict)
+            .and_then(|_| self.store.expiration(&index).map(|time| time.get_ttl()))
     }
 
     /// `insert` attempts to add the key-value item to the cache. If it returns false,
@@ -694,9 +737,9 @@ impl<
             return;
         }
 
-        let (kh, ch) = self.key_to_hash.hash_key(&k);
+        let (index, conflict) = self.key_to_hash.build_key(&k);
         // delete immediately
-        let prev = self.store.remove(&kh, ch);
+        let prev = self.store.remove(&index, conflict);
 
         if let Some(prev) = prev {
             self.callback.on_exit(Some(prev.value.into_inner()));
@@ -705,7 +748,7 @@ impl<
         // So we must push the same item to `setBuf` with the deletion flag.
         // This ensures that if a set is followed by a delete, it will be
         // applied in the correct order.
-        let _ = self.insert_buf_tx.send(Item::delete(kh, ch));
+        let _ = self.insert_buf_tx.send(Item::delete(index, conflict));
     }
 
     pub fn clear(&self) -> Result<(), CacheError> {
@@ -729,7 +772,7 @@ impl<
                         Item::New { key, conflict, cost, value, expiration } => {
                             self.callback.on_evict(CrateItem {
                                 val: Some(value),
-                                key,
+                                index: key,
                                 conflict,
                                 cost,
                                 exp: expiration,
@@ -799,29 +842,34 @@ impl<
             Time::now_with_expiration(ttl)
         };
 
-        let (key_hash, conflict_hash) = self.key_to_hash.hash_key(&key);
+        let (index, conflict) = self.key_to_hash.build_key(&key);
 
         // cost is eventually updated. The expiration must also be immediately updated
         // to prevent items from being prematurely removed from the map.
         let external_cost = if cost == 0 { self.coster.cost(&val) } else { 0 };
-        match self.store.update(key_hash, val, conflict_hash, expiration) {
+        match self.store.update(index, val, conflict, expiration) {
             UpdateResult::NotExist(v) | UpdateResult::Reject(v) | UpdateResult::Conflict(v) => {
                 if only_update {
                     None
                 } else {
-                    Some(Item::new(key_hash, conflict_hash, cost + external_cost, v, expiration))
+                    Some(Item::new(
+                        index,
+                        conflict,
+                        cost + external_cost,
+                        v,
+                        expiration,
+                    ))
                 }
             }
             UpdateResult::Update(v) => {
                 self.callback.on_exit(Some(v));
-                Some(Item::update(key_hash, cost, external_cost))
+                Some(Item::update(index, cost, external_cost))
             }
         }
         .map_or(false, |item| {
             // Attempt to send item to policy.
             select! {
                 send(self.insert_buf_tx.tx, item) -> res => {
-
                     res.map_or(false, |_| true)
                 },
                 default => {
@@ -831,7 +879,7 @@ impl<
                         // return false which means the item was not inserted.
                         true
                     } else {
-                        self.metrics.add(MetricType::DropSets, key_hash, 1);
+                        self.metrics.add(MetricType::DropSets, index, 1);
                         false
                     }
                 }
@@ -840,7 +888,15 @@ impl<
     }
 }
 
-struct CacheProcessor<V: Send + Sync + 'static, C: Coster<V>, U: UpdateValidator<V>, CB: CacheCallback<V>, PS: BuildHasher + Clone + 'static, ES: BuildHasher + Clone + 'static, SS: BuildHasher + Clone + 'static> {
+struct CacheProcessor<
+    V: Send + Sync + 'static,
+    C: Coster<V>,
+    U: UpdateValidator<V>,
+    CB: CacheCallback<V>,
+    PS: BuildHasher + Clone + 'static,
+    ES: BuildHasher + Clone + 'static,
+    SS: BuildHasher + Clone + 'static,
+> {
     insert_buf_rx: Receiver<Item<V>>,
     stop_rx: Receiver<()>,
     metrics: Arc<Metrics>,
@@ -855,8 +911,15 @@ struct CacheProcessor<V: Send + Sync + 'static, C: Coster<V>, U: UpdateValidator
     item_size: usize,
 }
 
-impl<V: Send + Sync + 'static, C: Coster<V>, U: UpdateValidator<V>, CB: CacheCallback<V>, PS: BuildHasher + Clone + 'static, ES: BuildHasher + Clone + 'static, SS: BuildHasher + Clone + 'static>
-    CacheProcessor<V, C, U, CB, PS, ES, SS>
+impl<
+        V: Send + Sync + 'static,
+        C: Coster<V>,
+        U: UpdateValidator<V>,
+        CB: CacheCallback<V>,
+        PS: BuildHasher + Clone + 'static,
+        ES: BuildHasher + Clone + 'static,
+        SS: BuildHasher + Clone + 'static,
+    > CacheProcessor<V, C, U, CB, PS, ES, SS>
 {
     pub fn spawn(
         num_to_keep: usize,
@@ -929,7 +992,7 @@ impl<V: Send + Sync + 'static, C: Coster<V>, U: UpdateValidator<V>, CB: CacheCal
                 } else {
                     self.callback.on_reject(CrateItem {
                         val: Some(value),
-                        key,
+                        index: key,
                         conflict,
                         cost,
                         exp: expiration,
@@ -941,7 +1004,7 @@ impl<V: Send + Sync + 'static, C: Coster<V>, U: UpdateValidator<V>, CB: CacheCal
                         let sitem = self.store.remove(&victim.key, 0);
                         if let Some(sitem) = sitem {
                             let item = CrateItem {
-                                key: victim.key,
+                                index: victim.key,
                                 val: Some(sitem.value.into_inner()),
                                 cost: victim.cost,
                                 conflict: sitem.conflict,
@@ -996,10 +1059,10 @@ impl<V: Send + Sync + 'static, C: Coster<V>, U: UpdateValidator<V>, CB: CacheCal
 
     #[inline]
     fn prepare_evict(&mut self, item: &CrateItem<V>) {
-        if let Some(ts) = self.start_ts.get(&item.key) {
+        if let Some(ts) = self.start_ts.get(&item.index) {
             self.metrics.track_eviction(ts.elapsed().as_secs() as i64);
 
-            self.start_ts.remove(&item.key);
+            self.start_ts.remove(&item.index);
         }
     }
 

@@ -1,13 +1,18 @@
-use crate::{bbloom::Bloom, error::CacheError, metrics::{MetricType, Metrics}, sketch::CountMinSketch};
+use crate::{
+    bbloom::Bloom,
+    error::CacheError,
+    metrics::{MetricType, Metrics},
+    sketch::CountMinSketch,
+};
 use crossbeam::channel::{bounded, unbounded, Receiver, RecvError, Sender};
 use parking_lot::Mutex;
+use std::hash::BuildHasher;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{spawn, JoinHandle};
 use std::{
     collections::{hash_map::RandomState, HashMap},
     sync::Arc,
 };
-use std::hash::BuildHasher;
 
 /// DEFAULT_SAMPLES is the number of items to sample when looking at eviction
 /// candidates. 5 seems to be the most optimal number [citation needed].
@@ -66,7 +71,7 @@ impl LFUPolicy {
 }
 
 impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
-    pub fn with_hasher(ctrs: usize, max_cost: i64, hasher: S) ->  Result<Self, CacheError> {
+    pub fn with_hasher(ctrs: usize, max_cost: i64, hasher: S) -> Result<Self, CacheError> {
         let inner = PolicyInner::with_hasher(ctrs, max_cost, hasher)?;
 
         let (items_tx, items_rx) = unbounded();
@@ -85,7 +90,6 @@ impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
 
         Ok(this)
     }
-
 
     pub fn collect_metrics(&mut self, metrics: Arc<Metrics>) {
         self.metrics = Some(metrics.clone());
@@ -259,9 +263,8 @@ impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
     }
 }
 
-unsafe impl<S: BuildHasher + Clone + 'static> Send for  LFUPolicy<S> {}
-unsafe impl<S: BuildHasher + Clone + 'static> Sync for  LFUPolicy<S> {}
-
+unsafe impl<S: BuildHasher + Clone + 'static> Send for LFUPolicy<S> {}
+unsafe impl<S: BuildHasher + Clone + 'static> Sync for LFUPolicy<S> {}
 
 struct PolicyInner<S = RandomState> {
     admit: TinyLFU,
@@ -293,7 +296,7 @@ impl<S: BuildHasher + Clone + 'static> PolicyInner<S> {
 }
 
 unsafe impl<S: BuildHasher + Clone + 'static> Send for PolicyInner<S> {}
-unsafe impl<S: BuildHasher + Clone + 'static> Sync for PolicyInner<S>{}
+unsafe impl<S: BuildHasher + Clone + 'static> Sync for PolicyInner<S> {}
 
 struct PolicyProcessor<S: BuildHasher + Clone + 'static> {
     inner: Arc<Mutex<PolicyInner<S>>>,
@@ -337,7 +340,6 @@ impl<S: BuildHasher + Clone + 'static> PolicyProcessor<S> {
 
 unsafe impl<S: BuildHasher + Clone + 'static> Send for PolicyProcessor<S> {}
 unsafe impl<S: BuildHasher + Clone + 'static> Sync for PolicyProcessor<S> {}
-
 
 /// SampledLFU stores key-costs paris.
 struct SampledLFU<S = RandomState> {

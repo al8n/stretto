@@ -1,5 +1,8 @@
 use crate::cache::{Cache, Item};
-use crate::{CacheCallback, DefaultKeyBuilder, Coster, Item as CrateItem, KeyBuilder, TransparentKeyBuilder, UpdateValidator};
+use crate::{
+    CacheCallback, Coster, DefaultKeyBuilder, Item as CrateItem, KeyBuilder, TransparentKeyBuilder,
+    UpdateValidator,
+};
 use crossbeam::channel::bounded;
 use parking_lot::Mutex;
 use rand::{thread_rng, Rng};
@@ -18,7 +21,7 @@ fn new_test_cache<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>>(
     Cache::new(100, 10, kh).unwrap()
 }
 
-fn retry_set<C: Coster<u64>, U: UpdateValidator<u64>,CB: CacheCallback<u64>>(
+fn retry_set<C: Coster<u64>, U: UpdateValidator<u64>, CB: CacheCallback<u64>>(
     c: Arc<Cache<u64, u64, TransparentKeyBuilder, C, U, CB>>,
     key: u64,
     val: u64,
@@ -64,9 +67,17 @@ fn test_cache_key_to_hash() {
     }
 
     impl KeyBuilder<u64> for KHTest {
-        fn hash_key(&self, k: &u64) -> (u64, u64) {
+        fn hash_index(&self, key: &u64) -> u64 {
+            *key
+        }
+
+        fn hash_conflict(&self, _key: &u64) -> u64 {
+            0
+        }
+
+        fn build_key(&self, k: &u64) -> (u64, u64) {
             self.ctr.fetch_add(1, Ordering::SeqCst);
-            (*k, 0)
+            (self.hash_index(k), self.hash_conflict(k))
         }
     }
 
@@ -188,24 +199,21 @@ fn test_cache_multiple_close() {
 
 #[test]
 fn test_cache_insert_after_close() {
-    let c =
-        new_test_cache::<u64, u64, TransparentKeyBuilder>(TransparentKeyBuilder::default());
+    let c = new_test_cache::<u64, u64, TransparentKeyBuilder>(TransparentKeyBuilder::default());
     let _ = c.close();
     assert!(!c.insert(1, 1, 1));
 }
 
 #[test]
 fn test_cache_clear_after_close() {
-    let c =
-        new_test_cache::<u64, u64, TransparentKeyBuilder>(TransparentKeyBuilder::default());
+    let c = new_test_cache::<u64, u64, TransparentKeyBuilder>(TransparentKeyBuilder::default());
     let _ = c.close();
     let _ = c.clear();
 }
 
 #[test]
 fn test_cache_get_after_close() {
-    let c =
-        new_test_cache::<u64, u64, TransparentKeyBuilder>(TransparentKeyBuilder::default());
+    let c = new_test_cache::<u64, u64, TransparentKeyBuilder>(TransparentKeyBuilder::default());
     assert!(c.insert(1, 1, 1));
     let _ = c.close();
 
@@ -214,8 +222,7 @@ fn test_cache_get_after_close() {
 
 #[test]
 fn test_cache_remove_after_close() {
-    let c =
-        new_test_cache::<u64, u64, TransparentKeyBuilder>(TransparentKeyBuilder::default());
+    let c = new_test_cache::<u64, u64, TransparentKeyBuilder>(TransparentKeyBuilder::default());
     assert!(c.insert(1, 1, 1));
     let _ = c.close();
 
@@ -238,7 +245,7 @@ fn test_cache_process_items() {
 
         fn on_evict(&self, item: CrateItem<u64>) {
             let mut evicted = self.evicted.lock();
-            evicted.insert(item.key);
+            evicted.insert(item.index);
             self.on_exit(item.val)
         }
     }
@@ -369,15 +376,16 @@ fn test_recache_with_ttl() {
     assert_eq!(c.get(&1).unwrap().read(), 2);
 }
 
-
 #[test]
 fn test_cache_set_with_ttl() {
     let cb = Arc::new(Mutex::new(HashSet::new()));
-    let c = Arc::new(Cache::builder(100, 10, TransparentKeyBuilder::default())
-        .set_callback(TestCallback::new(cb.clone()))
-        .set_ignore_internal_cost(true)
-        .finalize()
-        .unwrap());
+    let c = Arc::new(
+        Cache::builder(100, 10, TransparentKeyBuilder::default())
+            .set_callback(TestCallback::new(cb.clone()))
+            .set_ignore_internal_cost(true)
+            .finalize()
+            .unwrap(),
+    );
 
     retry_set(c.clone(), 1, 1, 1, Duration::from_secs(1));
 
@@ -419,10 +427,12 @@ fn test_cache_remove() {
 
 #[test]
 fn test_cache_remove_with_ttl() {
-    let c = Arc::new(Cache::builder(100, 10, TransparentKeyBuilder::default())
-        .set_ignore_internal_cost(true)
-        .finalize()
-        .unwrap());
+    let c = Arc::new(
+        Cache::builder(100, 10, TransparentKeyBuilder::default())
+            .set_ignore_internal_cost(true)
+            .finalize()
+            .unwrap(),
+    );
 
     retry_set(c.clone(), 3, 1, 1, Duration::from_secs(10));
     sleep(Duration::from_secs(1));
@@ -436,11 +446,13 @@ fn test_cache_remove_with_ttl() {
 
 #[test]
 fn test_cache_get_ttl() {
-    let c = Arc::new(Cache::builder(100, 10, TransparentKeyBuilder::default())
-        .set_metrics(true)
-        .set_ignore_internal_cost(true)
-        .finalize()
-        .unwrap());
+    let c = Arc::new(
+        Cache::builder(100, 10, TransparentKeyBuilder::default())
+            .set_metrics(true)
+            .set_ignore_internal_cost(true)
+            .finalize()
+            .unwrap(),
+    );
 
     // try expiration with valid ttl item
     {
@@ -480,13 +492,12 @@ fn test_cache_get_ttl() {
 
 #[test]
 fn test_cache_drop_clear() {
-    let c =
-        Cache::builder(100, 10, TransparentKeyBuilder::default())
-            .set_buffer_size(4096)
-            .set_metrics(true)
-            .set_ignore_internal_cost(true)
-            .finalize()
-            .unwrap();
+    let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
+        .set_buffer_size(4096)
+        .set_metrics(true)
+        .set_ignore_internal_cost(true)
+        .finalize()
+        .unwrap();
     let c = Arc::new(c);
     let (stop_tx, stop_rx) = bounded(0);
     let tc = c.clone();
@@ -509,9 +520,8 @@ fn test_cache_drop_clear() {
         }
     });
 
-
     sleep(Duration::from_millis(100));
-    let _  = stop_tx.send(());
+    let _ = stop_tx.send(());
     c.clear().unwrap();
     assert_eq!(c.metrics.get_keys_added(), Some(0));
 
@@ -522,12 +532,11 @@ fn test_cache_drop_clear() {
 
 #[test]
 fn test_cache_clear() {
-    let c =
-        Cache::builder(100, 10, TransparentKeyBuilder::default())
-            .set_metrics(true)
-            .set_ignore_internal_cost(true)
-            .finalize()
-            .unwrap();
+    let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
+        .set_metrics(true)
+        .set_ignore_internal_cost(true)
+        .finalize()
+        .unwrap();
 
     (0..10).for_each(|i| {
         c.insert(i, i, 1);
@@ -544,30 +553,27 @@ fn test_cache_clear() {
 
 #[test]
 fn test_cache_metrics_clear() {
-    let c =
-        Cache::builder(100, 10, TransparentKeyBuilder::default())
-            .set_metrics(true)
-            .finalize()
-            .unwrap();
+    let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
+        .set_metrics(true)
+        .finalize()
+        .unwrap();
 
     let c = Arc::new(c);
     c.insert(1, 1, 1);
 
     let (stop_tx, stop_rx) = bounded(0);
     let tc = c.clone();
-    spawn(move || {
-        loop {
-            select! {
-                recv(stop_rx) -> _ => return,
-                default => {
-                    tc.get(&1);
-                }
+    spawn(move || loop {
+        select! {
+            recv(stop_rx) -> _ => return,
+            default => {
+                tc.get(&1);
             }
         }
     });
 
     sleep(Duration::from_millis(100));
-    let  _ = c.clear();
+    let _ = c.clear();
     stop_tx.send(()).unwrap();
     c.metrics.clear();
 }
@@ -575,7 +581,6 @@ fn test_cache_metrics_clear() {
 // Regression test for bug https://github.com/dgraph-io/ristretto/issues/167
 #[test]
 fn test_cache_drop_updates() {
-
     struct TestCallback {
         set: Arc<Mutex<HashSet<u64>>>,
     }
@@ -586,25 +591,30 @@ fn test_cache_drop_updates() {
         fn on_evict(&self, item: CrateItem<String>) {
             let last_evicted_insert = item.val.unwrap();
 
-            assert!(!self.set.lock().contains(&last_evicted_insert.parse().unwrap()), "val = {} was dropped but it got evicted. Dropped items: {:?}", last_evicted_insert, self.set.lock().iter().map(|v| *v).collect::<Vec<u64>>());
+            assert!(
+                !self
+                    .set
+                    .lock()
+                    .contains(&last_evicted_insert.parse().unwrap()),
+                "val = {} was dropped but it got evicted. Dropped items: {:?}",
+                last_evicted_insert,
+                self.set.lock().iter().map(|v| *v).collect::<Vec<u64>>()
+            );
         }
     }
 
     fn test() {
         let set = Arc::new(Mutex::new(HashSet::new()));
-        let c =
-            Cache::builder(100, 10, DefaultKeyBuilder::default())
-                .set_callback(TestCallback {
-                    set: set.clone(),
-                })
-                .set_metrics(true)
-                // This is important. The race condition shows up only when the insert buf
-                // is full and that's why we reduce the buf size here. The test will
-                // try to fill up the insert buf to it's capacity and then perform an
-                // update on a key.
-                .set_buffer_size(10)
-                .finalize()
-                .unwrap();
+        let c = Cache::builder(100, 10, DefaultKeyBuilder::default())
+            .set_callback(TestCallback { set: set.clone() })
+            .set_metrics(true)
+            // This is important. The race condition shows up only when the insert buf
+            // is full and that's why we reduce the buf size here. The test will
+            // try to fill up the insert buf to it's capacity and then perform an
+            // update on a key.
+            .set_buffer_size(10)
+            .finalize()
+            .unwrap();
 
         for i in 0..50 {
             let v = format!("{:0100}", i);
@@ -623,7 +633,6 @@ fn test_cache_drop_updates() {
         let _ = c.close();
     }
 
-
     // Run the test 100 times since it's not reliable.
     (0..100).for_each(|_| test())
 }
@@ -634,11 +643,10 @@ fn test_cache_with_ttl() {
     let mut clean_win = 0;
 
     for _ in 0..10 {
-        let c =
-            Cache::builder(100, 1000, TransparentKeyBuilder::default())
-                .set_metrics(true)
-                .finalize()
-                .unwrap();
+        let c = Cache::builder(100, 1000, TransparentKeyBuilder::default())
+            .set_metrics(true)
+            .finalize()
+            .unwrap();
 
         // Set initial value for key = 1
         assert!(c.insert_with_ttl(1, 1, 0, Duration::from_millis(800)));
@@ -647,8 +655,12 @@ fn test_cache_with_ttl() {
 
         // Get value from cache for key = 1
         match c.get(&1) {
-            None => {clean_win += 1;}
-            Some(_) => {process_win += 1;}
+            None => {
+                clean_win += 1;
+            }
+            Some(_) => {
+                process_win += 1;
+            }
         }
         // assert_eq!(c.get(&1).unwrap().read(), 1);
 

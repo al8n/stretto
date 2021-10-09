@@ -82,6 +82,7 @@ impl<const BS: usize, const CPB: usize> Histogram<BS, CPB> {
     }
 
     /// `mean` returns the mean value for the histogram.
+    #[allow(dead_code)]
     pub fn mean(&self) -> f64 {
         if self.count.load(Ordering::SeqCst) == 0 {
             0f64

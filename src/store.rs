@@ -7,9 +7,9 @@ use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fmt::{Debug, Formatter};
+use std::hash::BuildHasher;
 use std::mem;
 use std::sync::Arc;
-use std::hash::BuildHasher;
 
 const NUM_OF_SHARDS: usize = 256;
 
@@ -30,7 +30,12 @@ impl<V> Debug for StoreItem<V> {
     }
 }
 
-pub(crate) struct ShardedMap<V: Send + Sync + 'static, U = DefaultUpdateValidator<V>, SS = RandomState, ES = RandomState> {
+pub(crate) struct ShardedMap<
+    V: Send + Sync + 'static,
+    U = DefaultUpdateValidator<V>,
+    SS = RandomState,
+    ES = RandomState,
+> {
     shards: Box<[RwLock<HashMap<u64, StoreItem<V>, SS>>; NUM_OF_SHARDS]>,
     em: ExpirationMap<ES>,
     store_item_size: usize,
@@ -38,14 +43,15 @@ pub(crate) struct ShardedMap<V: Send + Sync + 'static, U = DefaultUpdateValidato
 }
 
 impl<V: Send + Sync + 'static> ShardedMap<V> {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::with_validator(ExpirationMap::new(), DefaultUpdateValidator::default())
     }
 }
 
 impl<V: Send + Sync + 'static, U: UpdateValidator<V>> ShardedMap<V, U> {
+    #[allow(dead_code)]
     pub fn with_validator(em: ExpirationMap<RandomState>, validator: U) -> Self {
-
         let shards = Box::new(
             (0..NUM_OF_SHARDS)
                 .map(|_| RwLock::new(HashMap::new()))
@@ -64,9 +70,14 @@ impl<V: Send + Sync + 'static, U: UpdateValidator<V>> ShardedMap<V, U> {
     }
 }
 
-impl<V: Send + Sync + 'static, U: UpdateValidator<V>, SS: BuildHasher + Clone + 'static, ES: BuildHasher + Clone + 'static> ShardedMap<V, U, SS, ES> {
+impl<
+        V: Send + Sync + 'static,
+        U: UpdateValidator<V>,
+        SS: BuildHasher + Clone + 'static,
+        ES: BuildHasher + Clone + 'static,
+    > ShardedMap<V, U, SS, ES>
+{
     pub fn with_validator_and_hasher(em: ExpirationMap<ES>, validator: U, hasher: SS) -> Self {
-
         let shards = Box::new(
             (0..NUM_OF_SHARDS)
                 .map(|_| RwLock::new(HashMap::with_hasher(hasher.clone())))
@@ -210,7 +221,10 @@ impl<V: Send + Sync + 'static, U: UpdateValidator<V>, SS: BuildHasher + Clone + 
             .map(|val| val.expiration)
     }
 
-    pub fn clean_up<PS: BuildHasher + Clone + 'static>(&self, policy: Arc<LFUPolicy<PS>>) -> Vec<CrateItem<V>> {
+    pub fn clean_up<PS: BuildHasher + Clone + 'static>(
+        &self,
+        policy: Arc<LFUPolicy<PS>>,
+    ) -> Vec<CrateItem<V>> {
         let now = Time::now();
         self.em.cleanup(now).map_or(Vec::with_capacity(0), |m| {
             m.iter()
@@ -222,7 +236,7 @@ impl<V: Send + Sync + 'static, U: UpdateValidator<V>, SS: BuildHasher + Clone + 
                             policy.remove(k);
                             self.remove(k, *v).map(|sitem| CrateItem {
                                 val: Some(sitem.value.into_inner()),
-                                key: sitem.key,
+                                index: sitem.key,
                                 conflict: sitem.conflict,
                                 cost,
                                 exp: t,
@@ -246,8 +260,14 @@ impl<V: Send + Sync + 'static, U: UpdateValidator<V>, SS: BuildHasher + Clone + 
     }
 }
 
-unsafe impl<V: Send + Sync + 'static, U: UpdateValidator<V>, SS: BuildHasher, ES: BuildHasher> Send for ShardedMap<V, U, SS, ES> {}
-unsafe impl<V: Send + Sync + 'static, U: UpdateValidator<V>, SS: BuildHasher, ES: BuildHasher> Sync for ShardedMap<V, U, SS, ES> {}
+unsafe impl<V: Send + Sync + 'static, U: UpdateValidator<V>, SS: BuildHasher, ES: BuildHasher> Send
+    for ShardedMap<V, U, SS, ES>
+{
+}
+unsafe impl<V: Send + Sync + 'static, U: UpdateValidator<V>, SS: BuildHasher, ES: BuildHasher> Sync
+    for ShardedMap<V, U, SS, ES>
+{
+}
 
 pub(crate) enum UpdateResult<V: Send + Sync + 'static> {
     NotExist(V),
