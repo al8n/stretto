@@ -561,16 +561,20 @@ impl<
 /// policy and a Sampled LFU eviction policy. You can use the same Cache instance
 /// from as many threads as you want.
 pub struct Cache<
-    K: Hash + Eq,
-    V: Send + Sync + 'static,
-    KH: KeyBuilder<K>,
+    K,
+    V,
+    KH,
     C = DefaultCoster<V>,
     U = DefaultUpdateValidator<V>,
     CB = DefaultCacheCallback<V>,
     PS = RandomState,
     ES = RandomState,
     SS = RandomState,
-> {
+> where
+    K: Hash + Eq,
+    V: Send + Sync + 'static,
+    KH: KeyBuilder<K>,
+{
     /// store is the central concurrent hashmap where key-value items are stored.
     store: Arc<ShardedMap<V, U, SS, ES>>,
 
@@ -628,17 +632,17 @@ impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>> Cache<K, V, KH> 
     }
 }
 
-impl<
-        K: Hash + Eq,
-        V: Send + Sync + 'static,
-        KH: KeyBuilder<K>,
-        C: Coster<V>,
-        U: UpdateValidator<V>,
-        CB: CacheCallback<V>,
-        PS: BuildHasher + Clone + 'static,
-        ES: BuildHasher + Clone + 'static,
-        SS: BuildHasher + Clone + 'static,
-    > Cache<K, V, KH, C, U, CB, PS, ES, SS>
+impl<K, V, KH, C, U, CB, PS, ES, SS> Cache<K, V, KH, C, U, CB, PS, ES, SS>
+where
+    K: Hash + Eq,
+    V: Send + Sync + 'static,
+    KH: KeyBuilder<K>,
+    C: Coster<V>,
+    U: UpdateValidator<V>,
+    CB: CacheCallback<V>,
+    PS: BuildHasher + Clone + 'static,
+    ES: BuildHasher + Clone + 'static,
+    SS: BuildHasher + Clone + 'static,
 {
     /// `get` returns the value (if any) and a boolean representing whether the
     /// value was found or not. The value can be nil and the boolean can be true at
@@ -888,7 +892,8 @@ impl<
     }
 }
 
-struct CacheProcessor<
+struct CacheProcessor<V, C, U, CB, PS, ES, SS>
+where
     V: Send + Sync + 'static,
     C: Coster<V>,
     U: UpdateValidator<V>,
@@ -896,7 +901,7 @@ struct CacheProcessor<
     PS: BuildHasher + Clone + 'static,
     ES: BuildHasher + Clone + 'static,
     SS: BuildHasher + Clone + 'static,
-> {
+{
     insert_buf_rx: Receiver<Item<V>>,
     stop_rx: Receiver<()>,
     metrics: Arc<Metrics>,
@@ -911,15 +916,15 @@ struct CacheProcessor<
     item_size: usize,
 }
 
-impl<
-        V: Send + Sync + 'static,
-        C: Coster<V>,
-        U: UpdateValidator<V>,
-        CB: CacheCallback<V>,
-        PS: BuildHasher + Clone + 'static,
-        ES: BuildHasher + Clone + 'static,
-        SS: BuildHasher + Clone + 'static,
-    > CacheProcessor<V, C, U, CB, PS, ES, SS>
+impl<V, C, U, CB, PS, ES, SS> CacheProcessor<V, C, U, CB, PS, ES, SS>
+where
+    V: Send + Sync + 'static,
+    C: Coster<V>,
+    U: UpdateValidator<V>,
+    CB: CacheCallback<V>,
+    PS: BuildHasher + Clone + 'static,
+    ES: BuildHasher + Clone + 'static,
+    SS: BuildHasher + Clone + 'static,
 {
     pub fn spawn(
         num_to_keep: usize,

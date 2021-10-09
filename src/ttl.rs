@@ -114,18 +114,6 @@ impl<S: BuildHasher> DerefMut for Bucket<S> {
 }
 
 #[derive(Debug)]
-pub(crate) struct Buckets<S = RandomState>(HashMap<i64, Bucket<S>, S>);
-
-impl<S: BuildHasher> Buckets<S> {
-    fn new(hasher: S) -> Self {
-        Self(HashMap::with_hasher(hasher))
-    }
-}
-
-unsafe impl<S: BuildHasher> Send for Buckets<S> {}
-unsafe impl<S: BuildHasher> Sync for Buckets<S> {}
-
-#[derive(Debug)]
 pub(crate) struct ExpirationMap<S = RandomState> {
     buckets: RwLock<RefCell<HashMap<i64, Bucket<S>, S>>>,
     hasher: S,
