@@ -99,6 +99,20 @@ impl Metrics {
         Self::Op(MetricsInner::new())
     }
 
+    pub fn is_op(&self) -> bool {
+        match self {
+            Metrics::Noop => false,
+            Metrics::Op(_) => true,
+        }
+    }
+
+    pub fn is_noop(&self) -> bool {
+        match self {
+            Metrics::Noop => true,
+            Metrics::Op(_) => false,
+        }
+    }
+
     pub(crate) fn track_eviction(&self, num_seconds: i64) {
         match self {
             Metrics::Noop => return,

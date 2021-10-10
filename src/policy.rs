@@ -1,14 +1,21 @@
+#[cfg(not(feature = "tokio"))]
+mod sync_impl;
+#[cfg(not(feature = "tokio"))]
+pub use sync_impl::LFUPolicy;
+
+#[cfg(feature = "tokio")]
+mod async_impl;
+#[cfg(feature = "tokio")]
+pub use async_impl::LFUPolicy;
+
 use crate::{
     bbloom::Bloom,
     error::CacheError,
     metrics::{MetricType, Metrics},
     sketch::CountMinSketch,
 };
-use crossbeam::channel::{bounded, unbounded, Receiver, RecvError, Sender};
 use parking_lot::Mutex;
 use std::hash::BuildHasher;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::{spawn, JoinHandle};
 use std::{
     collections::{hash_map::RandomState, HashMap},
     sync::Arc,
@@ -19,7 +26,7 @@ use std::{
 const DEFAULT_SAMPLES: usize = 5;
 
 #[derive(Copy, Clone, Debug, Default)]
-pub(crate) struct PolicyPair {
+pub struct PolicyPair {
     pub(crate) key: u64,
     pub(crate) cost: i64,
 }
@@ -39,91 +46,42 @@ impl Into<PolicyPair> for (u64, i64) {
     }
 }
 
-pub(crate) struct LFUPolicy<S = RandomState> {
-    inner: Arc<Mutex<PolicyInner<S>>>,
-    processor_handle: JoinHandle<()>,
-    items_tx: Sender<Vec<u64>>,
-    stop_tx: Sender<()>,
-    is_closed: AtomicBool,
-    metrics: Option<Arc<Metrics>>,
+pub(crate) struct PolicyInner<S = RandomState> {
+    pub(crate) admit: TinyLFU,
+    pub(crate) costs: SampledLFU<S>,
 }
 
-impl LFUPolicy {
-    pub(crate) fn new(ctrs: usize, max_cost: i64) -> Result<Self, CacheError> {
-        let inner = PolicyInner::new(ctrs, max_cost)?;
-
-        let (items_tx, items_rx) = unbounded();
-        let (stop_tx, stop_rx) = bounded(1);
-
-        let handle = PolicyProcessor::spawn(inner.clone(), items_rx, stop_rx);
-
+impl PolicyInner {
+    fn new(ctrs: usize, max_cost: i64) -> Result<Arc<Mutex<Self>>, CacheError> {
         let this = Self {
-            inner: inner.clone(),
-            processor_handle: handle,
-            items_tx,
-            stop_tx,
-            is_closed: AtomicBool::new(false),
-            metrics: None,
+            admit: TinyLFU::new(ctrs)?,
+            costs: SampledLFU::new(max_cost),
         };
-
-        Ok(this)
+        Ok(Arc::new(Mutex::new(this)))
     }
 }
+
+impl<S: BuildHasher + Clone + 'static> PolicyInner<S> {
+    fn set_metrics(&mut self, metrics: Arc<Metrics>) {
+        self.costs.metrics = metrics;
+    }
+
+    fn with_hasher(ctrs: usize, max_cost: i64, hasher: S) -> Result<Arc<Mutex<Self>>, CacheError> {
+        let this = Self {
+            admit: TinyLFU::new(ctrs)?,
+            costs: SampledLFU::with_hasher(max_cost, hasher),
+        };
+        Ok(Arc::new(Mutex::new(this)))
+    }
+}
+
+unsafe impl<S: BuildHasher + Clone + 'static> Send for PolicyInner<S> {}
+unsafe impl<S: BuildHasher + Clone + 'static> Sync for PolicyInner<S> {}
 
 impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
-    pub fn with_hasher(ctrs: usize, max_cost: i64, hasher: S) -> Result<Self, CacheError> {
-        let inner = PolicyInner::with_hasher(ctrs, max_cost, hasher)?;
-
-        let (items_tx, items_rx) = unbounded();
-        let (stop_tx, stop_rx) = bounded(1);
-
-        let handle = PolicyProcessor::spawn(inner.clone(), items_rx, stop_rx);
-
-        let this = Self {
-            inner: inner.clone(),
-            processor_handle: handle,
-            items_tx,
-            stop_tx,
-            is_closed: AtomicBool::new(false),
-            metrics: None,
-        };
-
-        Ok(this)
-    }
-
     pub fn collect_metrics(&mut self, metrics: Arc<Metrics>) {
-        self.metrics = Some(metrics.clone());
+        self.metrics = metrics.clone();
         self.inner.lock().set_metrics(metrics);
-    }
-
-    pub fn push(&self, keys: Vec<u64>) -> Result<bool, CacheError> {
-        if self.is_closed.load(Ordering::SeqCst) {
-            return Ok(false);
-        }
-        let num_of_keys = keys.len() as u64;
-        if num_of_keys == 0 {
-            return Ok(true);
-        }
-        let first = keys[0];
-        select! {
-            send(self.items_tx, keys) -> res =>
-                res
-                .map(|_| {
-                    if let Some(ref m) = self.metrics {
-                        m.add(MetricType::KeepGets, first, num_of_keys);
-                    }
-                    true
-                })
-                .map_err(|e| {
-                    CacheError::SendError(format!("sending on a disconnected channel, msg: {:?}", e.0))
-                }),
-            default => {
-                if let Some(ref m) = self.metrics {
-                    m.add(MetricType::DropGets, first, num_of_keys);
-                }
-                return Ok(false);
-            }
-        }
     }
 
     pub fn add(&self, key: u64, cost: i64) -> (Option<Vec<PolicyPair>>, bool) {
@@ -148,9 +106,7 @@ impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
             // There's enough room in the cache to store the new item without
             // overflowing. Do that now and stop here.
             inner.costs.increment(key, cost);
-            if let Some(ref m) = self.metrics {
-                m.add(MetricType::CostAdd, key, cost as u64);
-            }
+            self.metrics.add(MetricType::CostAdd, key, cost as u64);
             return (None, true);
         }
 
@@ -185,9 +141,7 @@ impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
 
             // If the incoming item isn't worth keeping in the policy, reject.
             if inc_hits < min_hits {
-                if let Some(ref m) = self.metrics {
-                    m.add(MetricType::RejectSets, key, 1);
-                }
+                self.metrics.add(MetricType::RejectSets, key, 1);
                 return (Some(victims), false);
             }
 
@@ -205,9 +159,7 @@ impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
         }
 
         inner.costs.increment(key, cost);
-        if let Some(ref m) = self.metrics {
-            m.add(MetricType::CostAdd, key, cost as u64);
-        }
+        self.metrics.add(MetricType::CostAdd, key, cost as u64);
         (Some(victims), true)
     }
 
@@ -242,16 +194,6 @@ impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
         inner.costs.clear();
     }
 
-    pub fn close(&mut self) {
-        if self.is_closed.load(Ordering::SeqCst) {
-            return;
-        }
-
-        // block until the Processor thread returns.
-        self.stop_tx.send(()).unwrap_or(());
-        self.is_closed.store(true, Ordering::SeqCst);
-    }
-
     pub fn max_cost(&self) -> i64 {
         let inner = self.inner.lock();
         inner.costs.get_max_cost()
@@ -266,88 +208,13 @@ impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
 unsafe impl<S: BuildHasher + Clone + 'static> Send for LFUPolicy<S> {}
 unsafe impl<S: BuildHasher + Clone + 'static> Sync for LFUPolicy<S> {}
 
-struct PolicyInner<S = RandomState> {
-    admit: TinyLFU,
-    costs: SampledLFU<S>,
-}
-
-impl PolicyInner {
-    fn new(ctrs: usize, max_cost: i64) -> Result<Arc<Mutex<Self>>, CacheError> {
-        let this = Self {
-            admit: TinyLFU::new(ctrs)?,
-            costs: SampledLFU::new(max_cost),
-        };
-        Ok(Arc::new(Mutex::new(this)))
-    }
-}
-
-impl<S: BuildHasher + Clone + 'static> PolicyInner<S> {
-    fn set_metrics(&mut self, metrics: Arc<Metrics>) {
-        self.costs.metrics = Some(metrics);
-    }
-
-    fn with_hasher(ctrs: usize, max_cost: i64, hasher: S) -> Result<Arc<Mutex<Self>>, CacheError> {
-        let this = Self {
-            admit: TinyLFU::new(ctrs)?,
-            costs: SampledLFU::with_hasher(max_cost, hasher),
-        };
-        Ok(Arc::new(Mutex::new(this)))
-    }
-}
-
-unsafe impl<S: BuildHasher + Clone + 'static> Send for PolicyInner<S> {}
-unsafe impl<S: BuildHasher + Clone + 'static> Sync for PolicyInner<S> {}
-
-struct PolicyProcessor<S: BuildHasher + Clone + 'static> {
-    inner: Arc<Mutex<PolicyInner<S>>>,
-    items_rx: Receiver<Vec<u64>>,
-    stop_rx: Receiver<()>,
-}
-
-impl<S: BuildHasher + Clone + 'static> PolicyProcessor<S> {
-    fn spawn(
-        inner: Arc<Mutex<PolicyInner<S>>>,
-        items_rx: Receiver<Vec<u64>>,
-        stop_rx: Receiver<()>,
-    ) -> JoinHandle<()> {
-        let this = Self {
-            inner,
-            items_rx,
-            stop_rx,
-        };
-
-        spawn(move || loop {
-            select! {
-                recv(this.items_rx) -> items => this.handle_items(items),
-                recv(this.stop_rx) -> _ => {
-                    drop(this);
-                    return;
-                },
-            }
-        })
-    }
-
-    fn handle_items(&self, items: Result<Vec<u64>, RecvError>) {
-        match items {
-            Ok(items) => {
-                let mut inner = self.inner.lock();
-                inner.admit.increments(items);
-            }
-            Err(e) => error!("policy processor error: {}", e),
-        }
-    }
-}
-
-unsafe impl<S: BuildHasher + Clone + 'static> Send for PolicyProcessor<S> {}
-unsafe impl<S: BuildHasher + Clone + 'static> Sync for PolicyProcessor<S> {}
-
 /// SampledLFU stores key-costs paris.
-struct SampledLFU<S = RandomState> {
+pub(crate) struct SampledLFU<S = RandomState> {
     samples: usize,
     max_cost: i64,
     used: i64,
     key_costs: HashMap<u64, i64, S>,
-    metrics: Option<Arc<Metrics>>,
+    metrics: Arc<Metrics>,
 }
 
 impl SampledLFU {
@@ -358,7 +225,7 @@ impl SampledLFU {
             max_cost,
             used: 0,
             key_costs: HashMap::new(),
-            metrics: None,
+            metrics: Arc::new(Metrics::new()),
         }
     }
 
@@ -370,7 +237,7 @@ impl SampledLFU {
             max_cost,
             used: 0,
             key_costs: HashMap::new(),
-            metrics: None,
+            metrics: Arc::new(Metrics::new()),
         }
     }
 }
@@ -384,7 +251,7 @@ impl<S: BuildHasher + Clone + 'static> SampledLFU<S> {
             max_cost,
             used: 0,
             key_costs: HashMap::with_hasher(hasher),
-            metrics: None,
+            metrics: Arc::new(Metrics::Noop),
         }
     }
 
@@ -396,7 +263,7 @@ impl<S: BuildHasher + Clone + 'static> SampledLFU<S> {
             max_cost,
             used: 0,
             key_costs: HashMap::with_hasher(hasher),
-            metrics: None,
+            metrics: Arc::new(Metrics::Noop),
         }
     }
 
@@ -470,14 +337,14 @@ impl<S: BuildHasher + Clone + 'static> SampledLFU<S> {
             Some(prev) => {
                 let prev_val = *prev;
                 let k = *k;
-                if let Some(ref m) = self.metrics {
-                    m.add(MetricType::KeyUpdate, k, 1);
+                if self.metrics.is_op() {
+                    self.metrics.add(MetricType::KeyUpdate, k, 1);
                     if prev_val > cost {
                         let diff = (prev_val - cost) as u64 - 1;
-                        m.add(MetricType::CostAdd, k, !diff);
+                        self.metrics.add(MetricType::CostAdd, k, !diff);
                     } else {
                         let diff = (cost - prev_val) as u64;
-                        m.add(MetricType::CostAdd, k, diff);
+                        self.metrics.add(MetricType::CostAdd, k, diff);
                     }
                 }
 
@@ -494,7 +361,7 @@ unsafe impl<S: BuildHasher + Clone + 'static> Sync for SampledLFU<S> {}
 
 /// TinyLFU is an admission helper that keeps track of access frequency using
 /// tiny (4-bit) counters in the form of a count-min sketch.
-pub struct TinyLFU {
+pub(crate) struct TinyLFU {
     ctr: CountMinSketch,
     doorkeeper: Bloom,
     samples: usize,
@@ -593,167 +460,7 @@ impl TinyLFU {
 
 #[cfg(test)]
 mod test {
-
     use super::*;
-    use std::thread::sleep;
-    use std::time::Duration;
-
-    static WAIT: Duration = Duration::from_millis(100);
-
-    #[test]
-    fn test_policy() {
-        let _ = LFUPolicy::new(100, 10);
-    }
-
-    #[test]
-    fn test_policy_metrics() {
-        let mut p = LFUPolicy::new(100, 10).unwrap();
-        p.collect_metrics(Arc::new(Metrics::new()));
-        assert!(p.metrics.is_some());
-        assert!(p.inner.lock().costs.metrics.is_some());
-    }
-
-    #[test]
-    fn test_policy_process_items() {
-        let p = LFUPolicy::new(100, 10).unwrap();
-        p.items_tx.send(vec![1, 2, 2]).unwrap();
-        sleep(WAIT);
-        let inner = p.inner.lock();
-        assert_eq!(inner.admit.estimate(2), 2);
-        assert_eq!(inner.admit.estimate(1), 1);
-        drop(inner);
-
-        p.stop_tx.send(()).unwrap();
-        sleep(WAIT);
-        assert!(p.items_tx.send(vec![3, 3, 3]).is_err());
-        let inner = p.inner.lock();
-        assert_eq!(inner.admit.estimate(3), 0);
-    }
-
-    #[test]
-    fn test_policy_push() {
-        let p = LFUPolicy::new(100, 10).unwrap();
-        assert!(p.push(vec![]).unwrap());
-
-        let mut keep_count = 0;
-        (0..10).for_each(|_| {
-            if p.push(vec![1, 2, 3, 4, 5]).unwrap() {
-                keep_count += 1;
-            }
-        });
-
-        assert_ne!(0, keep_count);
-    }
-
-    #[test]
-    fn test_policy_add() {
-        let p = LFUPolicy::new(1000, 100).unwrap();
-        let (victims, added) = p.add(1, 101);
-        assert!(victims.is_none());
-        assert!(!added);
-
-        let mut inner = p.inner.lock();
-        inner.costs.increment(1, 1);
-        inner.admit.increment(1);
-        inner.admit.increment(2);
-        inner.admit.increment(3);
-        drop(inner);
-
-        let (victims, added) = p.add(1, 1);
-        assert!(victims.is_none());
-        assert!(!added);
-
-        let (victims, added) = p.add(2, 20);
-        assert!(victims.is_none());
-        assert!(added);
-
-        let (victims, added) = p.add(3, 90);
-        assert!(victims.is_some());
-        assert!(added);
-
-        let (victims, added) = p.add(4, 20);
-        assert!(victims.is_some());
-        assert!(!added);
-    }
-
-    #[test]
-    fn test_policy_has() {
-        let p = LFUPolicy::new(100, 10).unwrap();
-        p.add(1, 1);
-        assert!(p.contains(&1));
-        assert!(!p.contains(&2));
-    }
-
-    #[test]
-    fn test_policy_del() {
-        let p = LFUPolicy::new(100, 10).unwrap();
-        p.add(1, 1);
-        p.remove(&1);
-        p.remove(&2);
-        assert!(!p.contains(&1));
-        assert!(!p.contains(&2));
-    }
-
-    #[test]
-    fn test_policy_cap() {
-        let p = LFUPolicy::new(100, 10).unwrap();
-        p.add(1, 1);
-        assert_eq!(p.cap(), 9);
-    }
-
-    #[test]
-    fn test_policy_update() {
-        let p = LFUPolicy::new(100, 10).unwrap();
-        p.add(1, 1);
-        p.update(&1, 2);
-        let inner = p.inner.lock();
-        assert_eq!(inner.costs.key_costs.get(&1).unwrap(), &2);
-    }
-
-    #[test]
-    fn test_policy_cost() {
-        let p = LFUPolicy::new(100, 10).unwrap();
-        p.add(1, 2);
-        assert_eq!(p.cost(&1), 2);
-        assert_eq!(p.cost(&2), -1);
-    }
-
-    #[test]
-    fn test_policy_clear() {
-        let p = LFUPolicy::new(100, 10).unwrap();
-        p.add(1, 1);
-        p.add(2, 2);
-        p.add(3, 3);
-        p.clear();
-
-        assert_eq!(p.cap(), 10);
-        assert!(!p.contains(&2));
-        assert!(!p.contains(&2));
-        assert!(!p.contains(&3));
-    }
-
-    #[test]
-    fn test_policy_close() {
-        let mut p = LFUPolicy::new(100, 10).unwrap();
-        p.add(1, 1);
-        p.close();
-        sleep(WAIT);
-        assert!(p.items_tx.send(vec![1]).is_err())
-    }
-
-    #[test]
-    fn test_policy_push_after_close() {
-        let mut p = LFUPolicy::new(100, 10).unwrap();
-        p.close();
-        assert!(!p.push(vec![1, 2]).unwrap());
-    }
-
-    #[test]
-    fn test_policy_add_after_close() {
-        let mut p = LFUPolicy::new(100, 10).unwrap();
-        p.close();
-        p.add(1, 1);
-    }
 
     #[test]
     fn test_sampled_lfu_remove() {

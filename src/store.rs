@@ -14,7 +14,7 @@ use std::sync::Arc;
 const NUM_OF_SHARDS: usize = 256;
 
 pub(crate) struct StoreItem<V> {
-    key: u64,
+    pub(crate) key: u64,
     pub(crate) conflict: u64,
     pub(crate) value: SharedValue<V>,
     pub(crate) expiration: Time,
@@ -221,7 +221,7 @@ impl<
             .map(|val| val.expiration)
     }
 
-    pub fn clean_up<PS: BuildHasher + Clone + 'static>(
+    pub fn cleanup<PS: BuildHasher + Clone + 'static>(
         &self,
         policy: Arc<LFUPolicy<PS>>,
     ) -> Vec<CrateItem<V>> {

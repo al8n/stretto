@@ -1,6 +1,4 @@
-use crate::error::CacheError;
 use crate::store::StoreItem;
-use crossbeam::channel::Sender;
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
 use std::cell::UnsafeCell;
 use std::collections::hash_map::RandomState;
@@ -8,8 +6,6 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::hash::BuildHasher;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 pub struct ValueRef<'a, V, S = RandomState> {
     guard: RwLockReadGuard<'a, HashMap<u64, StoreItem<V>, S>>,
@@ -93,15 +89,6 @@ impl<'a, V: Copy, S: BuildHasher> ValueRefMut<'a, V, S> {
     }
 }
 
-/// A simple wrapper around `T`
-///
-/// This is to prevent UB when using `HashMap::get_key_value`, because
-/// `HashMap` doesn't expose an api to get the key and value, where
-/// the value is a `&mut T`.
-///
-/// See [#10](https://github.com/xacrimon/dashmap/issues/10) for details
-///
-/// This type is meant to be an implementation detail, but must be exposed due to the `Dashmap::shards`
 #[repr(transparent)]
 pub struct SharedValue<T> {
     value: UnsafeCell<T>,
@@ -201,39 +188,3 @@ impl<T: ?Sized> Clone for SharedNonNull<T> {
 
 unsafe impl<T> Send for SharedNonNull<T> {}
 unsafe impl<T> Sync for SharedNonNull<T> {}
-
-pub(crate) struct CloseableSender<T> {
-    pub tx: Sender<T>,
-    closed: Arc<AtomicBool>,
-}
-
-impl<T> CloseableSender<T> {
-    pub fn new(tx: Sender<T>) -> Self {
-        Self {
-            tx,
-            closed: Arc::new(AtomicBool::new(false)),
-        }
-    }
-
-    pub(crate) fn send(&self, msg: T) -> Result<(), CacheError> {
-        if self.closed.load(Ordering::SeqCst) {
-            return Err(CacheError::ClosedChannel);
-        }
-        self.tx
-            .send(msg)
-            .map_err(|e| CacheError::SendError(format!("{}", e)))
-    }
-
-    pub(crate) fn close(&self) {
-        self.closed.store(true, Ordering::SeqCst)
-    }
-}
-
-impl<T> Clone for CloseableSender<T> {
-    fn clone(&self) -> Self {
-        Self {
-            tx: self.tx.clone(),
-            closed: self.closed.clone(),
-        }
-    }
-}

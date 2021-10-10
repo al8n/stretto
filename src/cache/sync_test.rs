@@ -1,9 +1,10 @@
-use crate::cache::{Cache, Item};
+use crate::cache::sync_impl::Cache;
+use crate::cache::Item;
 use crate::{
     CacheCallback, Coster, DefaultKeyBuilder, Item as CrateItem, KeyBuilder, TransparentKeyBuilder,
     UpdateValidator,
 };
-use crossbeam::channel::bounded;
+use crossbeam_channel::bounded;
 use parking_lot::Mutex;
 use rand::{thread_rng, Rng};
 use std::collections::HashSet;
@@ -281,7 +282,7 @@ fn test_cache_process_items() {
     assert_ne!(cb.lock().len(), 0);
 
     let _ = c.close();
-    assert!(c.insert_buf_tx.send(Item::delete(1, 1)).is_err());
+    assert!(!c.insert(1, 1, 1));
 }
 
 #[test]

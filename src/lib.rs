@@ -7,31 +7,33 @@
 ///
 /// [1]: https://arxiv.org/abs/1512.00727
 pub mod error;
+#[macro_use]
+mod macros;
+mod bbloom;
+#[allow(dead_code)]
+mod cache;
 mod histogram;
 #[allow(dead_code)]
 mod metrics;
 #[allow(dead_code)]
 mod policy;
 mod ring;
+mod sketch;
 mod store;
 #[allow(dead_code)]
 mod ttl;
 #[allow(dead_code)]
 pub(crate) mod utils;
 
-#[macro_use]
-mod macros;
-mod bbloom;
-#[allow(dead_code)]
-mod cache;
-mod sketch;
-
 extern crate atomic;
 #[macro_use]
-extern crate crossbeam;
+extern crate crossbeam_channel;
+
 #[macro_use]
 extern crate log;
 extern crate serde;
+
+pub use error::CacheError;
 
 use crate::ttl::Time;
 use std::collections::hash_map::{DefaultHasher, RandomState};
