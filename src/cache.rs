@@ -1,9 +1,6 @@
-#[cfg(all(test, not(feature = "tokio")))]
-mod sync_test;
-
-#[cfg(all(test, feature = "tokio"))]
-mod async_test;
 mod wg;
+#[cfg(test)]
+mod test;
 
 cfg_not_async!(
     mod sync_impl;

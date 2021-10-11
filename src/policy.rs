@@ -5,6 +5,10 @@ pub use sync_impl::LFUPolicy;
 
 #[cfg(feature = "tokio")]
 mod async_impl;
+
+#[cfg(test)]
+mod test;
+
 #[cfg(feature = "tokio")]
 pub use async_impl::LFUPolicy;
 
@@ -463,117 +467,5 @@ impl TinyLFU {
     /// returns true if the hash was added to the TinyLFU.
     pub fn contains(&self, kh: u64) -> bool {
         self.doorkeeper.contains(kh)
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn test_sampled_lfu_remove() {
-        let mut lfu = SampledLFU::new(4);
-        lfu.increment(1, 1);
-        lfu.increment(2, 2);
-        assert_eq!(lfu.remove(&2), Some(2));
-        assert_eq!(lfu.used, 1);
-        assert_eq!(lfu.key_costs.get(&2), None);
-        assert_eq!(lfu.remove(&4), None);
-    }
-
-    #[test]
-    fn test_sampled_lfu_room() {
-        let mut l = SampledLFU::new(16);
-        l.increment(1, 1);
-        l.increment(2, 2);
-        l.increment(3, 3);
-        assert_eq!(6, l.room_left(4));
-    }
-
-    #[test]
-    fn test_sampled_lfu_clear() {
-        let mut l = SampledLFU::new(4);
-        l.increment(1, 1);
-        l.increment(2, 2);
-        l.increment(3, 3);
-        l.clear();
-        assert_eq!(0, l.key_costs.len());
-        assert_eq!(0, l.used);
-    }
-
-    #[test]
-    fn test_sampled_lfu_update() {
-        let mut l = SampledLFU::new(5);
-        l.increment(1, 1);
-        l.increment(2, 2);
-        assert!(l.update(&1, 2));
-        assert_eq!(4, l.used);
-        assert!(l.update(&2, 3));
-        assert_eq!(5, l.used);
-        assert!(!l.update(&3, 3));
-    }
-
-    #[test]
-    fn test_sampled_lfu_fill_sample() {
-        let mut l = SampledLFU::new(16);
-        l.increment(4, 4);
-        l.increment(5, 5);
-        let sample = l.fill_sample(vec![(1, 1).into(), (2, 2).into(), (3, 3).into()]);
-        let k = sample[sample.len() - 1].key;
-        assert_eq!(5, sample.len());
-        assert_ne!(1, k);
-        assert_ne!(2, k);
-        assert_ne!(3, k);
-        assert_eq!(sample.len(), l.fill_sample(sample.clone()).len());
-        l.remove(&5);
-        let sample = l.fill_sample(sample[0..(sample.len() - 2)].to_vec());
-        assert_eq!(4, sample.len())
-    }
-
-    #[test]
-    fn test_tinylfu_increment() {
-        let mut l = TinyLFU::new(4).unwrap();
-        l.increment(1);
-        l.increment(1);
-        l.increment(1);
-        assert!(l.doorkeeper.contains(1));
-        assert_eq!(l.ctr.estimate(1), 2);
-
-        l.increment(1);
-        assert!(!l.doorkeeper.contains(1));
-        assert_eq!(l.ctr.estimate(1), 1);
-    }
-
-    #[test]
-    fn test_tinylfu_estimate() {
-        let mut l = TinyLFU::new(8).unwrap();
-        l.increment(1);
-        l.increment(1);
-        l.increment(1);
-
-        assert_eq!(l.estimate(1), 3);
-        assert_eq!(l.estimate(2), 0);
-        assert_eq!(l.w, 3);
-    }
-
-    #[test]
-    fn test_tinylfu_increments() {
-        let mut l = TinyLFU::new(16).unwrap();
-
-        assert_eq!(l.samples, 16);
-        l.increments([1, 2, 2, 3, 3, 3].to_vec());
-        assert_eq!(l.estimate(1), 1);
-        assert_eq!(l.estimate(2), 2);
-        assert_eq!(l.estimate(3), 3);
-        assert_eq!(6, l.w);
-    }
-
-    #[test]
-    fn test_tinylfu_clear() {
-        let mut l = TinyLFU::new(16).unwrap();
-        l.increments([1, 3, 3, 3].to_vec());
-        l.clear();
-        assert_eq!(0, l.w);
-        assert_eq!(0, l.estimate(3));
     }
 }

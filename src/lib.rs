@@ -10,19 +10,14 @@ pub mod error;
 #[macro_use]
 mod macros;
 mod bbloom;
-#[allow(dead_code)]
 mod cache;
 mod histogram;
-#[allow(dead_code)]
 mod metrics;
-#[allow(dead_code)]
 mod policy;
 mod ring;
 mod sketch;
 mod store;
-#[allow(dead_code)]
 mod ttl;
-#[allow(dead_code)]
 pub(crate) mod utils;
 
 extern crate atomic;

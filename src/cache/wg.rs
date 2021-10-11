@@ -1,6 +1,6 @@
 cfg_async! {
-    use std::sync::Arc;
     use parking_lot::Mutex;
+    use std::sync::Arc;
     use std::task::{Context, Poll, Waker};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::future::Future;
