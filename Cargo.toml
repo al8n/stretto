@@ -21,7 +21,7 @@ nightly = ["parking_lot/nightly",
     "serde/derive",
     "serde_json/default"
 ]
-async = ["tokio/full"]
+async = ["tokio/rt-multi-thread", "tokio/test-util", "tokio/macros", "tokio/parking_lot"]
 sync = ["serde", "serde/derive", "serde_json/default"]
 
 [dependencies]
