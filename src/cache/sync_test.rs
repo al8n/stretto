@@ -4,7 +4,7 @@ use crate::{
     CacheCallback, Coster, DefaultKeyBuilder, Item as CrateItem, KeyBuilder, TransparentKeyBuilder,
     UpdateValidator,
 };
-use crossbeam_channel::bounded;
+use crossbeam_channel::{bounded, select};
 use parking_lot::Mutex;
 use rand::{thread_rng, Rng};
 use std::collections::HashSet;

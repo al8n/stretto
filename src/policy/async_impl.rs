@@ -127,7 +127,7 @@ impl<S: BuildHasher + Clone + 'static> PolicyProcessor<S> {
                 inner.admit.increments(items);
             }
             None => {
-                error!("policy processor error")
+                // error!("policy processor error")
             }
         }
     }

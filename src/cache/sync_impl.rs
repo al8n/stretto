@@ -7,7 +7,7 @@ use crate::{
     CacheCallback, CacheError, Coster, DefaultCacheCallback, DefaultCoster, DefaultUpdateValidator,
     KeyBuilder, UpdateValidator,
 };
-use crossbeam_channel::{bounded, tick, Receiver, RecvError, Sender, unbounded};
+use crossbeam_channel::{bounded, tick, Receiver, RecvError, Sender, unbounded, select};
 use std::collections::{
     HashMap,
     hash_map::RandomState

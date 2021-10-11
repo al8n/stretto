@@ -1,4 +1,4 @@
-use crate::{cfg_not_serde, cfg_serde, histogram::Histogram, utils::vec_to_array};
+use crate::{histogram::Histogram, utils::vec_to_array};
 use std::collections::BTreeMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -25,7 +25,7 @@ static METRIC_TYPES_ARRAY: [MetricType; NUMS_OF_METRIC_TYPE] = [
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
 #[repr(u16)]
-pub(crate) enum MetricType {
+pub enum MetricType {
     /// track hits.
     Hit,
     /// track misses
@@ -375,32 +375,9 @@ impl MetricsInner {
     }
 }
 
-cfg_not_serde! {
-    impl Display for MetricsInner {
-        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-            let mut buf = Vec::new();
-            buf.extend("MetricsInner {\n".as_bytes());
-            METRIC_TYPES_ARRAY.iter().for_each(|typ| {
-                buf.extend(format!("  \"{}\": {},\n", typ, self.get(typ)).as_bytes());
-            });
-
-            buf.extend(format!("  \"gets-total\": {},\n", self.get(&MetricType::Hit) + self.get(&MetricType::Miss)).as_bytes());
-            buf.extend(format!("  \"hit-ratio\": {:.2}\n}}", self.ratio()).as_bytes());
-            write!(f, "{}", String::from_utf8(buf).unwrap())
-        }
-    }
-}
-
 cfg_serde! {
     use serde::{Serialize, Serializer};
     use serde::ser::{SerializeStruct, Error};
-
-    impl Display for MetricsInner {
-        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-            let str = serde_json::to_string_pretty(self).map_err( std::fmt::Error::custom)?;
-            write!(f, "MetricsInner {}", str)
-        }
-    }
 
     impl Serialize for MetricsInner {
         fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
@@ -418,6 +395,29 @@ cfg_serde! {
     }
 }
 
+#[cfg(not(all(feature = "serde", feature = "serde_json")))]
+impl Display for MetricsInner {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut buf = Vec::new();
+        buf.extend("MetricsInner {\n".as_bytes());
+        METRIC_TYPES_ARRAY.iter().for_each(|typ| {
+            buf.extend(format!("  \"{}\": {},\n", typ, self.get(typ)).as_bytes());
+        });
+
+        buf.extend(format!("  \"gets-total\": {},\n", self.get(&MetricType::Hit) + self.get(&MetricType::Miss)).as_bytes());
+        buf.extend(format!("  \"hit-ratio\": {:.2}\n}}", self.ratio()).as_bytes());
+        write!(f, "{}", String::from_utf8(buf).unwrap())
+    }
+}
+
+#[cfg(all(feature = "serde", feature = "serde_json"))]
+impl Display for MetricsInner {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let str = serde_json::to_string_pretty(self).map_err( std::fmt::Error::custom)?;
+        write!(f, "MetricsInner {}", str)
+    }
+}
+
 fn new_histogram_bound() -> Vec<f64> {
     (1..=HISTOGRAM_BOUND_SIZE as u64)
         .map(|idx| (1 << idx) as f64)
@@ -427,7 +427,6 @@ fn new_histogram_bound() -> Vec<f64> {
 #[cfg(test)]
 mod test {
     use crate::metrics::{MetricType, MetricsInner};
-    use crate::{cfg_not_serde, cfg_serde};
 
     #[test]
     fn test_metrics() {
@@ -439,20 +438,19 @@ mod test {
         println!("{}", m)
     }
 
-    cfg_serde!(
-        #[test]
-        fn test_display() {
-            let m = MetricsInner::new();
-            let ms = serde_json::to_string_pretty(&m).unwrap();
-            assert_eq!(format!("{}", m), format!("MetricsInner {}", ms));
-        }
-    );
+    #[test]
+    #[cfg(all(feature = "serde", feature = "serde_json"))]
+    fn test_display() {
+        let m = MetricsInner::new();
+        let ms = serde_json::to_string_pretty(&m).unwrap();
+        assert_eq!(format!("{}", m), format!("MetricsInner {}", ms));
+    }
 
-    cfg_not_serde!(
-        #[test]
-        fn test_display() {
-            let m = MetricsInner::new();
-            let exp = "MetricsInner {
+    #[test]
+    #[cfg(not(all(feature = "serde", feature = "serde_json")))]
+    fn test_display() {
+        let m = MetricsInner::new();
+        let exp = "MetricsInner {
   \"hit\": 0,
   \"miss\": 0,
   \"keys-added\": 0,
@@ -468,7 +466,6 @@ mod test {
   \"hit-ratio\": 0.00
 }"
             .to_string();
-            assert_eq!(format!("{}", m), exp)
-        }
-    );
+        assert_eq!(format!("{}", m), exp)
+    }
 }

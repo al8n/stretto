@@ -4,10 +4,10 @@
 //!
 //! I claim no additional copyright over the original implementation.
 use crate::error::CacheError;
-use chrono::Utc;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::fmt::{Debug, Formatter};
 use std::ops::{Index, IndexMut};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEPTH: usize = 4;
 
@@ -87,7 +87,7 @@ impl CountMinSketch {
         let ctrs = ctrs.next_power_of_two();
         let hctrs = ctrs / 2;
 
-        let mut source = StdRng::seed_from_u64(Utc::now().timestamp_nanos().unsigned_abs());
+        let mut source = StdRng::seed_from_u64(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
 
         let seeds: Vec<u64> = { (0..DEPTH).map(|_| source.gen::<u64>()).collect() };
 
