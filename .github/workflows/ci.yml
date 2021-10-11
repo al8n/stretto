@@ -30,7 +30,6 @@ jobs:
     strategy:
       matrix:
         rust:
-          - stable
           - nightly
     steps:
       - uses: actions/checkout@v2
