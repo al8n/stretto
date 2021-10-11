@@ -130,6 +130,16 @@ impl Metrics {
         }
     }
 
+    pub(crate) fn sub(&self, typ: MetricType, hash: u64, delta: u64) -> bool {
+        match self {
+            Metrics::Noop => false,
+            Metrics::Op(m) => {
+                m.sub(typ, hash, delta);
+                true
+            }
+        }
+    }
+
     /// Returns the number of Get calls where a value was found for the corresponding key.
     pub fn get_hits(&self) -> Option<u64> {
         self.map(|ref m| m.get(&MetricType::Hit))
@@ -345,6 +355,13 @@ impl MetricsInner {
         self.all.get(&typ).map(|val| {
             let idx = ((hash % 25) * 10) as usize;
             val[idx].fetch_add(delta, Ordering::SeqCst);
+        });
+    }
+
+    pub(crate) fn sub(&self, typ: MetricType, hash: u64, delta: u64) {
+        self.all.get(&typ).map(|val| {
+            let idx = ((hash % 25) * 10) as usize;
+            val[idx].fetch_sub(delta, Ordering::SeqCst);
         });
     }
 

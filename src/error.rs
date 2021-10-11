@@ -16,7 +16,7 @@ pub enum CacheError {
     InvalidBufferSize,
 
     ClosedChannel,
-
+    CannotJoin,
     SendError(String),
     RecvError(String),
 }
@@ -39,6 +39,7 @@ impl CacheError {
             CacheError::InvalidMaxCost => write!(f, "max_cost can't be zero"),
             CacheError::InvalidBufferSize => write!(f, "buffer_size can't be zero"),
             CacheError::ClosedChannel => write!(f, "channel has been closed."),
+            CacheError::CannotJoin => write!(f, "thread cannot be joined"),
         }
     }
 }

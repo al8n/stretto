@@ -16,6 +16,7 @@ use crate::{
 };
 use parking_lot::Mutex;
 use std::hash::BuildHasher;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::{
     collections::{hash_map::RandomState, HashMap},
     sync::Arc,
@@ -146,7 +147,11 @@ impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
             }
 
             // Delete the victim from metadata.
-            inner.costs.remove(&min_key);
+            inner.costs.remove(&min_key).map(|cost| {
+                self.metrics
+                    .add(MetricType::CostEvict, min_key, cost as u64);
+                self.metrics.add(MetricType::KeyEvict, min_key, 1);
+            });
 
             // Delete the victim from sample.
             let new_len = sample.len() - 1;
@@ -170,7 +175,10 @@ impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
 
     pub fn remove(&self, k: &u64) {
         let mut inner = self.inner.lock();
-        inner.costs.remove(k);
+        inner.costs.remove(k).map(|cost| {
+            self.metrics.add(MetricType::CostEvict, *k, cost as u64);
+            self.metrics.add(MetricType::KeyEvict, *k, 1);
+        });
     }
 
     pub fn cap(&self) -> i64 {
@@ -200,7 +208,7 @@ impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
     }
 
     pub fn update_max_cost(&self, mc: i64) {
-        let mut inner = self.inner.lock();
+        let inner = self.inner.lock();
         inner.costs.update_max_cost(mc)
     }
 }
@@ -211,7 +219,7 @@ unsafe impl<S: BuildHasher + Clone + 'static> Sync for LFUPolicy<S> {}
 /// SampledLFU stores key-costs paris.
 pub(crate) struct SampledLFU<S = RandomState> {
     samples: usize,
-    max_cost: i64,
+    max_cost: AtomicI64,
     used: i64,
     key_costs: HashMap<u64, i64, S>,
     metrics: Arc<Metrics>,
@@ -222,7 +230,7 @@ impl SampledLFU {
     pub fn new(max_cost: i64) -> Self {
         Self {
             samples: DEFAULT_SAMPLES,
-            max_cost,
+            max_cost: AtomicI64::new(max_cost),
             used: 0,
             key_costs: HashMap::new(),
             metrics: Arc::new(Metrics::new()),
@@ -234,7 +242,7 @@ impl SampledLFU {
     pub fn with_samples(max_cost: i64, samples: usize) -> Self {
         Self {
             samples,
-            max_cost,
+            max_cost: AtomicI64::new(max_cost),
             used: 0,
             key_costs: HashMap::new(),
             metrics: Arc::new(Metrics::new()),
@@ -248,7 +256,7 @@ impl<S: BuildHasher + Clone + 'static> SampledLFU<S> {
     pub fn with_hasher(max_cost: i64, hasher: S) -> Self {
         Self {
             samples: DEFAULT_SAMPLES,
-            max_cost,
+            max_cost: AtomicI64::new(max_cost),
             used: 0,
             key_costs: HashMap::with_hasher(hasher),
             metrics: Arc::new(Metrics::Noop),
@@ -260,7 +268,7 @@ impl<S: BuildHasher + Clone + 'static> SampledLFU<S> {
     pub fn with_samples_and_hasher(max_cost: i64, samples: usize, hasher: S) -> Self {
         Self {
             samples,
-            max_cost,
+            max_cost: AtomicI64::new(max_cost),
             used: 0,
             key_costs: HashMap::with_hasher(hasher),
             metrics: Arc::new(Metrics::Noop),
@@ -269,14 +277,14 @@ impl<S: BuildHasher + Clone + 'static> SampledLFU<S> {
 
     /// Update the max_cost
     #[inline]
-    pub fn update_max_cost(&mut self, mc: i64) {
-        self.max_cost = mc;
+    pub fn update_max_cost(&self, mc: i64) {
+        self.max_cost.store(mc, Ordering::SeqCst);
     }
 
     /// get the max_cost
     #[inline]
     pub fn get_max_cost(&self) -> i64 {
-        self.max_cost
+        self.max_cost.load(Ordering::SeqCst)
     }
 
     /// get the remain space of SampledLRU

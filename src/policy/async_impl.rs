@@ -47,7 +47,7 @@ impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
         Ok(this)
     }
 
-    pub fn push(&self, keys: Vec<u64>) -> Result<bool, CacheError> {
+    pub async fn push(&self, keys: Vec<u64>) -> Result<bool, CacheError> {
         if self.is_closed.load(Ordering::SeqCst) {
             return Ok(false);
         }
@@ -56,16 +56,21 @@ impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
             return Ok(true);
         }
         let first = keys[0];
-        self.items_tx
-            .send(keys)
-            .map(|_| {
+
+        tokio::select! {
+            rst = async { self.items_tx.send(keys) } => rst.map(|_| {
                 self.metrics.add(MetricType::KeepGets, first, num_of_keys);
                 true
             })
             .map_err(|e| {
                 self.metrics.add(MetricType::DropGets, first, num_of_keys);
                 CacheError::SendError(format!("sending on a disconnected channel, msg: {:?}", e))
-            })
+            }),
+            else => {
+                self.metrics.add(MetricType::DropGets, first, num_of_keys);
+                return Ok(false);
+            }
+        }
     }
 
     pub async fn close(&self) -> Result<(), CacheError> {
@@ -158,7 +163,7 @@ mod test {
     async fn test_policy_process_items() {
         let p = LFUPolicy::new(100, 10).unwrap();
 
-        p.push(vec![1, 2, 2]).unwrap();
+        p.push(vec![1, 2, 2]).await.unwrap();
         sleep(WAIT).await;
 
         let inner = p.inner.lock();
@@ -168,7 +173,7 @@ mod test {
 
         p.stop_tx.send(()).await.unwrap();
         sleep(WAIT).await;
-        assert!(p.push(vec![3, 3, 3]).is_err());
+        assert!(p.push(vec![3, 3, 3]).await.is_err());
         let inner = p.inner.lock();
         assert_eq!(inner.admit.estimate(3), 0);
     }
@@ -176,11 +181,11 @@ mod test {
     #[tokio::test]
     async fn test_policy_push() {
         let p = LFUPolicy::new(100, 10).unwrap();
-        assert!(p.push(vec![]).unwrap());
+        assert!(p.push(vec![]).await.unwrap());
 
         let mut keep_count = 0;
         for _ in 0..10 {
-            if p.push(vec![1, 2, 3, 4, 5]).unwrap() {
+            if p.push(vec![1, 2, 3, 4, 5]).await.unwrap() {
                 keep_count += 1;
             }
         }
@@ -288,7 +293,7 @@ mod test {
     async fn test_policy_push_after_close() {
         let p = LFUPolicy::new(100, 10).unwrap();
         p.close().await.unwrap();
-        assert!(!p.push(vec![1, 2]).unwrap());
+        assert!(!p.push(vec![1, 2]).await.unwrap());
     }
 
     #[tokio::test]

@@ -110,7 +110,6 @@ fn test_cache_max_cost() {
     }
 
     let c = Cache::builder(12960, 1e6 as i64, DefaultKeyBuilder::default())
-        .set_buffer_size(64)
         .set_metrics(true)
         .finalize()
         .unwrap();
@@ -149,10 +148,19 @@ fn test_cache_max_cost() {
 
     for _ in 0..20 {
         sleep(Duration::from_secs(1));
-        let cost = c.metrics.get_cost_added().unwrap() - c.metrics.get_cost_evicted().unwrap();
-        eprintln!("total cache cost: {}", cost);
-        // assert!(cost as f64 <= (1e6 * 1.05));
+        let (keys_added, cost_added, cost_evicted) = (
+            c.metrics.get_keys_added().unwrap(),
+            c.metrics.get_cost_added().unwrap(),
+            c.metrics.get_cost_evicted().unwrap(),
+        );
+        let cost = cost_added - cost_evicted;
+        eprintln!(
+            "keys-added: {}, cost-added: {}, cost-evicted: {}, total cache cost: {}",
+            keys_added, cost_added, cost_evicted, cost
+        );
+        assert!(cost as f64 <= (1e6 * 1.05));
     }
+
     for _ in 0..8 {
         let _ = stop_tx.send(());
     }
@@ -177,15 +185,8 @@ fn test_cache_update_max_cost() {
     assert_eq!(c.max_cost(), 1000);
     assert!(c.insert(1, 1, 1));
 
-    loop {
-        match c.get(&1) {
-            None => continue,
-            Some(val) => {
-                assert_eq!(val.read(), 1);
-                break;
-            }
-        }
-    }
+    sleep(Duration::from_millis(200));
+    assert_eq!(c.get(&1).unwrap().read(), 1);
     c.remove(&1);
 }
 
@@ -524,6 +525,7 @@ fn test_cache_drop_clear() {
     sleep(Duration::from_millis(100));
     let _ = stop_tx.send(());
     c.clear().unwrap();
+    // sleep(Duration::from_millis(100));
     assert_eq!(c.metrics.get_keys_added(), Some(0));
 
     (0..10).for_each(|i| {
