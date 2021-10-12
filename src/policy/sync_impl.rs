@@ -11,7 +11,6 @@ use std::thread::{spawn, JoinHandle};
 
 pub struct LFUPolicy<S = RandomState> {
     pub(crate) inner: Arc<Mutex<PolicyInner<S>>>,
-    pub(crate) processor_handle: JoinHandle<()>,
     pub(crate) items_tx: Sender<Vec<u64>>,
     pub(crate) stop_tx: Sender<()>,
     pub(crate) is_closed: AtomicBool,
@@ -31,11 +30,10 @@ impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
         let (items_tx, items_rx) = unbounded();
         let (stop_tx, stop_rx) = bounded(0);
 
-        let handle = PolicyProcessor::spawn(inner.clone(), items_rx, stop_rx);
+        PolicyProcessor::spawn(inner.clone(), items_rx, stop_rx);
 
         let this = Self {
             inner: inner.clone(),
-            processor_handle: handle,
             items_tx,
             stop_tx,
             is_closed: AtomicBool::new(false),

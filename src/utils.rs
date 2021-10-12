@@ -7,6 +7,7 @@ use std::convert::TryInto;
 use std::hash::BuildHasher;
 use std::ptr::NonNull;
 
+#[allow(dead_code)]
 pub struct ValueRef<'a, V, S = RandomState> {
     guard: RwLockReadGuard<'a, HashMap<u64, StoreItem<V>, S>>,
     val: &'a V,
@@ -41,6 +42,7 @@ impl<'a, V: Copy, S: BuildHasher> ValueRef<'a, V, S> {
     }
 }
 
+#[allow(dead_code)]
 pub struct ValueRefMut<'a, V, S = RandomState> {
     guard: RwLockWriteGuard<'a, HashMap<u64, StoreItem<V>, S>>,
     val: &'a mut V,
@@ -150,21 +152,15 @@ pub(crate) unsafe fn change_lifetime_const<'a, 'b, T>(x: &'a T) -> &'b T {
     &*(x as *const T)
 }
 
-/// # Safety
-///
-/// Requires that you ensure the reference does not become invalid.
-/// The object has to outlive the reference.
-pub(crate) unsafe fn change_lifetime_mut<'a, 'b, T>(x: &'a mut T) -> &'b mut T {
-    &mut *(x as *mut T)
-}
-
 // TODO: should use SharedNonNull to replace Arc?
 #[repr(transparent)]
+#[allow(dead_code)]
 pub(crate) struct SharedNonNull<T: ?Sized> {
     ptr: NonNull<T>,
 }
 
 impl<T> SharedNonNull<T> {
+    #[allow(dead_code)]
     pub fn new(ptr: *mut T) -> Self {
         unsafe {
             Self {
@@ -173,6 +169,7 @@ impl<T> SharedNonNull<T> {
         }
     }
 
+    #[allow(dead_code)]
     pub unsafe fn as_ref(&self) -> &T {
         self.ptr.as_ref()
     }

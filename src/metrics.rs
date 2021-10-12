@@ -131,16 +131,6 @@ impl Metrics {
         }
     }
 
-    pub(crate) fn sub(&self, typ: MetricType, hash: u64, delta: u64) -> bool {
-        match self {
-            Metrics::Noop => false,
-            Metrics::Op(m) => {
-                m.sub(typ, hash, delta);
-                true
-            }
-        }
-    }
-
     /// Returns the number of Get calls where a value was found for the corresponding key.
     pub fn get_hits(&self) -> Option<u64> {
         self.map(|ref m| m.get(&MetricType::Hit))
@@ -368,13 +358,6 @@ impl MetricsInner {
         });
     }
 
-    pub(crate) fn sub(&self, typ: MetricType, hash: u64, delta: u64) {
-        self.all.get(&typ).map(|val| {
-            let idx = ((hash % 25) * 10) as usize;
-            val[idx].fetch_sub(delta, Ordering::SeqCst);
-        });
-    }
-
     fn get(&self, typ: &MetricType) -> u64 {
         let mut total = 0;
         self.all.get(typ).map(|v| {
@@ -459,14 +442,14 @@ mod test {
     fn test_display() {
         let m = MetricsInner::new();
         let ms = serde_json::to_string_pretty(&m).unwrap();
-        assert_eq!(format!("{}", m), format!("MetricsInner {}", ms));
+        assert_eq!(format!("{}", m), format!("Metrics::Op {}", ms));
     }
 
     #[test]
     #[cfg(not(all(feature = "serde", feature = "serde_json")))]
     fn test_display() {
         let m = MetricsInner::new();
-        let exp = "MetricsInner {
+        let exp = "Metrics::Op {
   \"hit\": 0,
   \"miss\": 0,
   \"keys-added\": 0,

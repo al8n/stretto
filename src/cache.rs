@@ -31,7 +31,7 @@ use std::time::Duration;
 
 // TODO: find the optimal value for this
 const DEFAULT_INSERT_BUF_SIZE: usize = 32 * 1024;
-const DEFAULT_BUFFER_ITEMS: usize = 64;
+// const DEFAULT_BUFFER_ITEMS: usize = 64;
 const DEFAULT_CLEANUP_DURATION: Duration = Duration::from_millis(500);
 
 pub(crate) enum Item<V> {
