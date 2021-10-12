@@ -15,16 +15,9 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
 default = ["sync"]
-nightly = ["parking_lot/nightly",
-    "rand/nightly",
-    "serde",
-    "serde/derive",
-    "serde_json/default"
-]
+async = ["tokio/rt-multi-thread", "tokio/test-util", "tokio/macros", "tokio/parking_lot"]
+sync = ["crossbeam-channel", "crossbeam-utils"]
 serilization = ["serde", "serde/derive", "serde_json/default"]
-async = ["tokio/rt-multi-thread", "tokio/test-util", "tokio/macros", "tokio/parking_lot", "serilization"]
-sync = ["serilization", "crossbeam-channel", "crossbeam-utils"]
-
 
 [dependencies]
 atomic = "0.5.0"

@@ -29,6 +29,35 @@ extern crate log;
 #[cfg(feature = "serde")]
 extern crate serde;
 
+cfg_async! {
+    pub(crate) use tokio::sync::mpsc::{channel as bounded, Sender, UnboundedSender, Receiver, UnboundedReceiver};
+    pub(crate) use tokio::time::{Instant, sleep};
+    pub(crate) use tokio::task::{spawn, JoinHandle};
+    pub(crate) use tokio::select;
+    use tokio::sync::mpsc::{unbounded_channel};
+
+    pub(crate) fn stop_channel() -> (Sender<()>, Receiver<()>) {
+        bounded(1)
+    }
+
+    pub(crate) fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
+        unbounded_channel::<T>()
+    }
+}
+
+cfg_not_async! {
+    pub(crate) use std::time::Instant;
+    pub(crate) use std::thread::{JoinHandle, spawn, sleep};
+    pub(crate) use crossbeam_channel::{unbounded, bounded, Sender, Receiver, select};
+
+    pub(crate) type UnboundedSender<T> = Sender<T>;
+    pub(crate) type UnboundedReceiver<T> = Receiver<T>;
+
+    pub(crate) fn stop_channel() -> (Sender<()>, Receiver<()>) {
+        bounded(0)
+    }
+}
+
 pub use cache::{Cache, CacheBuilder};
 pub use error::CacheError;
 pub use metrics::{MetricType, Metrics};

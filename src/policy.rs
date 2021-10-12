@@ -1,29 +1,24 @@
-#[cfg(not(feature = "tokio"))]
-mod sync_impl;
-#[cfg(not(feature = "tokio"))]
-pub use sync_impl::LFUPolicy;
-
-#[cfg(feature = "tokio")]
-mod async_impl;
-
+cfg_not_async! (use crossbeam_channel::RecvError;);
 #[cfg(test)]
 mod test;
-
-#[cfg(feature = "tokio")]
-pub use async_impl::LFUPolicy;
 
 use crate::{
     bbloom::Bloom,
     error::CacheError,
     metrics::{MetricType, Metrics},
+    select,
     sketch::CountMinSketch,
+    spawn, stop_channel, unbounded, JoinHandle, Receiver, Sender, UnboundedReceiver,
+    UnboundedSender,
 };
 use parking_lot::Mutex;
-use std::hash::BuildHasher;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::{
     collections::{hash_map::RandomState, HashMap},
-    sync::Arc,
+    hash::BuildHasher,
+    sync::{
+        atomic::{AtomicBool, AtomicI64, Ordering},
+        Arc,
+    },
 };
 
 /// DEFAULT_SAMPLES is the number of items to sample when looking at eviction
@@ -31,12 +26,13 @@ use std::{
 const DEFAULT_SAMPLES: usize = 5;
 
 #[derive(Copy, Clone, Debug, Default)]
-pub struct PolicyPair {
+pub(crate) struct PolicyPair {
     pub(crate) key: u64,
     pub(crate) cost: i64,
 }
 
 impl PolicyPair {
+    #[inline]
     fn new(k: u64, c: i64) -> Self {
         Self { key: k, cost: c }
     }
@@ -51,12 +47,28 @@ impl Into<PolicyPair> for (u64, i64) {
     }
 }
 
-pub(crate) struct PolicyInner<S = RandomState> {
-    pub(crate) admit: TinyLFU,
-    pub(crate) costs: SampledLFU<S>,
+struct PolicyInner<S = RandomState> {
+    admit: TinyLFU,
+    costs: SampledLFU<S>,
+}
+
+pub(crate) struct LFUPolicy<S = RandomState> {
+    inner: Arc<Mutex<PolicyInner<S>>>,
+    items_tx: UnboundedSender<Vec<u64>>,
+    stop_tx: Sender<()>,
+    is_closed: AtomicBool,
+    metrics: Arc<Metrics>,
+}
+
+impl LFUPolicy {
+    #[inline]
+    pub(crate) fn new(ctrs: usize, max_cost: i64) -> Result<Self, CacheError> {
+        Self::with_hasher(ctrs, max_cost, RandomState::new())
+    }
 }
 
 impl PolicyInner {
+    #[inline]
     fn new(ctrs: usize, max_cost: i64) -> Result<Arc<Mutex<Self>>, CacheError> {
         let this = Self {
             admit: TinyLFU::new(ctrs)?,
@@ -67,10 +79,12 @@ impl PolicyInner {
 }
 
 impl<S: BuildHasher + Clone + 'static> PolicyInner<S> {
+    #[inline]
     fn set_metrics(&mut self, metrics: Arc<Metrics>) {
         self.costs.metrics = metrics;
     }
 
+    #[inline]
     fn with_hasher(ctrs: usize, max_cost: i64, hasher: S) -> Result<Arc<Mutex<Self>>, CacheError> {
         let this = Self {
             admit: TinyLFU::new(ctrs)?,
@@ -84,6 +98,113 @@ unsafe impl<S: BuildHasher + Clone + 'static> Send for PolicyInner<S> {}
 unsafe impl<S: BuildHasher + Clone + 'static> Sync for PolicyInner<S> {}
 
 impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
+    #[inline]
+    pub fn with_hasher(ctrs: usize, max_cost: i64, hasher: S) -> Result<Self, CacheError> {
+        let inner = PolicyInner::with_hasher(ctrs, max_cost, hasher)?;
+
+        let (items_tx, items_rx) = unbounded();
+        let (stop_tx, stop_rx) = stop_channel();
+
+        PolicyProcessor::new(inner.clone(), items_rx, stop_rx).spawn();
+
+        let this = Self {
+            inner: inner.clone(),
+            items_tx,
+            stop_tx,
+            is_closed: AtomicBool::new(false),
+            metrics: Arc::new(Metrics::new()),
+        };
+
+        Ok(this)
+    }
+
+    cfg_async! {
+        pub async fn push(&self, keys: Vec<u64>) -> Result<bool, CacheError> {
+            if self.is_closed.load(Ordering::SeqCst) {
+                return Ok(false);
+            }
+            let num_of_keys = keys.len() as u64;
+            if num_of_keys == 0 {
+                return Ok(true);
+            }
+            let first = keys[0];
+
+            select! {
+                rst = async { self.items_tx.send(keys) } => rst.map(|_| {
+                    self.metrics.add(MetricType::KeepGets, first, num_of_keys);
+                    true
+                })
+                .map_err(|e| {
+                    self.metrics.add(MetricType::DropGets, first, num_of_keys);
+                    CacheError::SendError(format!("sending on a disconnected channel, msg: {:?}", e))
+                }),
+                else => {
+                    self.metrics.add(MetricType::DropGets, first, num_of_keys);
+                    return Ok(false);
+                }
+            }
+        }
+
+        #[inline]
+        pub async fn close(&self) -> Result<(), CacheError> {
+            if self.is_closed.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+
+            // block until the Processor thread returns.
+            self.stop_tx
+                .send(())
+                .await
+                .map_err(|e| CacheError::SendError(format!("{}", e)))?;
+                    self.is_closed.store(true, Ordering::SeqCst);
+                    Ok(())
+        }
+    }
+
+    cfg_not_async! {
+        pub fn push(&self, keys: Vec<u64>) -> Result<bool, CacheError> {
+            if self.is_closed.load(Ordering::SeqCst) {
+                return Ok(false);
+            }
+            let num_of_keys = keys.len() as u64;
+            if num_of_keys == 0 {
+                return Ok(true);
+            }
+            let first = keys[0];
+            select! {
+                send(self.items_tx, keys) -> res =>
+                    res
+                    .map(|_| {
+                        self.metrics.add(MetricType::KeepGets, first, num_of_keys);
+                        true
+                    })
+                    .map_err(|e| {
+                        self.metrics.add(MetricType::DropGets, first, num_of_keys);
+                        CacheError::SendError(format!("sending on a disconnected channel, msg: {:?}", e.0))
+                    }),
+                default => {
+                    self.metrics.add(MetricType::DropGets, first, num_of_keys);
+                    return Ok(false);
+                }
+            }
+        }
+
+        #[inline]
+        pub fn close(&self) -> Result<(), CacheError> {
+            if self.is_closed.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+
+            // block until the Processor thread returns.
+            self.stop_tx
+                .send(())
+                .map_err(|e| CacheError::SendError(format!("{}", e)))?;
+            self.is_closed.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[inline]
     pub fn collect_metrics(&mut self, metrics: Arc<Metrics>) {
         self.metrics = metrics.clone();
         self.inner.lock().set_metrics(metrics);
@@ -172,11 +293,13 @@ impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
         (Some(victims), true)
     }
 
+    #[inline]
     pub fn contains(&self, k: &u64) -> bool {
         let inner = self.inner.lock();
         inner.costs.contains(k)
     }
 
+    #[inline]
     pub fn remove(&self, k: &u64) {
         let mut inner = self.inner.lock();
         inner.costs.remove(k).map(|cost| {
@@ -185,32 +308,38 @@ impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
         });
     }
 
+    #[inline]
     pub fn cap(&self) -> i64 {
         let inner = self.inner.lock();
         inner.costs.get_max_cost() - inner.costs.used
     }
 
+    #[inline]
     pub fn update(&self, k: &u64, cost: i64) {
         let mut inner = self.inner.lock();
         inner.costs.update(k, cost);
     }
 
+    #[inline]
     pub fn cost(&self, k: &u64) -> i64 {
         let inner = self.inner.lock();
         inner.costs.key_costs.get(k).map_or(-1, |cost| *cost)
     }
 
+    #[inline]
     pub fn clear(&self) {
         let mut inner = self.inner.lock();
         inner.admit.clear();
         inner.costs.clear();
     }
 
+    #[inline]
     pub fn max_cost(&self) -> i64 {
         let inner = self.inner.lock();
         inner.costs.get_max_cost()
     }
 
+    #[inline]
     pub fn update_max_cost(&self, mc: i64) {
         let inner = self.inner.lock();
         inner.costs.update_max_cost(mc)
@@ -219,6 +348,89 @@ impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
 
 unsafe impl<S: BuildHasher + Clone + 'static> Send for LFUPolicy<S> {}
 unsafe impl<S: BuildHasher + Clone + 'static> Sync for LFUPolicy<S> {}
+
+struct PolicyProcessor<S: BuildHasher + Clone + 'static> {
+    inner: Arc<Mutex<PolicyInner<S>>>,
+    items_rx: UnboundedReceiver<Vec<u64>>,
+    stop_rx: Receiver<()>,
+}
+
+impl<S: BuildHasher + Clone + 'static> PolicyProcessor<S> {
+    #[inline]
+    fn new(
+        inner: Arc<Mutex<PolicyInner<S>>>,
+        items_rx: UnboundedReceiver<Vec<u64>>,
+        stop_rx: Receiver<()>,
+    ) -> Self {
+        Self {
+            inner,
+            items_rx,
+            stop_rx,
+        }
+    }
+
+    cfg_async! {
+        #[inline]
+        fn spawn(mut self) -> JoinHandle<()> {
+            spawn(async {
+                loop {
+                    select! {
+                        items = self.items_rx.recv() => self.handle_items(items),
+                        _ = self.stop_rx.recv() => {
+                            drop(self);
+                            return;
+                        },
+                    }
+                }
+            })
+        }
+
+        // TODO: None handle
+        #[inline]
+        fn handle_items(&self, items: Option<Vec<u64>>) {
+            match items {
+                Some(items) => {
+                    let mut inner = self.inner.lock();
+                    inner.admit.increments(items);
+                }
+                None => {
+                    // error!("policy processor error")
+                }
+            }
+        }
+    }
+
+    cfg_not_async! {
+        #[inline]
+        fn spawn(mut self) -> JoinHandle<()> {
+            spawn(move || loop {
+                select! {
+                        recv(self.items_rx) -> items => self.handle_items(items),
+                        recv(self.stop_rx) -> _ => {
+                            drop(self);
+                            return;
+                        },
+                    }
+            })
+        }
+
+        #[inline]
+        fn handle_items(&self, items: Result<Vec<u64>, RecvError>) {
+            match items {
+                Ok(items) => {
+                    let mut inner = self.inner.lock();
+                    inner.admit.increments(items);
+                }
+                Err(_) => {
+                    // error!("policy processor error: {}", e)
+                }
+            }
+        }
+    }
+}
+
+unsafe impl<S: BuildHasher + Clone + 'static> Send for PolicyProcessor<S> {}
+unsafe impl<S: BuildHasher + Clone + 'static> Sync for PolicyProcessor<S> {}
 
 /// SampledLFU stores key-costs paris.
 pub(crate) struct SampledLFU<S = RandomState> {
