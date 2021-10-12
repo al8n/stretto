@@ -1,11 +1,11 @@
 [package]
-name = "ristretto"
+name = "stretto"
 version = "0.1.0"
 authors = ["Al Liu <scygliu1@gmail.com>"]
 description = "This is a Rust implementation for Dgraph's ristretto."
-homepage = "https://github.com/al8n/ristretto"
-repository = "https://github.com/al8n/ristretto.git"
-documentation = "https://docs.rs/ristretto/"
+homepage = "https://github.com/al8n/stretto"
+repository = "https://github.com/al8n/stretto.git"
+documentation = "https://docs.rs/stretto/"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
 keywords = ["cache", "data-structures"]

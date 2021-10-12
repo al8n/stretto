@@ -190,7 +190,7 @@ cfg_not_async! {
         }
 
         for _ in 0..20 {
-            sleep(Duration::from_secs(1));
+            sleep(Duration::from_millis(180));
             let (cost_added, cost_evicted) = (
                 c.metrics.get_cost_added().unwrap(),
                 c.metrics.get_cost_evicted().unwrap(),
@@ -725,8 +725,6 @@ cfg_async! {
         }
     }
 
-
-
     #[tokio::test]
     async fn test_cache_update_max_cost() {
         let c = Cache::builder(10, 10, TransparentKeyBuilder::default())
@@ -1182,7 +1180,7 @@ cfg_async! {
         let tc = c.clone();
         spawn(async move {
             for _ in 0..20 {
-                sleep(Duration::from_secs(1)).await;
+                sleep(Duration::from_millis(500)).await;
                 let (cost_added, cost_evicted) = (
                     tc.metrics.get_cost_added().unwrap(),
                     tc.metrics.get_cost_evicted().unwrap(),

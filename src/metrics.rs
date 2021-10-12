@@ -92,14 +92,17 @@ pub enum Metrics {
 }
 
 impl Metrics {
+    #[inline]
     pub fn new() -> Self {
         Self::Noop
     }
 
+    #[inline]
     pub fn new_op() -> Self {
         Self::Op(MetricsInner::new())
     }
 
+    #[inline]
     pub fn is_op(&self) -> bool {
         match self {
             Metrics::Noop => false,
@@ -107,6 +110,7 @@ impl Metrics {
         }
     }
 
+    #[inline]
     pub fn is_noop(&self) -> bool {
         match self {
             Metrics::Noop => true,
@@ -114,6 +118,7 @@ impl Metrics {
         }
     }
 
+    #[inline]
     pub(crate) fn track_eviction(&self, num_seconds: i64) {
         match self {
             Metrics::Noop => return,
@@ -121,6 +126,7 @@ impl Metrics {
         }
     }
 
+    #[inline]
     pub(crate) fn add(&self, typ: MetricType, hash: u64, delta: u64) -> bool {
         match self {
             Metrics::Noop => false,
@@ -132,69 +138,82 @@ impl Metrics {
     }
 
     /// Returns the number of Get calls where a value was found for the corresponding key.
+    #[inline]
     pub fn get_hits(&self) -> Option<u64> {
         self.map(|ref m| m.get(&MetricType::Hit))
     }
 
     /// Returns the number of Get calls where a value was not found for the corresponding key.
+    #[inline]
     pub fn get_misses(&self) -> Option<u64> {
         self.map(|ref m| m.get(&MetricType::Miss))
     }
 
     /// Returns the total number of Set calls where a new key-value item was added.
+    #[inline]
     pub fn get_keys_added(&self) -> Option<u64> {
         self.map(|ref m| m.get(&MetricType::KeyAdd))
     }
 
     /// Returns the total number of Set calls where a new key-value item was updated.
+    #[inline]
     pub fn get_keys_updated(&self) -> Option<u64> {
         self.map(|ref m| m.get(&MetricType::KeyUpdate))
     }
 
     /// Returns the total number of keys evicted.
+    #[inline]
     pub fn get_keys_evicted(&self) -> Option<u64> {
         self.map(|ref m| m.get(&MetricType::KeyEvict))
     }
 
     /// Returns the sum of costs that have been added (successful Set calls).
+    #[inline]
     pub fn get_cost_added(&self) -> Option<u64> {
         self.map(|ref m| m.get(&MetricType::CostAdd))
     }
 
     /// Returns the sum of all costs that have been evicted.
+    #[inline]
     pub fn get_cost_evicted(&self) -> Option<u64> {
         self.map(|ref m| m.get(&MetricType::CostEvict))
     }
 
     /// Returns the number of Set calls that don't make it into internal
     /// buffers (due to contention or some other reason).
+    #[inline]
     pub fn get_sets_dropped(&self) -> Option<u64> {
         self.map(|ref m| m.get(&MetricType::DropSets))
     }
 
     /// Returns the number of Set calls rejected by the policy (TinyLFU).
+    #[inline]
     pub fn get_sets_rejected(&self) -> Option<u64> {
         self.map(|ref m| m.get(&MetricType::RejectSets))
     }
 
     /// Returns the number of Get counter increments that are dropped
     /// internally.
+    #[inline]
     pub fn get_gets_dropped(&self) -> Option<u64> {
         self.map(|ref m| m.get(&MetricType::DropGets))
     }
 
     /// Returns the number of Get counter increments that are kept.
+    #[inline]
     pub fn get_gets_kept(&self) -> Option<u64> {
         self.map(|ref m| m.get(&MetricType::KeepGets))
     }
 
     /// Ratio is the number of Hits over all accesses (Hits + Misses). This is the
     /// percentage of successful Get calls.
+    #[inline]
     pub fn ratio(&self) -> Option<f64> {
         self.map(|ref m| m.ratio())
     }
 
     /// Returns the histogram data of this metrics
+    #[inline]
     pub fn life_expectancy_seconds(
         &self,
     ) -> Option<Histogram<HISTOGRAM_BOUND_SIZE, HISTOGRAM_COUNT_PER_BUCKET_SIZE>> {
@@ -202,6 +221,7 @@ impl Metrics {
     }
 
     /// clear resets all the metrics
+    #[inline]
     pub fn clear(&self) {
         match self {
             Metrics::Noop => {}
@@ -209,6 +229,7 @@ impl Metrics {
         }
     }
 
+    #[inline]
     fn map<U, F: FnOnce(&MetricsInner) -> U>(&self, f: F) -> Option<U> {
         match self {
             Metrics::Noop => None,
@@ -236,6 +257,7 @@ pub struct MetricsInner {
 }
 
 impl MetricsInner {
+    #[inline]
     pub fn new() -> Self {
         let h = Histogram::<HISTOGRAM_BOUND_SIZE, HISTOGRAM_COUNT_PER_BUCKET_SIZE>::new(
             new_histogram_bound(),
@@ -261,64 +283,76 @@ impl MetricsInner {
     }
 
     /// Returns the number of Get calls where a value was found for the corresponding key.
+    #[inline]
     pub fn get_hits(&self) -> u64 {
         self.get(&MetricType::Hit)
     }
 
     /// Returns the number of Get calls where a value was not found for the corresponding key.
+    #[inline]
     pub fn get_misses(&self) -> u64 {
         self.get(&MetricType::Miss)
     }
 
     /// Returns the total number of Set calls where a new key-value item was added.
+    #[inline]
     pub fn get_keys_added(&self) -> u64 {
         self.get(&MetricType::KeyAdd)
     }
 
     /// Returns the total number of Set calls where a new key-value item was updated.
+    #[inline]
     pub fn get_keys_updated(&self) -> u64 {
         self.get(&MetricType::KeyUpdate)
     }
 
     /// Returns the total number of keys evicted.
+    #[inline]
     pub fn get_keys_evicted(&self) -> u64 {
         self.get(&MetricType::KeyEvict)
     }
 
     /// Returns the sum of costs that have been added (successful Set calls).
+    #[inline]
     pub fn get_cost_added(&self) -> u64 {
         self.get(&MetricType::CostAdd)
     }
 
     /// Returns the sum of all costs that have been evicted.
+    #[inline]
     pub fn get_cost_evicted(&self) -> u64 {
         self.get(&MetricType::CostEvict)
     }
 
     /// Returns the number of Set calls that don't make it into internal
     /// buffers (due to contention or some other reason).
+    #[inline]
     pub fn get_sets_dropped(&self) -> u64 {
         self.get(&MetricType::DropSets)
     }
 
     /// Returns the number of Set calls rejected by the policy (TinyLFU).
+    #[inline]
     pub fn get_sets_rejected(&self) -> u64 {
         self.get(&MetricType::RejectSets)
     }
 
     /// Returns the number of Get counter increments that are dropped
     /// internally.
+    #[inline]
     pub fn get_gets_dropped(&self) -> u64 {
         self.get(&MetricType::DropGets)
     }
 
     /// Returns the number of Get counter increments that are kept.
+    #[inline]
     pub fn get_gets_kept(&self) -> u64 {
         self.get(&MetricType::KeepGets)
     }
 
     /// Ratio is the number of Hits over all accesses (Hits + Misses). This is the
     /// percentage of successful Get calls.
+    #[inline]
     pub fn ratio(&self) -> f64 {
         let hits = self.get_hits();
         let misses = self.get_misses();
@@ -330,6 +364,7 @@ impl MetricsInner {
     }
 
     /// Returns the histogram data of this metrics
+    #[inline]
     pub fn life_expectancy_seconds(
         &self,
     ) -> Histogram<HISTOGRAM_BOUND_SIZE, HISTOGRAM_COUNT_PER_BUCKET_SIZE> {
@@ -337,6 +372,7 @@ impl MetricsInner {
     }
 
     /// clear resets all the metrics
+    #[inline]
     pub fn clear(&self) {
         METRIC_TYPES_ARRAY.iter().for_each(|typ| {
             self.all
@@ -347,10 +383,12 @@ impl MetricsInner {
         self.life.clear()
     }
 
+    #[inline]
     pub(crate) fn track_eviction(&self, num_seconds: i64) {
         self.life.update(num_seconds)
     }
 
+    #[inline]
     pub(crate) fn add(&self, typ: MetricType, hash: u64, delta: u64) {
         self.all.get(&typ).map(|val| {
             let idx = ((hash % 25) * 10) as usize;
@@ -358,6 +396,7 @@ impl MetricsInner {
         });
     }
 
+    #[inline]
     fn get(&self, typ: &MetricType) -> u64 {
         let mut total = 0;
         self.all.get(typ).map(|v| {

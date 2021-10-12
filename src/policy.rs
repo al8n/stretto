@@ -553,6 +553,7 @@ impl<S: BuildHasher + Clone + 'static> SampledLFU<S> {
     }
 
     /// Update the cost by hashed key. If the provided key in SampledLFU, then update it and return true, otherwise false.
+    #[inline]
     pub fn update(&mut self, k: &u64, cost: i64) -> bool {
         // Update the cost of an existing key, but don't worry about evicting.
         // Evictions will be handled the next time a new item is added
@@ -594,6 +595,7 @@ pub(crate) struct TinyLFU {
 
 impl TinyLFU {
     /// The constructor of TinyLFU
+    #[inline]
     pub fn new(num_ctrs: usize) -> Result<Self, CacheError> {
         Ok(Self {
             ctr: CountMinSketch::new(num_ctrs as u64)?,
@@ -613,6 +615,7 @@ impl TinyLFU {
     /// Otherwise, TinyLFU returns just the estimation from the main structure.
     ///
     /// [TinyLFU: A Highly Efficient Cache Admission Policy §3.4.2]: https://arxiv.org/pdf/1512.00727.pdf
+    #[inline]
     pub fn estimate(&self, kh: u64) -> i64 {
         let mut hits = self.ctr.estimate(kh);
         if self.doorkeeper.contains(kh) {
@@ -624,6 +627,7 @@ impl TinyLFU {
     /// increment multiple hashed keys, for details, please see [`increment_hash`].
     ///
     /// [`increment`]: struct.TinyLFU.method.increment.html
+    #[inline]
     pub fn increments(&mut self, khs: Vec<u64>) {
         khs.iter().for_each(|k| self.increment(*k))
     }
@@ -631,6 +635,7 @@ impl TinyLFU {
     /// See [TinyLFU: A Highly Efficient Cache Admission Policy] §3.2
     ///
     /// [TinyLFU: A Highly Efficient Cache Admission Policy]: https://arxiv.org/pdf/1512.00727.pdf
+    #[inline]
     pub fn increment(&mut self, kh: u64) {
         // Flip doorkeeper bit if not already done.
         if !self.doorkeeper.contains_or_add(kh) {
@@ -644,6 +649,7 @@ impl TinyLFU {
     /// See [TinyLFU: A Highly Efficient Cache Admission Policy] §3.2 and §3.3
     ///
     /// [TinyLFU: A Highly Efficient Cache Admission Policy]: https://arxiv.org/pdf/1512.00727.pdf
+    #[inline]
     pub fn try_reset(&mut self) {
         self.w += 1;
         if self.w >= self.samples {
@@ -669,6 +675,7 @@ impl TinyLFU {
     /// `clear` will set all the bits to zero of count-min sketch
     ///
     /// [`reset`]: struct.TinyLFU.method.reset.html
+    #[inline]
     pub fn clear(&mut self) {
         self.w = 0;
         self.doorkeeper.clear();
@@ -677,6 +684,7 @@ impl TinyLFU {
 
     /// `contains` checks if bit(s) for entry hash is/are set,
     /// returns true if the hash was added to the TinyLFU.
+    #[inline]
     pub fn contains(&self, kh: u64) -> bool {
         self.doorkeeper.contains(kh)
     }

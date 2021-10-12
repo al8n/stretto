@@ -14,14 +14,17 @@ const DEPTH: usize = 4;
 pub(crate) struct CountMinRow(Vec<u8>);
 
 impl CountMinRow {
+    #[inline]
     pub(crate) fn new(width: u64) -> Self {
         Self(vec![0; width as usize])
     }
 
+    #[inline]
     pub(crate) fn get(&self, i: u64) -> u8 {
         ((self[(i / 2) as usize] >> ((i & 1) * 4)) as u8) & 0x0f
     }
 
+    #[inline]
     pub(crate) fn increment(&mut self, i: u64) {
         // Index of the counter
         let idx = (i / 2) as usize;
@@ -35,11 +38,13 @@ impl CountMinRow {
         }
     }
 
+    #[inline]
     pub(crate) fn reset(&mut self) {
         // halve each counter
         self.0.iter_mut().for_each(|v| *v = (*v >> 1) & 0x77)
     }
 
+    #[inline]
     pub(crate) fn clear(&mut self) {
         // zero each counter
         self.0.iter_mut().for_each(|v| *v = 0)
@@ -79,6 +84,7 @@ pub(crate) struct CountMinSketch {
 }
 
 impl CountMinSketch {
+    #[inline]
     pub(crate) fn new(ctrs: u64) -> Result<Self, CacheError> {
         if ctrs < 1 {
             return Err(CacheError::InvalidCountMinWidth(ctrs));
@@ -111,6 +117,7 @@ impl CountMinSketch {
     }
 
     /// `increment` increments the count(ers) for the specified key.
+    #[inline]
     pub(crate) fn increment(&mut self, hashed: u64) {
         let mask = self.mask;
         (0..DEPTH).for_each(|i| {
@@ -120,6 +127,7 @@ impl CountMinSketch {
     }
 
     /// `estimate` returns the value of the specified key.
+    #[inline]
     pub(crate) fn estimate(&self, hashed: u64) -> i64 {
         let mask = self.mask;
         let mut min = 255u8;
@@ -135,11 +143,13 @@ impl CountMinSketch {
     }
 
     /// `reset` halves all counter values.
+    #[inline]
     pub(crate) fn reset(&mut self) {
         self.rows.iter_mut().for_each(|row| row.reset())
     }
 
     /// `clear` zeroes all counters.
+    #[inline]
     pub(crate) fn clear(&mut self) {
         self.rows.iter_mut().for_each(|row| row.clear())
     }
