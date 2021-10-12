@@ -1,6 +1,6 @@
-mod wg;
 #[cfg(test)]
 mod test;
+mod wg;
 
 cfg_not_async!(
     mod sync_impl;

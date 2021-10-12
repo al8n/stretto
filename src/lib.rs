@@ -29,10 +29,10 @@ extern crate log;
 #[cfg(feature = "serde")]
 extern crate serde;
 
-pub use error::CacheError;
-pub use utils::{ValueRef, ValueRefMut};
-pub use metrics::{MetricType, Metrics};
 pub use cache::{Cache, CacheBuilder};
+pub use error::CacheError;
+pub use metrics::{MetricType, Metrics};
+pub use utils::{ValueRef, ValueRefMut};
 
 use crate::ttl::Time;
 use std::collections::hash_map::{DefaultHasher, RandomState};

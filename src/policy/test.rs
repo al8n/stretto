@@ -1,5 +1,5 @@
-use crate::policy::{TinyLFU, SampledLFU, LFUPolicy};
 use crate::metrics::Metrics;
+use crate::policy::{LFUPolicy, SampledLFU, TinyLFU};
 use std::sync::Arc;
 use std::time::Duration;
 

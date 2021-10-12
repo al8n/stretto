@@ -4,8 +4,8 @@ use crate::{
     UpdateValidator,
 };
 use parking_lot::Mutex;
-use rand::Rng;
 use rand::rngs::OsRng;
+use rand::Rng;
 use std::collections::HashSet;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -152,7 +152,6 @@ cfg_not_async! {
 
     #[test]
     fn test_cache_max_cost() {
-
         let c = Cache::builder(12960, 1e6 as i64, DefaultKeyBuilder::default())
             .set_metrics(true)
             .finalize()
@@ -192,16 +191,12 @@ cfg_not_async! {
 
         for _ in 0..20 {
             sleep(Duration::from_secs(1));
-            let (keys_added, cost_added, cost_evicted) = (
-                c.metrics.get_keys_added().unwrap(),
+            let (cost_added, cost_evicted) = (
                 c.metrics.get_cost_added().unwrap(),
                 c.metrics.get_cost_evicted().unwrap(),
             );
             let cost = cost_added - cost_evicted;
-            eprintln!(
-                "keys-added: {}, cost-added: {}, cost-evicted: {}, total cache cost: {}",
-                keys_added, cost_added, cost_evicted, cost
-            );
+            eprintln!("{}", c.metrics);
             assert!(cost as f64 <= (1e6 * 1.05));
         }
 
@@ -679,7 +674,7 @@ cfg_not_async! {
 }
 
 cfg_async! {
-    use tokio::sync::mpsc::channel;
+    use tokio::sync::mpsc::{channel, error::TryRecvError};
     use tokio::task::spawn;
     use tokio::time::sleep;
 
@@ -730,75 +725,7 @@ cfg_async! {
         }
     }
 
-    // TODO: I do not know why `tokio::select!` not work, see issue #1
-    #[tokio::test(flavor = "multi_thread", worker_threads = 9)]
-    async fn test_cache_max_cost() {
-        let c = Cache::builder(12960, 1e6 as i64, DefaultKeyBuilder::default())
-            .set_metrics(true)
-            .finalize()
-            .unwrap();
 
-        let c = Arc::new(c);
-
-        let mut txs = Vec::new();
-        let mut rxs = Vec::new();
-
-        (0..8).for_each(|_| {
-            let (stop_tx, stop_rx) = channel::<()>(1);
-            txs.push(stop_tx);
-            rxs.push(stop_rx);
-        });
-
-        for mut rx in rxs {
-            let tc = c.clone();
-            spawn(async move {
-                loop {
-                    tokio::select! {
-                        _ = rx.recv() => {
-                            return;
-                        },
-                        else => {
-                            let k = get_key();
-                            match tc.get(&k) {
-                                None => {
-                                    let mut rng = OsRng::default();
-                                    let rv = rng.gen::<usize>() % 100;
-                                    let val: String;
-                                    if rv < 10 {
-                                        val = "test".to_string();
-                                    } else {
-                                        val = vec!["a"; 1000].join("");
-                                    }
-                                    let cost = val.len() + 2;
-                                    assert!(tc.insert(get_key(), val, cost as i64).await);
-                                },
-                                Some(_) => {},
-                            }
-                        }
-                    };
-                }
-            });
-        }
-
-        for _ in 0..20 {
-            sleep(Duration::from_secs(1)).await;
-            let (keys_added, cost_added, cost_evicted) = (
-                c.metrics.get_keys_added().unwrap(),
-                c.metrics.get_cost_added().unwrap(),
-                c.metrics.get_cost_evicted().unwrap(),
-            );
-            let cost = cost_added - cost_evicted;
-            eprintln!(
-                "keys-added: {}, cost-added: {}, cost-evicted: {}, total cache cost: {}",
-                keys_added, cost_added, cost_evicted, cost
-            );
-            assert!(cost as f64 <= (1e6 * 1.05));
-        }
-
-        for tx in txs {
-            let _ = tx.send(()).await;
-        }
-    }
 
     #[tokio::test]
     async fn test_cache_update_max_cost() {
@@ -1112,45 +1039,6 @@ cfg_async! {
     }
 
     #[tokio::test]
-    async fn test_cache_drop_clear() {
-        let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
-            .set_buffer_size(4096)
-            .set_metrics(true)
-            .set_ignore_internal_cost(true)
-            .finalize()
-            .unwrap();
-        let c = Arc::new(c);
-        let (stop_tx, mut stop_rx) = channel(1);
-        let tc = c.clone();
-        let ctr = Arc::new(AtomicU64::new(0));
-        let tctr = ctr.clone();
-        spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = stop_rx.recv() => return,
-                    else => {
-                        let mut rng = OsRng::default();
-                        let i = rng.gen::<u64>();
-                        drop(rng);
-                        if tc.insert(i, i, 1).await {
-                            tctr.fetch_add(1, Ordering::SeqCst);
-                        }
-                    }
-                }
-            }
-        });
-
-        sleep(Duration::from_millis(100)).await;
-        let _ = stop_tx.send(()).await;
-        c.clear().unwrap();
-        assert_eq!(c.metrics.get_keys_added(), Some(0));
-
-        (0..10).for_each(|i| {
-            assert!(c.get(&i).is_none());
-        })
-    }
-
-    #[tokio::test]
     async fn test_cache_clear() {
         let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
             .set_metrics(true)
@@ -1273,4 +1161,108 @@ cfg_async! {
         eprintln!("process: {} cleanup: {}", process_win, clean_win);
     }
 
+    #[tokio::test]
+    async fn test_cache_max_cost() {
+        let c = Cache::builder(12960, 1e6 as i64, DefaultKeyBuilder::default())
+            .set_metrics(true)
+            .finalize()
+            .unwrap();
+
+        let c = Arc::new(c);
+
+        let mut txs = Vec::new();
+        let mut rxs = Vec::new();
+
+        (0..8).for_each(|_| {
+            let (stop_tx, stop_rx) = channel::<()>(1);
+            txs.push(stop_tx);
+            rxs.push(stop_rx);
+        });
+
+        let tc = c.clone();
+        spawn(async move {
+            for _ in 0..20 {
+                sleep(Duration::from_secs(1)).await;
+                let (cost_added, cost_evicted) = (
+                    tc.metrics.get_cost_added().unwrap(),
+                    tc.metrics.get_cost_evicted().unwrap(),
+                );
+                let cost = cost_added - cost_evicted;
+                eprintln!("{}", tc.metrics);
+                assert!(cost as f64 <= (1e6 * 1.05));
+            }
+
+            for tx in txs {
+                let _ = tx.send(()).await;
+            }
+        });
+
+        for mut rx in rxs {
+            loop {
+                match rx.try_recv() {
+                    Ok(_) => break,
+                    Err(_) => {
+                        let k = get_key();
+                        match c.get(&k) {
+                            None => {
+                                let mut rng = OsRng::default();
+                                let rv = rng.gen::<usize>() % 100;
+                                let val: String;
+                                if rv < 10 {
+                                    val = "test".to_string();
+                                } else {
+                                    val = vec!["a"; 1000].join("");
+                                }
+                                let cost = val.len() + 2;
+                                assert!(c.insert(get_key(), val, cost as i64).await);
+                            },
+                            Some(_) => {},
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cache_drop_clear() {
+        let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
+            .set_buffer_size(4096)
+            .set_metrics(true)
+            .set_ignore_internal_cost(true)
+            .finalize()
+            .unwrap();
+        let c = Arc::new(c);
+        let (stop_tx, mut stop_rx) = channel(1);
+        let tc = c.clone();
+        let ctr = Arc::new(AtomicU64::new(0));
+        let tctr = ctr.clone();
+
+        spawn(async move {
+            sleep(Duration::from_millis(100)).await;
+            let _ = stop_tx.send(()).await;
+        });
+
+        loop {
+            match stop_rx.try_recv() {
+                Ok(_) => {
+                    break;
+                },
+                Err(_) => {
+                    let mut rng = OsRng::default();
+                    let i = rng.gen::<u64>();
+                    drop(rng);
+                    if tc.insert(i, i, 1).await {
+                        tctr.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            }
+        }
+        c.clear().unwrap();
+        assert_eq!(c.metrics.get_keys_added(), Some(0));
+
+        (0..10).for_each(|i| {
+            assert!(c.get(&i).is_none());
+        })
+    }
 }

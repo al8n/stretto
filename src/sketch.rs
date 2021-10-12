@@ -87,7 +87,12 @@ impl CountMinSketch {
         let ctrs = ctrs.next_power_of_two();
         let hctrs = ctrs / 2;
 
-        let mut source = StdRng::seed_from_u64(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
+        let mut source = StdRng::seed_from_u64(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        );
 
         let seeds: Vec<u64> = { (0..DEPTH).map(|_| source.gen::<u64>()).collect() };
 

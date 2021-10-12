@@ -85,6 +85,7 @@ impl Display for MetricType {
 /// Metrics is a snapshot of performance statistics for the lifetime of a cache instance.
 ///
 /// Metrics promises thread-safe.
+#[derive(Clone)]
 pub enum Metrics {
     Noop,
     Op(MetricsInner),
@@ -222,6 +223,15 @@ impl Metrics {
         match self {
             Metrics::Noop => None,
             Metrics::Op(m) => Some(f(m)),
+        }
+    }
+}
+
+impl Display for Metrics {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Metrics::Noop => write!(f, "Metrics::Noop"),
+            Metrics::Op(inner) => write!(f, "{}", inner),
         }
     }
 }
@@ -399,12 +409,18 @@ cfg_serde! {
 impl Display for MetricsInner {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let mut buf = Vec::new();
-        buf.extend("MetricsInner {\n".as_bytes());
+        buf.extend("Metrics::Op {\n".as_bytes());
         METRIC_TYPES_ARRAY.iter().for_each(|typ| {
             buf.extend(format!("  \"{}\": {},\n", typ, self.get(typ)).as_bytes());
         });
 
-        buf.extend(format!("  \"gets-total\": {},\n", self.get(&MetricType::Hit) + self.get(&MetricType::Miss)).as_bytes());
+        buf.extend(
+            format!(
+                "  \"gets-total\": {},\n",
+                self.get(&MetricType::Hit) + self.get(&MetricType::Miss)
+            )
+            .as_bytes(),
+        );
         buf.extend(format!("  \"hit-ratio\": {:.2}\n}}", self.ratio()).as_bytes());
         write!(f, "{}", String::from_utf8(buf).unwrap())
     }
@@ -413,8 +429,8 @@ impl Display for MetricsInner {
 #[cfg(all(feature = "serde", feature = "serde_json"))]
 impl Display for MetricsInner {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let str = serde_json::to_string_pretty(self).map_err( std::fmt::Error::custom)?;
-        write!(f, "MetricsInner {}", str)
+        let str = serde_json::to_string_pretty(self).map_err(std::fmt::Error::custom)?;
+        write!(f, "Metrics::Op {}", str)
     }
 }
 
@@ -465,7 +481,7 @@ mod test {
   \"gets-total\": 0,
   \"hit-ratio\": 0.00
 }"
-            .to_string();
+        .to_string();
         assert_eq!(format!("{}", m), exp)
     }
 }

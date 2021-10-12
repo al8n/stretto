@@ -1,7 +1,7 @@
 use crate::metrics::{MetricType, Metrics};
 use crate::policy::PolicyInner;
 use crate::CacheError;
-use crossbeam_channel::{bounded, unbounded, Receiver, RecvError, Sender, select};
+use crossbeam_channel::{bounded, select, unbounded, Receiver, RecvError, Sender};
 use parking_lot::Mutex;
 use std::collections::hash_map::RandomState;
 use std::hash::BuildHasher;
@@ -123,7 +123,7 @@ impl<S: BuildHasher + Clone + 'static> PolicyProcessor<S> {
             }
             Err(_) => {
                 // error!("policy processor error: {}", e)
-            },
+            }
         }
     }
 }
