@@ -34,7 +34,7 @@ const DEFAULT_INSERT_BUF_SIZE: usize = 32 * 1024;
 // const DEFAULT_BUFFER_ITEMS: usize = 64;
 const DEFAULT_CLEANUP_DURATION: Duration = Duration::from_millis(500);
 
-pub(crate) enum Item<V> {
+enum Item<V> {
     New {
         key: u64,
         conflict: u64,
@@ -89,6 +89,86 @@ impl<V> Item<V> {
     }
 }
 
+/// The `CacheBuilder` struct is used when creating Cache instances if you want to customize the Cache settings.
+/// 
+/// - **num_counters**
+///
+///     `num_counters` is the number of 4-bit access counters to keep for admission and eviction.
+///     Dgraph's developers have seen good performance in setting this to 10x the number of items
+///     you expect to keep in the cache when full.
+/// 
+///     For example, if you expect each item to have a cost of 1 and `max_cost` is 100, set `num_counters` to 1,000.
+///     Or, if you use variable cost values but expect the cache to hold around 10,000 items when full,
+///     set num_counters to 100,000. The important thing is the *number of unique items* in the full cache,
+///     not necessarily the `max_cost` value.
+/// 
+/// - **max_cost**
+/// 
+///     `max_cost` is how eviction decisions are made. For example, if max_cost is 100 and a new item
+///     with a cost of 1 increases total cache cost to 101, 1 item will be evicted.
+/// 
+///     `max_cost` can also be used to denote the max size in bytes. For example,
+///     if max_cost is 1,000,000 (1MB) and the cache is full with 1,000 1KB items,
+///     a new item (that's accepted) would cause 5 1KB items to be evicted.
+/// 
+///     `max_cost` could be anything as long as it matches how you're using the cost values when calling `insert`.
+///
+/// - **key_builder**
+///
+///     KeyBuilder is the hashing algorithm used for every key. In Stretto, the Cache will never store the real key.
+///     The key will be processed by [`KeyBuilder`]. Stretto has two default built-in key builder,
+///     one is [`TransparentKeyBuilder`], the other is [`DefaultKeyBuilder`]. If your key is `u*` or `i*`(such as `u64`, `i64`),
+///     you can use [`TransparentKeyBuilder`] which is faster than [`DefaultKeyBuilder`].
+///     You can also implement your own [`KeyBuilder`].
+///
+///     Note that if you want 128bit hashes you should use the full `[u64, u64]`,
+///     otherwise just fill the `u64` at the `0` position, and it will behave like
+///     any 64bit hash.
+///
+/// - **buffer_size**
+/// 
+///     `buffer_size` is the size of the insert buffers. The Dgraph's developers find that 32 * 1024 gives a good performance.
+/// 
+///     If for some reason you see insert performance decreasing with lots of contention (you shouldn't),
+///     try increasing this value in increments of 32 * 1024. This is a fine-tuning mechanism
+///     and you probably won't have to touch this.
+/// 
+/// - **metrics**
+/// 
+///     Metrics is true when you want real-time logging of a variety of stats.
+///     The reason this is a CacheBuilder flag is because there's a 10% throughput performance overhead.
+/// 
+/// - **ignore_internal_cost**
+///
+///     By default, when `insert` a value in the Cache, there will always have 56 for internal cost,
+///     because the size of stored item in Cache is 56(excluding the size of value).
+///     Set it to true to ignore the internal cost.
+/// 
+/// - **update_validator**
+/// 
+///     By default, the Cache will always update the value if the value already exists in the cache,
+///     this trait is for you to check if the value should be updated.
+/// 
+/// - **callback**
+/// 
+///     CacheCallback is for customize some extra operations on values when related event happens..
+///
+/// - **coster**
+/// 
+///     Cost is a trait you can pass to the CacheBuilder in order to evaluate
+///     item cost at runtime, and only for the `insert` calls that aren't dropped (this is
+///     useful if calculating item cost is particularly expensive, and you don't want to
+///     waste time on items that will be dropped anyways).
+/// 
+///     To signal to Stretto that you'd like to use this Coster trait:
+/// 
+///     1. Set the Coster field to your own Coster implementation.
+///     2. When calling `insert` for new items or item updates, use a `cost` of 0.
+///
+/// [`Cache`]: struct.Cache.html
+/// [`TransparentKeyBuilder`]: struct.TransparentKeyBuilder.html
+/// [`DefaultKeyBuilder`]: struct.DefaultKeyBuilder.html
+/// [`KeyBuilder`]: trait.KeyBuilder.html
 pub struct CacheBuilder<
     K: Hash + Eq,
     V: Send + Sync + 'static,
@@ -159,6 +239,24 @@ pub struct CacheBuilder<
 /// Cache is a thread-safe implementation of a hashmap with a TinyLFU admission
 /// policy and a Sampled LFU eviction policy. You can use the same Cache instance
 /// from as many threads as you want.
+///
+/// 
+/// # Features
+/// * **Internal Mutability** - Do not need to use `Arc<RwLock<Cache<...>>` for concurrent code, you just need `Arc<Cache<...>`
+/// * **Sync and Async** - Stretto support async by `tokio` and sync by `crossbeam`.
+///   * In sync, Cache starts two extra OS level threads. One is policy thread, the other is writing thread.
+///   * In async, Cache starts two extra green threads. One is policy thread, the other is writing thread.
+/// * **Store policy** Stretto only store the value, which means the cache does not store the key. 
+/// * **High Hit Ratios** - with our unique admission/eviction policy pairing, Ristretto's performance is best in class.
+///     * **Eviction: SampledLFU** - on par with exact LRU and better performance on Search and Database traces.
+///     * **Admission: TinyLFU** - extra performance with little memory overhead (12 bits per counter).
+/// * **Fast Throughput** - we use a variety of techniques for managing contention and the result is excellent throughput.
+/// * **Cost-Based Eviction** - any large new item deemed valuable can evict multiple smaller items (cost could be anything).
+/// * **Fully Concurrent** - you can use as many threads as you want with little throughput degradation.
+/// * **Metrics** - optional performance metrics for throughput, hit ratios, and other stats.
+/// * **Simple API** - just figure out your ideal [`CacheBuilder`] values and you're off and running.
+/// 
+/// [`CacheBuilder`]: struct.CacheBuilder.html
 pub struct Cache<
     K,
     V,
@@ -175,74 +273,66 @@ pub struct Cache<
     KH: KeyBuilder<K>,
 {
     /// store is the central concurrent hashmap where key-value items are stored.
-    pub(crate) store: Arc<ShardedMap<V, U, SS, ES>>,
+    store: Arc<ShardedMap<V, U, SS, ES>>,
 
     /// policy determines what gets let in to the cache and what gets kicked out.
-    pub(crate) policy: Arc<LFUPolicy<PS>>,
+    policy: Arc<LFUPolicy<PS>>,
 
     /// set_buf is a buffer allowing us to batch/drop Sets during times of high
     /// contention.
-    pub(crate) insert_buf_tx: Sender<Item<V>>,
+    insert_buf_tx: Sender<Item<V>>,
 
-    pub(crate) stop_tx: Sender<()>,
+    stop_tx: Sender<()>,
 
-    pub(crate) clear_tx: UnboundedSender<()>,
+    clear_tx: UnboundedSender<()>,
 
-    pub(crate) callback: Arc<CB>,
+    callback: Arc<CB>,
 
-    pub(crate) key_to_hash: KH,
+    key_to_hash: KH,
 
-    pub(crate) is_closed: AtomicBool,
+    is_closed: AtomicBool,
 
-    pub(crate) coster: Arc<C>,
+    coster: Arc<C>,
 
-    pub(crate) ignore_internal_cost: bool,
-
-    pub(crate) cleanup_duration: Duration,
-
-    pub(crate) metrics: Arc<Metrics>,
-
-    pub(crate) item_size: usize,
+    /// the metrics for the cache
+    pub metrics: Arc<Metrics>,
 
     _marker: PhantomData<fn(K)>,
 }
 
-struct CacheProcessor<V, C, U, CB, PS, ES, SS>
+struct CacheProcessor<V, U, CB, PS, ES, SS>
     where
         V: Send + Sync + 'static,
-        C: Coster<V>,
         U: UpdateValidator<V>,
         CB: CacheCallback<V>,
         PS: BuildHasher + Clone + 'static,
         ES: BuildHasher + Clone + 'static,
         SS: BuildHasher + Clone + 'static,
 {
-    pub(crate) insert_buf_rx: Receiver<Item<V>>,
-    pub(crate) stop_rx: Receiver<()>,
-    pub(crate) clear_rx: UnboundedReceiver<()>,
-    pub(crate) metrics: Arc<Metrics>,
-    pub(crate) store: Arc<ShardedMap<V, U, SS, ES>>,
-    pub(crate) policy: Arc<LFUPolicy<PS>>,
-    pub(crate) start_ts: HashMap<u64, Time>,
-    pub(crate) num_to_keep: usize,
-    pub(crate) callback: Arc<CB>,
-    pub(crate) coster: Arc<C>,
-    pub(crate) ignore_internal_cost: bool,
-    pub(crate) item_size: usize,
+    insert_buf_rx: Receiver<Item<V>>,
+    stop_rx: Receiver<()>,
+    clear_rx: UnboundedReceiver<()>,
+    metrics: Arc<Metrics>,
+    store: Arc<ShardedMap<V, U, SS, ES>>,
+    policy: Arc<LFUPolicy<PS>>,
+    start_ts: HashMap<u64, Time>,
+    num_to_keep: usize,
+    callback: Arc<CB>,
+    ignore_internal_cost: bool,
+    item_size: usize,
     cleanup_duration: Duration,
 }
 
-struct CacheCleaner<'a, V, C, U, CB, PS, ES, SS>
+struct CacheCleaner<'a, V, U, CB, PS, ES, SS>
     where
         V: Send + Sync + 'static,
-        C: Coster<V>,
         U: UpdateValidator<V>,
         CB: CacheCallback<V>,
         PS: BuildHasher + Clone + 'static,
         ES: BuildHasher + Clone + 'static,
         SS: BuildHasher + Clone + 'static,
 {
-    processor: &'a mut CacheProcessor<V, C, U, CB, PS, ES, SS>,
+    processor: &'a mut CacheProcessor<V, U, CB, PS, ES, SS>,
 }
 
 impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>>
@@ -258,6 +348,7 @@ CacheBuilder<
     RandomState,
 >
 {
+    /// Create a new CacheBuilder
     #[inline]
     pub fn new(num_counters: usize, max_cost: i64, index: KH) -> Self {
         Self {
@@ -293,6 +384,7 @@ impl<K, V, KH, C, U, CB, PS, ES, SS> CacheBuilder<K, V, KH, C, U, CB, PS, ES, SS
         ES: BuildHasher + Clone + 'static,
         SS: BuildHasher + Clone + 'static,
 {
+    ///
     #[inline]
     pub fn set_num_counters(self, num_counters: usize) -> Self {
         Self {
@@ -620,8 +712,6 @@ impl<K, V, KH, C, U, CB, PS, ES, SS> CacheBuilder<K, V, KH, C, U, CB, PS, ES, SS
         let mut policy =
             LFUPolicy::with_hasher(num_counters, max_cost, self.policy_hasher.unwrap())?;
 
-        let item_size = store.item_size();
-
         let coster = Arc::new(self.coster.unwrap());
         let callback = Arc::new(self.callback.unwrap());
         let metrics = if self.metrics {
@@ -643,7 +733,6 @@ impl<K, V, KH, C, U, CB, PS, ES, SS> CacheBuilder<K, V, KH, C, U, CB, PS, ES, SS
             stop_rx,
             clear_rx,
             metrics.clone(),
-            coster.clone(),
             callback.clone(),
         ).spawn();
 
@@ -657,10 +746,7 @@ impl<K, V, KH, C, U, CB, PS, ES, SS> CacheBuilder<K, V, KH, C, U, CB, PS, ES, SS
             clear_tx,
             is_closed: AtomicBool::new(false),
             coster,
-            ignore_internal_cost: self.ignore_internal_cost,
-            cleanup_duration: self.cleanup_duration,
             metrics,
-            item_size,
             _marker: Default::default(),
         };
 
@@ -876,7 +962,7 @@ impl<K, V, KH, C, U, CB, PS, ES, SS> Cache<K, V, KH, C, U, CB, PS, ES, SS>
             if let Some((index, item)) = self.update(key, val, cost, ttl, only_update) {
                 let is_update = item.is_update();
                 // Attempt to send item to policy.
-                tokio::select! {
+                select! {
                     res = self.insert_buf_tx.send(item) => res.map_or_else(|_| {
                        if is_update {
                             // Return true if this was an update operation since we've already
@@ -1058,10 +1144,9 @@ impl<K, V, KH, C, U, CB, PS, ES, SS> Cache<K, V, KH, C, U, CB, PS, ES, SS>
     }
 }
 
-impl<V, C, U, CB, PS, ES, SS> CacheProcessor<V, C, U, CB, PS, ES, SS>
+impl<V, U, CB, PS, ES, SS> CacheProcessor<V, U, CB, PS, ES, SS>
     where
         V: Send + Sync + 'static,
-        C: Coster<V>,
         U: UpdateValidator<V>,
         CB: CacheCallback<V>,
         PS: BuildHasher + Clone + 'static,
@@ -1078,7 +1163,6 @@ impl<V, C, U, CB, PS, ES, SS> CacheProcessor<V, C, U, CB, PS, ES, SS>
         stop_rx: Receiver<()>,
         clear_rx: UnboundedReceiver<()>,
         metrics: Arc<Metrics>,
-        coster: Arc<C>,
         callback: Arc<CB>,
     ) -> Self {
         let item_size = store.item_size();
@@ -1093,7 +1177,6 @@ impl<V, C, U, CB, PS, ES, SS> CacheProcessor<V, C, U, CB, PS, ES, SS>
             num_to_keep,
             callback,
             ignore_internal_cost,
-            coster,
             item_size,
             cleanup_duration
         }
@@ -1305,10 +1388,9 @@ impl<V, C, U, CB, PS, ES, SS> CacheProcessor<V, C, U, CB, PS, ES, SS>
 
 }
 
-impl<'a, V, C, U, CB, PS, ES, SS> CacheCleaner<'a, V, C, U, CB, PS, ES, SS>
+impl<'a, V, U, CB, PS, ES, SS> CacheCleaner<'a, V, U, CB, PS, ES, SS>
     where
         V: Send + Sync + 'static,
-        C: Coster<V>,
         U: UpdateValidator<V>,
         CB: CacheCallback<V>,
         PS: BuildHasher + Clone + 'static,
@@ -1316,7 +1398,7 @@ impl<'a, V, C, U, CB, PS, ES, SS> CacheCleaner<'a, V, C, U, CB, PS, ES, SS>
         SS: BuildHasher + Clone + 'static,
 {
     #[inline]
-    fn new(processor: &'a mut CacheProcessor<V, C, U, CB, PS, ES, SS>) -> Self {
+    fn new(processor: &'a mut CacheProcessor<V, U, CB, PS, ES, SS>) -> Self {
         Self { processor }
     }
 
@@ -1343,7 +1425,7 @@ impl<'a, V, C, U, CB, PS, ES, SS> CacheCleaner<'a, V, C, U, CB, PS, ES, SS>
 
     cfg_async! {
         #[inline]
-        pub(crate) async fn clean(mut self) -> Result<(), CacheError> {
+        async fn clean(mut self) -> Result<(), CacheError> {
             loop {
                 select! {
                     // clear out the insert buffer channel.

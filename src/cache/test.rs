@@ -110,7 +110,7 @@ cfg_not_async! {
     }
 
     fn retry_set<C: Coster<u64>, U: UpdateValidator<u64>, CB: CacheCallback<u64>>(
-        c: Arc<Cache<u64, u64, TransparentKeyBuilder, C, U, CB>>,
+        c: Arc<Cache<u64, u64, TransparentKeyBuilder<u64>, C, U, CB>>,
         key: u64,
         val: u64,
         cost: i64,
@@ -231,7 +231,7 @@ cfg_not_async! {
 
     #[test]
     fn test_cache_multiple_close() {
-        let c: Cache<i64, i64, TransparentKeyBuilder> =
+        let c: Cache<i64, i64, TransparentKeyBuilder<i64>> =
             Cache::new(100, 10, TransparentKeyBuilder::default()).unwrap();
 
         let _ = c.close();
@@ -240,21 +240,21 @@ cfg_not_async! {
 
     #[test]
     fn test_cache_insert_after_close() {
-        let c = new_test_cache::<u64, u64, TransparentKeyBuilder>(TransparentKeyBuilder::default());
+        let c = new_test_cache::<u64, u64, TransparentKeyBuilder<u64>>(TransparentKeyBuilder::default());
         let _ = c.close();
         assert!(!c.insert(1, 1, 1));
     }
 
     #[test]
     fn test_cache_clear_after_close() {
-        let c = new_test_cache::<u64, u64, TransparentKeyBuilder>(TransparentKeyBuilder::default());
+        let c = new_test_cache::<u64, u64, TransparentKeyBuilder<u64>>(TransparentKeyBuilder::default());
         let _ = c.close();
         let _ = c.clear();
     }
 
     #[test]
     fn test_cache_get_after_close() {
-        let c = new_test_cache::<u64, u64, TransparentKeyBuilder>(TransparentKeyBuilder::default());
+        let c = new_test_cache::<u64, u64, TransparentKeyBuilder<u64>>(TransparentKeyBuilder::default());
         assert!(c.insert(1, 1, 1));
         let _ = c.close();
 
@@ -263,7 +263,7 @@ cfg_not_async! {
 
     #[test]
     fn test_cache_remove_after_close() {
-        let c = new_test_cache::<u64, u64, TransparentKeyBuilder>(TransparentKeyBuilder::default());
+        let c = new_test_cache::<u64, u64, TransparentKeyBuilder<u64>>(TransparentKeyBuilder::default());
         assert!(c.insert(1, 1, 1));
         let _ = c.close();
 

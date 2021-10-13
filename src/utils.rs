@@ -1,3 +1,20 @@
+/*
+ * Copyright 2021 Al Liu (https://github.com/al8n/stretto). Licensed under Apache-2.0.
+ *
+ * Copy some code from Dashmap(https://github.com/xacrimon/dashmap). Licensed under MIT.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 use crate::store::StoreItem;
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
 use std::cell::UnsafeCell;
@@ -6,6 +23,7 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::hash::BuildHasher;
 use std::ptr::NonNull;
+use std::fmt::{Display, Formatter, Debug};
 
 #[allow(dead_code)]
 pub struct ValueRef<'a, V, S = RandomState> {
@@ -35,10 +53,29 @@ impl<'a, V, S: BuildHasher> ValueRef<'a, V, S> {
 }
 
 impl<'a, V: Copy, S: BuildHasher> ValueRef<'a, V, S> {
+    /// Get the value and drop the inner RwLockReadGuard.
     pub fn read(self) -> V {
         let v = *self.val;
         drop(self);
         v
+    }
+}
+
+impl<'a, V, S: BuildHasher> AsRef<V> for ValueRef<'a, V, S> {
+    fn as_ref(&self) -> &V {
+        self.value()
+    }
+}
+
+impl<'a, V: Debug, S: BuildHasher> Debug for ValueRef<'a, V, S> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.val)
+    }
+}
+
+impl<'a, V: Display, S: BuildHasher> Display for ValueRef<'a, V, S> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.val)
     }
 }
 
@@ -68,8 +105,15 @@ impl<'a, V, S: BuildHasher> ValueRefMut<'a, V, S> {
         self.val
     }
 
+    /// Set the value
     pub fn write(&mut self, val: V) {
         *self.val = val
+    }
+
+    /// Set the value, and release the inner `RwLockWriteGuard` automatically
+    pub fn write_once(mut self, val: V) {
+        *self.val = val;
+        self.release();
     }
 
     pub fn release(self) {
@@ -88,6 +132,30 @@ impl<'a, V: Copy, S: BuildHasher> ValueRefMut<'a, V, S> {
         let v = *self.val;
         drop(self);
         v
+    }
+}
+
+impl<'a, V: Debug, S: BuildHasher> Debug for ValueRefMut<'a, V, S> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.val)
+    }
+}
+
+impl<'a, V: Display, S: BuildHasher> Display for ValueRefMut<'a, V, S> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.val)
+    }
+}
+
+impl<'a, V, S: BuildHasher> AsRef<V> for ValueRefMut<'a, V, S> {
+    fn as_ref(&self) -> &V {
+        self.value()
+    }
+}
+
+impl<'a, V, S: BuildHasher> AsMut<V> for ValueRefMut<'a, V, S> {
+    fn as_mut(&mut self) -> &mut V {
+        self.value_mut()
     }
 }
 

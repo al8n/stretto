@@ -2,14 +2,26 @@
 name = "stretto"
 version = "0.1.0"
 authors = ["Al Liu <scygliu1@gmail.com>"]
-description = "This is a Rust implementation for Dgraph's ristretto."
+description = "Stretto is a high performance thread-safe memory-bound Rust cache."
 homepage = "https://github.com/al8n/stretto"
 repository = "https://github.com/al8n/stretto.git"
 documentation = "https://docs.rs/stretto/"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
-keywords = ["cache", "data-structures"]
-categories = ["algorithms", "data-structures"]
+keywords = ["cache", "caching", "concurrent", "tinylfu", "async"]
+categories = ["caching", "concurrency", "asynchronous"]
+edition = "2018"
+
+[[example]]
+path = "examples/async_example.rs"
+name = "async_example"
+required-features = ["async"]
+edition = "2018"
+
+[[example]]
+path = "examples/sync_example.rs"
+name = "sync_example"
+required-features = ["sync"]
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
