@@ -289,7 +289,7 @@ shall be dual licensed as above, without any additional terms or conditions.
 </sub>
 
 [Github-url]: https://github.com/al8n/stretto/
-[CI-url]: https://github.com/al8n/stretto
+[CI-url]: https://github.com/al8n/stretto/actions/workflows/ci.yml
 [doc-url]: https://docs.rs/stretto
 [crates-url]: https://crates.io/crates/stretto
 [codecov-url]: https://app.codecov.io/gh/al8n/stretto/
