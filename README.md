@@ -26,10 +26,10 @@ English | [简体中文](README-zh_CN.md)
   * In sync, Cache starts two extra OS level threads. One is policy thread, the other is writing thread.
   * In async, Cache starts two extra green threads. One is policy thread, the other is writing thread.
 * **Store policy** Stretto only store the value, which means the cache does not store the key. 
-* **High Hit Ratios** - with our unique admission/eviction policy pairing, Ristretto's performance is best in class.
+* **High Hit Ratios** - with Dgraph's developers unique admission/eviction policy pairing, Ristretto's performance is best in class.
     * **Eviction: SampledLFU** - on par with exact LRU and better performance on Search and Database traces.
     * **Admission: TinyLFU** - extra performance with little memory overhead (12 bits per counter).
-* **Fast Throughput** - we use a variety of techniques for managing contention and the result is excellent throughput.
+* **Fast Throughput** - use a variety of techniques for managing contention and the result is excellent throughput.
 * **Cost-Based Eviction** - any large new item deemed valuable can evict multiple smaller items (cost could be anything).
 * **Fully Concurrent** - you can use as many threads as you want with little throughput degradation.
 * **Metrics** - optional performance metrics for throughput, hit ratios, and other stats.
