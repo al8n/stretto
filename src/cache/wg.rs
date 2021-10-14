@@ -53,11 +53,6 @@ cfg_async! {
             }
         }
 
-        /// Notify the `WaitGroup` that this worker has finished execution.
-        pub fn done(self) {
-            drop(self)
-        }
-
         /// Wait until all registered workers finish executing.
         pub async fn wait(&self) {
             WaitGroupFuture::new(&self.inner).await
@@ -128,7 +123,7 @@ cfg_async! {
                 tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     ctrx.fetch_add(1, Ordering::Relaxed);
-                    wg.done();
+                    drop(wg);
                 });
             }
             wg.wait().await;
@@ -145,7 +140,7 @@ cfg_async! {
                 tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_millis(5)).await;
                     ctrx.fetch_add(1, Ordering::Relaxed);
-                    wg.done();
+                    drop(wg);
                 });
             }
 
@@ -158,7 +153,7 @@ cfg_async! {
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(5)).await;
                 ctrx.fetch_add(1, Ordering::Relaxed);
-                worker.done();
+                drop(worker);
             });
 
             wg.wait().await;
@@ -177,10 +172,10 @@ cfg_async! {
                     let ctrxx = ctrx.clone();
                     tokio::spawn(async move {
                         ctrxx.fetch_add(1, Ordering::Relaxed);
-                        nested_worker.done();
+                        drop(nested_worker);
                     });
                     ctrx.fetch_add(1, Ordering::Relaxed);
-                    worker.done();
+                    drop(worker);
                 });
             }
 

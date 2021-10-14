@@ -23,6 +23,7 @@ static METRIC_TYPES_ARRAY: [MetricType; NUMS_OF_METRIC_TYPE] = [
     MetricType::KeepGets,
 ];
 
+/// The data field in a Metrics
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
 #[repr(u16)]
 pub enum MetricType {
@@ -87,21 +88,27 @@ impl Display for MetricType {
 /// Metrics promises thread-safe.
 #[derive(Clone)]
 pub enum Metrics {
+    /// No operation metrics
     Noop,
+
+    /// Op metrics
     Op(MetricsInner),
 }
 
 impl Metrics {
+    /// Create a Noop metrics
     #[inline]
     pub fn new() -> Self {
         Self::Noop
     }
 
+    /// Create a new op metrics
     #[inline]
     pub fn new_op() -> Self {
         Self::Op(MetricsInner::new())
     }
 
+    /// Return if the metrics is a Op metrics
     #[inline]
     pub fn is_op(&self) -> bool {
         match self {
@@ -110,6 +117,7 @@ impl Metrics {
         }
     }
 
+    /// Return if the metrics is Noop
     #[inline]
     pub fn is_noop(&self) -> bool {
         match self {
@@ -122,7 +130,7 @@ impl Metrics {
     pub(crate) fn track_eviction(&self, num_seconds: i64) {
         match self {
             Metrics::Noop => return,
-            Metrics::Op(m) => m.life.update(num_seconds),
+            Metrics::Op(m) => m.track_eviction(num_seconds),
         }
     }
 

@@ -8,11 +8,11 @@ Stretto is a Rust implementation for https://github.com/dgraph-io/ristretto. A h
 English | [简体中文](README-zh_CN.md)
 
 [<img alt="github" src="https://img.shields.io/badge/GITHUB-Stretto-8da0cb?style=for-the-badge&logo=Github" height="22">][Github-url]
-[<img alt="Build" src="https://img.shields.io/badge/Build-passing-brightgreen?style=for-the-badge&logo=Github-Actions" height="22">][CI-url]
+[<img alt="Build" src="https://img.shields.io/github/workflow/status/al8n/stretto/CI/main?logo=Github-Actions&style=for-the-badge" height="22">][CI-url]
 [<img alt="codecov" src="https://img.shields.io/codecov/c/gh/al8n/stretto?style=for-the-badge&token=P175Q03Q1L&logo=codecov" height="22">][codecov-url]
 
 [<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-stretto-66c2a5?style=for-the-badge&labelColor=555555&logo=data:image/svg+xml;base64,PHN2ZyByb2xlPSJpbWciIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgdmlld0JveD0iMCAwIDUxMiA1MTIiPjxwYXRoIGZpbGw9IiNmNWY1ZjUiIGQ9Ik00ODguNiAyNTAuMkwzOTIgMjE0VjEwNS41YzAtMTUtOS4zLTI4LjQtMjMuNC0zMy43bC0xMDAtMzcuNWMtOC4xLTMuMS0xNy4xLTMuMS0yNS4zIDBsLTEwMCAzNy41Yy0xNC4xIDUuMy0yMy40IDE4LjctMjMuNCAzMy43VjIxNGwtOTYuNiAzNi4yQzkuMyAyNTUuNSAwIDI2OC45IDAgMjgzLjlWMzk0YzAgMTMuNiA3LjcgMjYuMSAxOS45IDMyLjJsMTAwIDUwYzEwLjEgNS4xIDIyLjEgNS4xIDMyLjIgMGwxMDMuOS01MiAxMDMuOSA1MmMxMC4xIDUuMSAyMi4xIDUuMSAzMi4yIDBsMTAwLTUwYzEyLjItNi4xIDE5LjktMTguNiAxOS45LTMyLjJWMjgzLjljMC0xNS05LjMtMjguNC0yMy40LTMzLjd6TTM1OCAyMTQuOGwtODUgMzEuOXYtNjguMmw4NS0zN3Y3My4zek0xNTQgMTA0LjFsMTAyLTM4LjIgMTAyIDM4LjJ2LjZsLTEwMiA0MS40LTEwMi00MS40di0uNnptODQgMjkxLjFsLTg1IDQyLjV2LTc5LjFsODUtMzguOHY3NS40em0wLTExMmwtMTAyIDQxLjQtMTAyLTQxLjR2LS42bDEwMi0zOC4yIDEwMiAzOC4ydi42em0yNDAgMTEybC04NSA0Mi41di03OS4xbDg1LTM4Ljh2NzUuNHptMC0xMTJsLTEwMiA0MS40LTEwMi00MS40di0uNmwxMDItMzguMiAxMDIgMzguMnYuNnoiPjwvcGF0aD48L3N2Zz4K" height="20">][doc-url]
-[<img alt="crates.io" src="https://img.shields.io/crates/v/stretto?logo=rust&style=for-the-badge" height="22">][crates-url]
+[<img alt="crates.io" src="https://img.shields.io/crates/v/stretto?style=for-the-badge&logo=data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iaXNvLTg4NTktMSI/Pg0KPCEtLSBHZW5lcmF0b3I6IEFkb2JlIElsbHVzdHJhdG9yIDE5LjAuMCwgU1ZHIEV4cG9ydCBQbHVnLUluIC4gU1ZHIFZlcnNpb246IDYuMDAgQnVpbGQgMCkgIC0tPg0KPHN2ZyB2ZXJzaW9uPSIxLjEiIGlkPSJMYXllcl8xIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB4PSIwcHgiIHk9IjBweCINCgkgdmlld0JveD0iMCAwIDUxMiA1MTIiIHhtbDpzcGFjZT0icHJlc2VydmUiPg0KPGc+DQoJPGc+DQoJCTxwYXRoIGQ9Ik0yNTYsMEwzMS41MjgsMTEyLjIzNnYyODcuNTI4TDI1Niw1MTJsMjI0LjQ3Mi0xMTIuMjM2VjExMi4yMzZMMjU2LDB6IE0yMzQuMjc3LDQ1Mi41NjRMNzQuOTc0LDM3Mi45MTNWMTYwLjgxDQoJCQlsMTU5LjMwMyw3OS42NTFWNDUyLjU2NHogTTEwMS44MjYsMTI1LjY2MkwyNTYsNDguNTc2bDE1NC4xNzQsNzcuMDg3TDI1NiwyMDIuNzQ5TDEwMS44MjYsMTI1LjY2MnogTTQzNy4wMjYsMzcyLjkxMw0KCQkJbC0xNTkuMzAzLDc5LjY1MVYyNDAuNDYxbDE1OS4zMDMtNzkuNjUxVjM3Mi45MTN6IiBmaWxsPSIjRkZGIi8+DQoJPC9nPg0KPC9nPg0KPGc+DQo8L2c+DQo8Zz4NCjwvZz4NCjxnPg0KPC9nPg0KPGc+DQo8L2c+DQo8Zz4NCjwvZz4NCjxnPg0KPC9nPg0KPGc+DQo8L2c+DQo8Zz4NCjwvZz4NCjxnPg0KPC9nPg0KPGc+DQo8L2c+DQo8Zz4NCjwvZz4NCjxnPg0KPC9nPg0KPGc+DQo8L2c+DQo8Zz4NCjwvZz4NCjxnPg0KPC9nPg0KPC9zdmc+DQo=" height="22">][crates-url]
 [<img alt="rustc" src="https://img.shields.io/badge/MSRV-1.55.0-fc8d62.svg?style=for-the-badge&logo=Rust" height="22">][rustc-url]
 
 [<img alt="license-apache" src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=for-the-badge&logo=Apache" height="22">][license-apache-url]
@@ -48,9 +48,11 @@ English | [简体中文](README-zh_CN.md)
         * [buffer_size](#buffer_size)
         * [metrics](#metrics)
         * [ignore_internal_cost](#ignore_internal_cost)
+        * [cleanup_duration](#cleanup_duration)
         * [update_validator](#update_validator)
         * [callback](#callback)
         * [coster](#coster)
+        * [hasher](#hasher)
 
 ## Usage
 ### Example
@@ -147,14 +149,12 @@ async fn main() {
 The `CacheBuilder` struct is used when creating Cache instances if you want to customize the Cache settings.
 
 #### num_counters
-**`set_num_counters(self, num_counters: usize)`**
 
 `num_counters` is the number of 4-bit access counters to keep for admission and eviction. Dgraph's developers have seen good performance in setting this to 10x the number of items you expect to keep in the cache when full.
 
 For example, if you expect each item to have a cost of 1 and `max_cost` is 100, set `num_counters` to 1,000. Or, if you use variable cost values but expect the cache to hold around 10,000 items when full, set num_counters to 100,000. The important thing is the *number of unique items* in the full cache, not necessarily the `max_cost` value.
 
 #### max_cost
-**`set_max_cost(self, mc: i64)`**
 
 `max_cost` is how eviction decisions are made. For example, if max_cost is 100 and a new item with a cost of 1 increases total cache cost to 101, 1 item will be evicted.
 
@@ -164,7 +164,6 @@ For example, if you expect each item to have a cost of 1 and `max_cost` is 100, 
 
 #### key_builder
 
-**`set_key_builder<K: Hash + Eq, KB: KeyBuilder<K>(self, kb: KB)`**
 ```rust
 pub trait KeyBuilder<K: Hash + Eq + ?Sized> {
     /// hash_index is used to hash the key to u64
@@ -183,16 +182,15 @@ pub trait KeyBuilder<K: Hash + Eq + ?Sized> {
 
 KeyBuilder is the hashing algorithm used for every key. In Stretto, the Cache will never store the real key.
 The key will be processed by `KeyBuilder`. Stretto has two default built-in key builder,
-one is `TransparentKeyBuilder`, the other is `DefaultKeyBuilder`. If your key is `u*` or `i*`(such as `u64`, `i64`),
-you can use `TransparentKeyBuilder` which is faster than `DefaultKeyBuilder`.
-You can also implement your own `KeyBuilder`.
+one is `TransparentKeyBuilder`, the other is `DefaultKeyBuilder`. If your key implements `TransparentKey` trait,
+you can use `TransparentKeyBuilder` which is faster than `DefaultKeyBuilder`. Otherwise, you should use `DefaultKeyBuilder`
+You can also write your own key builder for the Cache, by implementing `KeyBuilder` trait.
 
-Note that if you want 128bit hashes you should use the full `[2]uint64`,
-otherwise just fill the `uint64` at the `0` position, and it will behave like
+Note that if you want 128bit hashes you should use the full `(u64, u64)`,
+otherwise just fill the `u64` at the `0` position, and it will behave like
 any 64bit hash.
 
 #### buffer_size
-**`set_buffer_size(self, sz: usize)`** 
 
 `buffer_size` is the size of the insert buffers. The Dgraph's developers find that 32 * 1024 gives a good performance.
 
@@ -200,19 +198,19 @@ If for some reason you see insert performance decreasing with lots of contention
 
 #### metrics
 
-**`set_metrics(self, val: bool)`**
-
 Metrics is true when you want real-time logging of a variety of stats. The reason this is a CacheBuilder flag is because there's a 10% throughput performance overhead.
 
 #### ignore_internal_cost
 
-**`set_ignore_internal_cost(self, val: bool)`**
+Set to true indicates to the cache that the cost of internally storing the value should be ignored. This is useful when the 
+cost passed to set is not using bytes as units. Keep in mind that setting this to true will increase the memory usage.
 
-By default, when `insert` a value in the Cache, there will always have 56 for internal cost, because the size of stored item in Cache is 56(excluding the size of value). Set it to true to ignore the internal cost.
+#### cleanup_duration
+
+The Cache will cleanup the expired values every 500ms by default.
 
 #### update_validator
 
-**`set_update_validator<U: UpdateValidator<V>>(self, uv: U)`**
 ```rust
 pub trait UpdateValidator<V>: Send + Sync + 'static {
     /// should_update is called when a value already exists in cache and is being updated.
@@ -224,8 +222,6 @@ By default, the Cache will always update the value if the value already exists i
 this trait is for you to check if the value should be updated.
 
 #### callback
-
-**`set_callback<CB: CacheCallback>(self, cb: CB)`** 
 
 ```rust
 pub trait CacheCallback<V: Send + Sync>: Send + Sync + 'static {
@@ -251,7 +247,6 @@ CacheCallback is for customize some extra operations on values when related even
 
 #### coster
 
-**`set_coster<C: Coster>(self, coster: C)`** 
 ```rust
 pub trait Coster<V>: Send + Sync + 'static {
     /// cost evaluates a value and outputs a corresponding cost. This function
@@ -271,8 +266,14 @@ To signal to Stretto that you'd like to use this Coster trait:
 1. Set the Coster field to your own Coster implementation.
 2. When calling `insert` for new items or item updates, use a `cost` of 0.
 
+#### hasher
 
-#### License
+The hasher for the Cache, default is SipHasher.
+
+## Acknowledgements
+- Thanks Dgraph's developers for providing amazing Go version [Ristretto](https://github.com/dgraph-io/ristretto) implementation.
+
+## License
 
 <sup>
 Licensed under either of <a href="https://opensource.org/licenses/Apache-2.0">Apache License, Version

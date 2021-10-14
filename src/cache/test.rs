@@ -674,7 +674,7 @@ cfg_not_async! {
 }
 
 cfg_async! {
-    use tokio::sync::mpsc::{channel, error::TryRecvError};
+    use tokio::sync::mpsc::channel;
     use tokio::task::spawn;
     use tokio::time::sleep;
 
@@ -685,7 +685,7 @@ cfg_async! {
     }
 
     async fn retry_set<C: Coster<u64>, U: UpdateValidator<u64>, CB: CacheCallback<u64>>(
-        c: Arc<Cache<u64, u64, TransparentKeyBuilder, C, U, CB>>,
+        c: Arc<Cache<u64, u64, TransparentKeyBuilder<u64>, C, U, CB>>,
         key: u64,
         val: u64,
         cost: i64,
@@ -751,7 +751,7 @@ cfg_async! {
 
     #[tokio::test]
     async fn test_cache_multiple_close() {
-        let c: Cache<i64, i64, TransparentKeyBuilder> =
+        let c: Cache<i64, i64, TransparentKeyBuilder<i64>> =
             Cache::new(100, 10, TransparentKeyBuilder::default()).unwrap();
 
         let _ = c.close().await;
@@ -761,7 +761,7 @@ cfg_async! {
     #[tokio::test]
     async fn test_cache_insert_after_close() {
         let c =
-            new_test_cache::<u64, u64, TransparentKeyBuilder>(TransparentKeyBuilder::default()).await;
+            new_test_cache::<u64, u64, TransparentKeyBuilder<u64>>(TransparentKeyBuilder::default()).await;
         let _ = c.close().await;
         assert!(!c.insert(1, 1, 1).await);
     }
@@ -769,7 +769,7 @@ cfg_async! {
     #[tokio::test]
     async fn test_cache_clear_after_close() {
         let c =
-            new_test_cache::<u64, u64, TransparentKeyBuilder>(TransparentKeyBuilder::default()).await;
+            new_test_cache::<u64, u64, TransparentKeyBuilder<u64>>(TransparentKeyBuilder::default()).await;
         let _ = c.close().await;
         let _ = c.clear();
     }
@@ -777,7 +777,7 @@ cfg_async! {
     #[tokio::test]
     async fn test_cache_get_after_close() {
         let c =
-            new_test_cache::<u64, u64, TransparentKeyBuilder>(TransparentKeyBuilder::default()).await;
+            new_test_cache::<u64, u64, TransparentKeyBuilder<u64>>(TransparentKeyBuilder::default()).await;
         assert!(c.insert(1, 1, 1).await);
         let _ = c.close().await;
 
@@ -787,7 +787,7 @@ cfg_async! {
     #[tokio::test]
     async fn test_cache_remove_after_close() {
         let c =
-            new_test_cache::<u64, u64, TransparentKeyBuilder>(TransparentKeyBuilder::default()).await;
+            new_test_cache::<u64, u64, TransparentKeyBuilder<u64>>(TransparentKeyBuilder::default()).await;
         assert!(c.insert(1, 1, 1).await);
         let _ = c.close().await;
 

@@ -85,12 +85,6 @@ impl Default for Bucket {
     }
 }
 
-impl Bucket {
-    fn new() -> Self {
-        Self::default()
-    }
-}
-
 impl<S: BuildHasher> Bucket<S> {
     pub fn with_hasher(hasher: S) -> Self {
         Self {
@@ -136,10 +130,6 @@ impl ExpirationMap {
 }
 
 impl<S: BuildHasher + Clone + 'static> ExpirationMap<S> {
-    pub fn hasher(&self) -> &S {
-        &self.hasher
-    }
-
     pub(crate) fn with_hasher(hasher: S) -> ExpirationMap<S> {
         ExpirationMap {
             buckets: RwLock::new(RefCell::new(HashMap::with_hasher(hasher.clone()))),

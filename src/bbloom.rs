@@ -1,6 +1,6 @@
 //! This mod implements a Simple Bloom Filter.
 //!
-//! This file is a mechanical translation of the reference Golang code, available at https://github.com/dgraph-io/ristretto/blob/master/z/bbloom.go
+//! This file is a mechanical translation of the reference Golang code, available at <https://github.com/dgraph-io/ristretto/blob/master/z/bbloom.go>
 //!
 //! I claim no additional copyright over the original implementation.
 use std::ptr::addr_of;

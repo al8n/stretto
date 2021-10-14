@@ -402,7 +402,7 @@ impl<S: BuildHasher + Clone + 'static> PolicyProcessor<S> {
 
     cfg_not_async! {
         #[inline]
-        fn spawn(mut self) -> JoinHandle<()> {
+        fn spawn(self) -> JoinHandle<()> {
             spawn(move || loop {
                 select! {
                         recv(self.items_rx) -> items => self.handle_items(items),

@@ -25,9 +25,10 @@ use std::hash::BuildHasher;
 use std::ptr::NonNull;
 use std::fmt::{Display, Formatter, Debug};
 
-#[allow(dead_code)]
+/// ValueRef is returned when invoking `get` method of the Cache.
+/// It contains a `RwLockReadGuard` and a value reference.
 pub struct ValueRef<'a, V, S = RandomState> {
-    guard: RwLockReadGuard<'a, HashMap<u64, StoreItem<V>, S>>,
+    _guard: RwLockReadGuard<'a, HashMap<u64, StoreItem<V>, S>>,
     val: &'a V,
 }
 
@@ -40,13 +41,15 @@ impl<'a, V, S: BuildHasher> ValueRef<'a, V, S> {
         guard: RwLockReadGuard<'a, HashMap<u64, StoreItem<V>, S>>,
         val: &'a V,
     ) -> Self {
-        Self { guard, val }
+        Self { _guard: guard, val }
     }
 
+    /// Get the reference of the inner value.
     pub fn value(&self) -> &V {
         self.val
     }
 
+    /// Drop self, release the inner `RwLockReadGuard`, which is the same as `drop()`
     pub fn release(self) {
         drop(self)
     }
@@ -79,9 +82,10 @@ impl<'a, V: Display, S: BuildHasher> Display for ValueRef<'a, V, S> {
     }
 }
 
-#[allow(dead_code)]
+/// ValueRefMut is returned when invoking `get_mut` method of the Cache.
+/// It contains a `RwLockWriteGuard` and a mutable value reference.
 pub struct ValueRefMut<'a, V, S = RandomState> {
-    guard: RwLockWriteGuard<'a, HashMap<u64, StoreItem<V>, S>>,
+    _guard: RwLockWriteGuard<'a, HashMap<u64, StoreItem<V>, S>>,
     val: &'a mut V,
 }
 
@@ -94,13 +98,15 @@ impl<'a, V, S: BuildHasher> ValueRefMut<'a, V, S> {
         guard: RwLockWriteGuard<'a, HashMap<u64, StoreItem<V>, S>>,
         val: &'a mut V,
     ) -> Self {
-        Self { guard, val }
+        Self { _guard: guard, val }
     }
 
+    /// Get the reference of the inner value.
     pub fn value(&self) -> &V {
         self.val
     }
 
+    /// Get the mutable reference of the inner value.
     pub fn value_mut(&mut self) -> &mut V {
         self.val
     }
@@ -111,23 +117,26 @@ impl<'a, V, S: BuildHasher> ValueRefMut<'a, V, S> {
     }
 
     /// Set the value, and release the inner `RwLockWriteGuard` automatically
-    pub fn write_once(mut self, val: V) {
+    pub fn write_once(self, val: V) {
         *self.val = val;
         self.release();
     }
 
+    /// Drop self, release the inner `RwLockReadGuard`, which is the same as `drop()`
     pub fn release(self) {
         drop(self)
     }
 }
 
 impl<'a, V: Clone, S: BuildHasher> ValueRefMut<'a, V, S> {
+    /// Clone the inner value
     pub fn clone_inner(&self) -> V {
         self.val.clone()
     }
 }
 
 impl<'a, V: Copy, S: BuildHasher> ValueRefMut<'a, V, S> {
+    /// Read the inner value and drop the inner `RwLockReadGuard`.
     pub fn read(self) -> V {
         let v = *self.val;
         drop(self);

@@ -2,22 +2,28 @@ use std::fmt::{Debug, Display, Formatter};
 
 /// CacheError contains the error of this crate
 pub enum CacheError {
-    /// Count Min sketch with wrong width
+    /// Count Min sketch with wrong width.
     InvalidCountMinWidth(u64),
-    /// Invalid Samples value for TinyLFU
+
+    /// Invalid Samples value for TinyLFU.
     InvalidSamples(usize),
-    /// Invalid false positive ratio for TinyLFU
+
+    /// Invalid false positive ratio for TinyLFU.
     InvalidFalsePositiveRatio(f64),
 
+    /// Invalid number of counters for the Cache.
     InvalidNumCounters,
 
+    /// Invalid max cost for the Cache.
     InvalidMaxCost,
 
+    /// Invalid insert buffer size for the Cache.
     InvalidBufferSize,
 
-    ClosedChannel,
-    CannotJoin,
+    /// Error when send msg between threads.
     SendError(String),
+
+    /// Error when receive msg between threads.
     RecvError(String),
 }
 
@@ -38,8 +44,6 @@ impl CacheError {
             CacheError::InvalidNumCounters => write!(f, "num_counters can't be zero"),
             CacheError::InvalidMaxCost => write!(f, "max_cost can't be zero"),
             CacheError::InvalidBufferSize => write!(f, "buffer_size can't be zero"),
-            CacheError::ClosedChannel => write!(f, "channel has been closed."),
-            CacheError::CannotJoin => write!(f, "thread cannot be joined"),
         }
     }
 }
