@@ -1,8 +1,5 @@
 use crate::cache::{Cache, Item};
-use crate::{
-    CacheCallback, Coster, DefaultKeyBuilder, Item as CrateItem, KeyBuilder, TransparentKeyBuilder,
-    UpdateValidator,
-};
+use crate::{CacheCallback, Coster, DefaultKeyBuilder, Item as CrateItem, KeyBuilder, TransparentKeyBuilder, UpdateValidator, CacheBuilder, DefaultCoster, DefaultUpdateValidator, DefaultCacheCallback};
 use parking_lot::Mutex;
 use rand::rngs::OsRng;
 use rand::Rng;
@@ -11,6 +8,7 @@ use std::hash::Hash;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use std::collections::hash_map::RandomState;
 
 static CHARSET: &'static [u8] = "abcdefghijklmnopqrstuvwxyz0123456789".as_bytes();
 
@@ -126,6 +124,22 @@ cfg_not_async! {
             assert_eq!(c.get(&key).unwrap().read(), val);
             return;
         }
+    }
+
+    #[test]
+    fn test_cache_builder() {
+        let _ = CacheBuilder::new(100, 10, TransparentKeyBuilder::default())
+        .set_coster(DefaultCoster::default())
+        .set_update_validator(DefaultUpdateValidator::default())
+        .set_callback(DefaultCacheCallback::default())
+        .set_num_counters(200)
+        .set_max_cost(100)
+        .set_cleanup_duration(Duration::from_secs(1))
+        .set_buffer_size(1000)
+        .set_key_builder(DefaultKeyBuilder::default())
+        .set_hasher(RandomState::default())
+        .finalize()
+        .unwrap();
     }
 
     #[test]
@@ -701,6 +715,22 @@ cfg_async! {
             assert_eq!(c.get(&key).unwrap().read(), val);
             return;
         }
+    }
+
+    #[tokio::test]
+    async fn test_cache_builder() {
+        let _ = CacheBuilder::new(100, 10, TransparentKeyBuilder::default())
+        .set_coster(DefaultCoster::default())
+        .set_update_validator(DefaultUpdateValidator::default())
+        .set_callback(DefaultCacheCallback::default())
+        .set_num_counters(200)
+        .set_max_cost(100)
+        .set_cleanup_duration(Duration::from_secs(1))
+        .set_buffer_size(1000)
+        .set_key_builder(DefaultKeyBuilder::default())
+        .set_hasher(RandomState::default())
+        .finalize()
+        .unwrap();
     }
 
     #[tokio::test]

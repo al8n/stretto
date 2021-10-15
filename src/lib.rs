@@ -195,7 +195,7 @@ extern crate atomic;
 #[macro_use]
 extern crate log;
 
-#[cfg(feature = "serde")]
+#[cfg(any(feature = "serde", test))]
 extern crate serde;
 
 cfg_async! {

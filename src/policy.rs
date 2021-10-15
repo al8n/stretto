@@ -567,7 +567,7 @@ impl<S: BuildHasher + Clone + 'static> SampledLFU<S> {
                     if prev_val > cost {
                         let diff = (prev_val - cost) as u64 - 1;
                         self.metrics.add(MetricType::CostAdd, k, !diff);
-                    } else {
+                    } else if cost > prev_val {
                         let diff = (cost - prev_val) as u64;
                         self.metrics.add(MetricType::CostAdd, k, diff);
                     }

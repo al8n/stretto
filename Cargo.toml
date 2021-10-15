@@ -10,6 +10,13 @@ readme = "README.md"
 license = "MIT OR Apache-2.0"
 keywords = ["cache", "caching", "concurrent", "tinylfu", "async"]
 categories = ["caching", "concurrency", "asynchronous"]
+exclude = [
+    "**/*.json",
+    "**/*.go",
+    "**/*.mod",
+    "**/*.sum",
+    "benches/*"
+]
 edition = "2018"
 
 [[example]]
