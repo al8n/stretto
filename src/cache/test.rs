@@ -128,7 +128,7 @@ cfg_not_async! {
 
     #[test]
     fn test_cache_builder() {
-        let _ = CacheBuilder::new(100, 10, TransparentKeyBuilder::default())
+        let _: Cache<u64, u64, DefaultKeyBuilder> = CacheBuilder::new(100, 10, TransparentKeyBuilder::default())
         .set_coster(DefaultCoster::default())
         .set_update_validator(DefaultUpdateValidator::default())
         .set_callback(DefaultCacheCallback::default())
@@ -719,7 +719,7 @@ cfg_async! {
 
     #[tokio::test]
     async fn test_cache_builder() {
-        let _ = CacheBuilder::new(100, 10, TransparentKeyBuilder::default())
+        let _: Cache<u64, u64, DefaultKeyBuilder> = CacheBuilder::new(100, 10, TransparentKeyBuilder::default())
         .set_coster(DefaultCoster::default())
         .set_update_validator(DefaultUpdateValidator::default())
         .set_callback(DefaultCacheCallback::default())
