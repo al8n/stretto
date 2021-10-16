@@ -1,0 +1,16 @@
+[package]
+name = "ristretto-rs"
+version = "0.1.0"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+sync = ["stretto/sync"]
+async = ["stretto/async", "tokio/full"]
+
+[dependencies]
+stretto = { path = "../..", optional = true }
+serde = {version = "1", features = ["serde_derive"] }
+serde_json = "1.0.68"
+tokio = {version = "1.12.0", optional = true}

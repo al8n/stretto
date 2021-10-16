@@ -139,11 +139,6 @@ impl<
         }
     }
 
-    pub fn contains(&self, key: &u64) -> bool {
-        let data = self.shards[(*key as usize) % NUM_OF_SHARDS].read();
-        data.contains_key(key)
-    }
-
     pub fn insert(&self, key: u64, val: V, conflict: u64, expiration: Time) {
         let mut data = self.shards[(key as usize) % NUM_OF_SHARDS].write();
 
