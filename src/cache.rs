@@ -805,11 +805,11 @@ impl<K, V, KH, C, U, CB, S> Cache<K, V, KH, C, U, CB, S>
 
         match self.store.get(&index, conflict) {
             None => {
-                self.metrics.add(MetricType::Hit, index, 1);
+                self.metrics.add(MetricType::Miss, index, 1);
                 None
             }
             Some(v) => {
-                self.metrics.add(MetricType::Miss, index, 1);
+                self.metrics.add(MetricType::Hit, index, 1);
                 Some(v)
             }
         }
@@ -825,11 +825,11 @@ impl<K, V, KH, C, U, CB, S> Cache<K, V, KH, C, U, CB, S>
         let (index, conflict) = self.key_to_hash.build_key(key);
         match self.store.get_mut(&index, conflict) {
             None => {
-                self.metrics.add(MetricType::Hit, index, 1);
+                self.metrics.add(MetricType::Miss, index, 1);
                 None
             }
             Some(v) => {
-                self.metrics.add(MetricType::Miss, index, 1);
+                self.metrics.add(MetricType::Hit, index, 1);
                 Some(v)
             }
         }
@@ -876,6 +876,12 @@ impl<K, V, KH, C, U, CB, S> Cache<K, V, KH, C, U, CB, S>
     #[inline]
     pub fn update_max_cost(&self, max_cost: i64) {
         self.policy.update_max_cost(max_cost)
+    }
+
+    /// Returns the number of items in the Cache
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.store.len()
     }
 
     cfg_async! {
