@@ -12,7 +12,7 @@ Stretto is a Rust implementation for https://github.com/dgraph-io/ristretto. A h
 [<img alt="codecov" src="https://img.shields.io/codecov/c/gh/al8n/stretto?style=for-the-badge&token=P175Q03Q1L&logo=codecov" height="22">][codecov-url]
 
 [<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-stretto-66c2a5?style=for-the-badge&labelColor=555555&logo=data:image/svg+xml;base64,PHN2ZyByb2xlPSJpbWciIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgdmlld0JveD0iMCAwIDUxMiA1MTIiPjxwYXRoIGZpbGw9IiNmNWY1ZjUiIGQ9Ik00ODguNiAyNTAuMkwzOTIgMjE0VjEwNS41YzAtMTUtOS4zLTI4LjQtMjMuNC0zMy43bC0xMDAtMzcuNWMtOC4xLTMuMS0xNy4xLTMuMS0yNS4zIDBsLTEwMCAzNy41Yy0xNC4xIDUuMy0yMy40IDE4LjctMjMuNCAzMy43VjIxNGwtOTYuNiAzNi4yQzkuMyAyNTUuNSAwIDI2OC45IDAgMjgzLjlWMzk0YzAgMTMuNiA3LjcgMjYuMSAxOS45IDMyLjJsMTAwIDUwYzEwLjEgNS4xIDIyLjEgNS4xIDMyLjIgMGwxMDMuOS01MiAxMDMuOSA1MmMxMC4xIDUuMSAyMi4xIDUuMSAzMi4yIDBsMTAwLTUwYzEyLjItNi4xIDE5LjktMTguNiAxOS45LTMyLjJWMjgzLjljMC0xNS05LjMtMjguNC0yMy40LTMzLjd6TTM1OCAyMTQuOGwtODUgMzEuOXYtNjguMmw4NS0zN3Y3My4zek0xNTQgMTA0LjFsMTAyLTM4LjIgMTAyIDM4LjJ2LjZsLTEwMiA0MS40LTEwMi00MS40di0uNnptODQgMjkxLjFsLTg1IDQyLjV2LTc5LjFsODUtMzguOHY3NS40em0wLTExMmwtMTAyIDQxLjQtMTAyLTQxLjR2LS42bDEwMi0zOC4yIDEwMiAzOC4ydi42em0yNDAgMTEybC04NSA0Mi41di03OS4xbDg1LTM4Ljh2NzUuNHptMC0xMTJsLTEwMiA0MS40LTEwMi00MS40di0uNmwxMDItMzguMiAxMDIgMzguMnYuNnoiPjwvcGF0aD48L3N2Zz4K" height="20">][doc-url]
-[<img alt="crates.io" src="https://img.shields.io/crates/v/stretto?logo=rust&style=for-the-badge" height="22">][crates-url]
+[<img alt="crates.io" src="https://img.shields.io/crates/v/stretto?style=for-the-badge&logo=data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iaXNvLTg4NTktMSI/Pg0KPCEtLSBHZW5lcmF0b3I6IEFkb2JlIElsbHVzdHJhdG9yIDE5LjAuMCwgU1ZHIEV4cG9ydCBQbHVnLUluIC4gU1ZHIFZlcnNpb246IDYuMDAgQnVpbGQgMCkgIC0tPg0KPHN2ZyB2ZXJzaW9uPSIxLjEiIGlkPSJMYXllcl8xIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB4PSIwcHgiIHk9IjBweCINCgkgdmlld0JveD0iMCAwIDUxMiA1MTIiIHhtbDpzcGFjZT0icHJlc2VydmUiPg0KPGc+DQoJPGc+DQoJCTxwYXRoIGQ9Ik0yNTYsMEwzMS41MjgsMTEyLjIzNnYyODcuNTI4TDI1Niw1MTJsMjI0LjQ3Mi0xMTIuMjM2VjExMi4yMzZMMjU2LDB6IE0yMzQuMjc3LDQ1Mi41NjRMNzQuOTc0LDM3Mi45MTNWMTYwLjgxDQoJCQlsMTU5LjMwMyw3OS42NTFWNDUyLjU2NHogTTEwMS44MjYsMTI1LjY2MkwyNTYsNDguNTc2bDE1NC4xNzQsNzcuMDg3TDI1NiwyMDIuNzQ5TDEwMS44MjYsMTI1LjY2MnogTTQzNy4wMjYsMzcyLjkxMw0KCQkJbC0xNTkuMzAzLDc5LjY1MVYyNDAuNDYxbDE1OS4zMDMtNzkuNjUxVjM3Mi45MTN6IiBmaWxsPSIjRkZGIi8+DQoJPC9nPg0KPC9nPg0KPGc+DQo8L2c+DQo8Zz4NCjwvZz4NCjxnPg0KPC9nPg0KPGc+DQo8L2c+DQo8Zz4NCjwvZz4NCjxnPg0KPC9nPg0KPGc+DQo8L2c+DQo8Zz4NCjwvZz4NCjxnPg0KPC9nPg0KPGc+DQo8L2c+DQo8Zz4NCjwvZz4NCjxnPg0KPC9nPg0KPGc+DQo8L2c+DQo8Zz4NCjwvZz4NCjxnPg0KPC9nPg0KPC9zdmc+DQo=" height="22">][crates-url]
 [<img alt="rustc" src="https://img.shields.io/badge/MSRV-1.55.0-fc8d62.svg?style=for-the-badge&logo=Rust" height="22">][rustc-url]
 
 [<img alt="license-apache" src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=for-the-badge&logo=Apache" height="22">][license-apache-url]
@@ -26,10 +26,10 @@ Stretto is a Rust implementation for https://github.com/dgraph-io/ristretto. A h
     * In sync, Cache starts two extra OS level threads. One is policy thread, the other is writing thread.
     * In async, Cache starts two extra green threads. One is policy thread, the other is writing thread.
 * **Store policy** Stretto only store the value, which means the cache does not store the key.
-* **High Hit Ratios** - with our unique admission/eviction policy pairing, Ristretto's performance is best in class.
+* **High Hit Ratios** - with Dgraph's developers unique admission/eviction policy pairing, Ristretto's performance is best in class.
     * **Eviction: SampledLFU** - on par with exact LRU and better performance on Search and Database traces.
     * **Admission: TinyLFU** - extra performance with little memory overhead (12 bits per counter).
-* **Fast Throughput** - we use a variety of techniques for managing contention and the result is excellent throughput.
+* **Fast Throughput** - use a variety of techniques for managing contention and the result is excellent throughput.
 * **Cost-Based Eviction** - any large new item deemed valuable can evict multiple smaller items (cost could be anything).
 * **Fully Concurrent** - you can use as many threads as you want with little throughput degradation.
 * **Metrics** - optional performance metrics for throughput, hit ratios, and other stats.
@@ -59,6 +59,7 @@ Stretto is a Rust implementation for https://github.com/dgraph-io/ristretto. A h
 #### Sync
 ```rust
 use stretto::{Cache, DefaultKeyBuilder};
+use std::time::Duration;
 
 fn main() {
     let c = Cache::new(12960, 1e6 as i64, DefaultKeyBuilder::default()).unwrap();
@@ -66,6 +67,9 @@ fn main() {
     // set a value with a cost of 1
     c.insert("a", "a", 1);
 
+    // set a value with a cost of 1 and ttl
+    c.insert_with_ttl("b", "b", 1, Duration::from_secs(3));
+    
     // wait for value to pass through buffers
     c.wait().unwrap();
 
@@ -102,6 +106,7 @@ fn main() {
 #### Async
 ```rust
 use stretto::{Cache, DefaultKeyBuilder};
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
@@ -110,6 +115,9 @@ async fn main() {
     // set a value with a cost of 1
     c.insert("a", "a", 1).await;
 
+    // set a value with a cost of 1 and ttl
+    c.insert_with_ttl("b", "b", 1, Duration::from_secs(3)).await;
+    
     // wait for value to pass through buffers
     c.wait().await.unwrap();
 
@@ -289,7 +297,7 @@ shall be dual licensed as above, without any additional terms or conditions.
 </sub>
 
 [Github-url]: https://github.com/al8n/stretto/
-[CI-url]: https://github.com/al8n/stretto
+[CI-url]: https://github.com/al8n/stretto/actions/workflows/ci.yml
 [doc-url]: https://docs.rs/stretto
 [crates-url]: https://crates.io/crates/stretto
 [codecov-url]: https://app.codecov.io/gh/al8n/stretto/

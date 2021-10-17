@@ -1,3 +1,4 @@
+use std::time::Duration;
 use stretto::{Cache, DefaultKeyBuilder};
 
 fn main() {
@@ -5,6 +6,8 @@ fn main() {
 
     // set a value with a cost of 1
     c.insert("a", "a", 1);
+    // set a value with a cost of 1 and ttl
+    c.insert_with_ttl("b", "b", 1, Duration::from_secs(3));
 
     // wait for value to pass through buffers
     c.wait().unwrap();

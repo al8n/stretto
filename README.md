@@ -59,6 +59,7 @@ English | [简体中文](README-zh_CN.md)
 #### Sync
 ```rust
 use stretto::{Cache, DefaultKeyBuilder};
+use std::time::Duration;
 
 fn main() {
     let c = Cache::new(12960, 1e6 as i64, DefaultKeyBuilder::default()).unwrap();
@@ -66,6 +67,9 @@ fn main() {
     // set a value with a cost of 1
     c.insert("a", "a", 1);
 
+    // set a value with a cost of 1 and ttl
+    c.insert_with_ttl("b", "b", 1, Duration::from_secs(3));
+    
     // wait for value to pass through buffers
     c.wait().unwrap();
 
@@ -102,6 +106,7 @@ fn main() {
 #### Async
 ```rust
 use stretto::{Cache, DefaultKeyBuilder};
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
@@ -110,6 +115,9 @@ async fn main() {
     // set a value with a cost of 1
     c.insert("a", "a", 1).await;
 
+    // set a value with a cost of 1 and ttl
+    c.insert_with_ttl("b", "b", 1, Duration::from_secs(3)).await;
+    
     // wait for value to pass through buffers
     c.wait().await.unwrap();
 
