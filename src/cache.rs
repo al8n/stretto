@@ -298,9 +298,9 @@ pub struct Cache<
 
     callback: Arc<CB>,
 
-    key_to_hash: KH,
+    key_to_hash: Arc<KH>,
 
-    is_closed: AtomicBool,
+    is_closed: Arc<AtomicBool>,
 
     coster: Arc<C>,
 
@@ -743,10 +743,10 @@ where
             policy,
             insert_buf_tx: buf_tx,
             callback,
-            key_to_hash: self.key_to_hash,
+            key_to_hash: Arc::new(self.key_to_hash),
             stop_tx,
             clear_tx,
-            is_closed: AtomicBool::new(false),
+            is_closed: Arc::new(AtomicBool::new(false)),
             coster,
             metrics,
             _marker: Default::default(),
@@ -1151,6 +1151,33 @@ where
                 self.callback.on_exit(Some(v));
                 Some((index, Item::update(index, cost, external_cost)))
             }
+        }
+    }
+}
+
+impl<K, V, KH, C, U, CB, S> Clone for Cache<K, V, KH, C, U, CB, S>
+    where
+        K: Hash + Eq,
+        V: Send + Sync + 'static,
+        KH: KeyBuilder<K>,
+        C: Coster<V>,
+        U: UpdateValidator<V>,
+        CB: CacheCallback<V>,
+        S: BuildHasher + Clone + 'static,
+{
+    fn clone(&self) -> Self {
+        Self {
+            store: self.store.clone(),
+            policy: self.policy.clone(),
+            insert_buf_tx: self.insert_buf_tx.clone(),
+            stop_tx: self.stop_tx.clone(),
+            clear_tx: self.clear_tx.clone(),
+            callback: self.callback.clone(),
+            key_to_hash: self.key_to_hash.clone(),
+            is_closed: self.is_closed.clone(),
+            coster: self.coster.clone(),
+            metrics: self.metrics.clone(),
+            _marker: self._marker,
         }
     }
 }

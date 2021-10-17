@@ -1,3 +1,4 @@
+use std::collections::hash_map::RandomState;
 use crate::metrics::Metrics;
 use crate::policy::{LFUPolicy, SampledLFU, TinyLFU};
 use std::sync::Arc;
@@ -323,6 +324,13 @@ cfg_async! {
         p.close().await.unwrap();
         p.add(1, 1);
     }
+}
+
+#[test]
+fn test_sampled_lfu_constructor() {
+    let _ = SampledLFU::with_samples_and_hasher(100, 100, RandomState::new());
+    let _ = SampledLFU::with_samples(100, 100);
+
 }
 
 #[test]

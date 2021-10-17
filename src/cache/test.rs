@@ -26,14 +26,6 @@ struct TestCallback {
     evicted: Arc<Mutex<HashSet<u64>>>,
 }
 
-impl Default for TestCallback {
-    fn default() -> Self {
-        Self {
-            evicted: Arc::new(Mutex::new(HashSet::new())),
-        }
-    }
-}
-
 impl TestCallback {
     fn new(map: Arc<Mutex<HashSet<u64>>>) -> Self {
         Self { evicted: map }
@@ -111,7 +103,7 @@ cfg_not_async! {
     }
 
     fn retry_set<C: Coster<u64>, U: UpdateValidator<u64>, CB: CacheCallback<u64>>(
-        c: Arc<Cache<u64, u64, TransparentKeyBuilder<u64>, C, U, CB>>,
+        c: Cache<u64, u64, TransparentKeyBuilder<u64>, C, U, CB>,
         key: u64,
         val: u64,
         cost: i64,
@@ -174,7 +166,7 @@ cfg_not_async! {
             .finalize()
             .unwrap();
 
-        let c = Arc::new(c);
+        
         let (stop_tx, stop_rx) = bounded::<()>(8);
 
         for _ in 0..8 {
@@ -356,7 +348,7 @@ cfg_not_async! {
             .set_metrics(true)
             .finalize()
             .unwrap();
-        let c = Arc::new(c);
+        
 
         retry_set(c.clone(), 1, 1, 1, Duration::ZERO);
 
@@ -419,13 +411,11 @@ cfg_not_async! {
     #[test]
     fn test_cache_set_with_ttl() {
         let cb = Arc::new(Mutex::new(HashSet::new()));
-        let c = Arc::new(
-            Cache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
                 .set_callback(TestCallback::new(cb.clone()))
                 .set_ignore_internal_cost(true)
                 .finalize()
-                .unwrap(),
-        );
+                .unwrap();
 
         retry_set(c.clone(), 1, 1, 1, Duration::from_secs(1));
 
@@ -467,12 +457,10 @@ cfg_not_async! {
 
     #[test]
     fn test_cache_remove_with_ttl() {
-        let c = Arc::new(
-            Cache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
                 .set_ignore_internal_cost(true)
                 .finalize()
-                .unwrap(),
-        );
+                .unwrap();
 
         retry_set(c.clone(), 3, 1, 1, Duration::from_secs(10));
         sleep(Duration::from_secs(1));
@@ -486,13 +474,11 @@ cfg_not_async! {
 
     #[test]
     fn test_cache_get_ttl() {
-        let c = Arc::new(
-            Cache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
                 .set_metrics(true)
                 .set_ignore_internal_cost(true)
                 .finalize()
-                .unwrap(),
-        );
+                .unwrap();
 
         // try expiration with valid ttl item
         {
@@ -538,7 +524,7 @@ cfg_not_async! {
             .set_ignore_internal_cost(true)
             .finalize()
             .unwrap();
-        let c = Arc::new(c);
+        
         let (stop_tx, stop_rx) = bounded(0);
         let tc = c.clone();
 
@@ -599,7 +585,7 @@ cfg_not_async! {
             .finalize()
             .unwrap();
 
-        let c = Arc::new(c);
+        
         c.insert(1, 1, 1);
 
         let (stop_tx, stop_rx) = bounded(0);
@@ -702,7 +688,7 @@ cfg_async! {
     }
 
     async fn retry_set<C: Coster<u64>, U: UpdateValidator<u64>, CB: CacheCallback<u64>>(
-        c: Arc<Cache<u64, u64, TransparentKeyBuilder<u64>, C, U, CB>>,
+        c: Cache<u64, u64, TransparentKeyBuilder<u64>, C, U, CB>,
         key: u64,
         val: u64,
         cost: i64,
@@ -895,7 +881,7 @@ cfg_async! {
             .set_metrics(true)
             .finalize()
             .unwrap();
-        let c = Arc::new(c);
+        
 
         retry_set(c.clone(), 1, 1, 1, Duration::ZERO).await;
 
@@ -958,13 +944,11 @@ cfg_async! {
     #[tokio::test]
     async fn test_cache_set_with_ttl() {
         let cb = Arc::new(Mutex::new(HashSet::new()));
-        let c = Arc::new(
-            Cache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
                 .set_callback(TestCallback::new(cb.clone()))
                 .set_ignore_internal_cost(true)
                 .finalize()
-                .unwrap(),
-        );
+                .unwrap();
 
         retry_set(c.clone(), 1, 1, 1, Duration::from_secs(1)).await;
 
@@ -1006,12 +990,10 @@ cfg_async! {
 
     #[tokio::test]
     async fn test_cache_remove_with_ttl() {
-        let c = Arc::new(
-            Cache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
                 .set_ignore_internal_cost(true)
                 .finalize()
-                .unwrap(),
-        );
+                .unwrap();
 
         retry_set(c.clone(), 3, 1, 1, Duration::from_secs(10)).await;
         sleep(Duration::from_secs(1)).await;
@@ -1025,13 +1007,11 @@ cfg_async! {
 
     #[tokio::test]
     async fn test_cache_get_ttl() {
-        let c = Arc::new(
-            Cache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
                 .set_metrics(true)
                 .set_ignore_internal_cost(true)
                 .finalize()
-                .unwrap(),
-        );
+                .unwrap();
 
         // try expiration with valid ttl item
         {
@@ -1097,7 +1077,7 @@ cfg_async! {
             .finalize()
             .unwrap();
 
-        let c = Arc::new(c);
+        
         c.insert(1, 1, 1).await;
 
         let (stop_tx, mut stop_rx) = channel(1);
@@ -1199,8 +1179,6 @@ cfg_async! {
             .finalize()
             .unwrap();
 
-        let c = Arc::new(c);
-
         let mut txs = Vec::new();
         let mut rxs = Vec::new();
 
@@ -1263,7 +1241,7 @@ cfg_async! {
             .set_ignore_internal_cost(true)
             .finalize()
             .unwrap();
-        let c = Arc::new(c);
+        
         let (stop_tx, mut stop_rx) = channel(1);
         let tc = c.clone();
         let ctr = Arc::new(AtomicU64::new(0));

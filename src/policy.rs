@@ -69,17 +69,6 @@ impl LFUPolicy {
     }
 }
 
-impl PolicyInner {
-    #[inline]
-    fn new(ctrs: usize, max_cost: i64) -> Result<Arc<Mutex<Self>>, CacheError> {
-        let this = Self {
-            admit: TinyLFU::new(ctrs)?,
-            costs: SampledLFU::new(max_cost),
-        };
-        Ok(Arc::new(Mutex::new(this)))
-    }
-}
-
 impl<S: BuildHasher + Clone + 'static> PolicyInner<S> {
     #[inline]
     fn set_metrics(&mut self, metrics: Arc<Metrics>) {
