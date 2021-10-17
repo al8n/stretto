@@ -4,6 +4,9 @@ extern crate serde;
 use std::path::Path;
 use stretto::{Cache, KeyBuilder};
 
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[derive(Serialize, Deserialize)]
 struct Dataset {
     data: Vec<KV>,
@@ -99,4 +102,3 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-

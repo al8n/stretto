@@ -3,6 +3,8 @@ extern crate serde;
 
 use std::path::Path;
 
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[derive(Serialize, Deserialize)]
 struct Dataset {
@@ -20,9 +22,9 @@ struct KV {
 
 #[cfg(feature = "sync")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    use moka::sync::Cache;
     use std::fs;
     use std::time::Instant;
-    use moka::sync::Cache;
 
     let content = fs::read(Path::new("mock.json"))?;
     let dataset: Dataset = serde_json::from_slice(content.as_slice())?;
@@ -44,9 +46,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(not(feature = "sync"))]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    use moka::future::Cache;
     use std::fs;
     use std::time::Instant;
-    use moka::future::Cache;
 
     let content = fs::read(Path::new("mock.json"))?;
     let dataset: Dataset = serde_json::from_slice(content.as_slice())?;
@@ -64,3 +66,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
