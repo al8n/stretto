@@ -3,7 +3,7 @@
 //! </div>
 //! <div align="center">
 //!
-//! Stretto is a Rust implementation for <https://github.com/dgraph-io/ristretto>. A high performance thread-safe memory-bound Rust cache.
+//! Stretto is a pure Rust implementation for <https://github.com/dgraph-io/ristretto>. A high performance thread-safe memory-bound Rust cache.
 //!
 //! English | [简体中文](https://github.com/al8n/stretto/blob/main/README-zh_CN.md)
 //!

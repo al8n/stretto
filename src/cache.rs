@@ -254,7 +254,7 @@ pub struct CacheBuilder<
 ///
 ///
 /// # Features
-/// * **Internal Mutability** - Do not need to use `Arc<RwLock<Cache<...>>` for concurrent code, you just need `Arc<Cache<...>`
+/// * **Internal Mutability** - Do not need to use `Arc<RwLock<Cache<...>>` for concurrent code, you just need `Cache<...>`
 /// * **Sync and Async** - Stretto support async by `tokio` and sync by `crossbeam`.
 ///   * In sync, Cache starts two extra OS level threads. One is policy thread, the other is writing thread.
 ///   * In async, Cache starts two extra green threads. One is policy thread, the other is writing thread.
