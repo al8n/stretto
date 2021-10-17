@@ -301,6 +301,18 @@ mod test {
     use std::time::Duration;
 
     #[test]
+    fn test_store_item_debug() {
+        let item = StoreItem {
+            key: 0,
+            conflict: 0,
+            value: SharedValue::new(3),
+            expiration: Time::now(),
+        };
+
+        eprintln!("{:?}", item);
+    }
+
+    #[test]
     fn test_store() {
         let _s: ShardedMap<u64> = ShardedMap::new();
     }

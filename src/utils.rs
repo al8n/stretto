@@ -21,9 +21,9 @@ use std::cell::UnsafeCell;
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
 use std::convert::TryInto;
+use std::fmt::{Debug, Display, Formatter};
 use std::hash::BuildHasher;
 use std::ptr::NonNull;
-use std::fmt::{Display, Formatter, Debug};
 
 /// ValueRef is returned when invoking `get` method of the Cache.
 /// It contains a `RwLockReadGuard` and a value reference.

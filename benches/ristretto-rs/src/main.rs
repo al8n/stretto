@@ -60,6 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             c.insert(kc, kv.val, kv.cost);
         }
     }
+    c.wait().unwrap();
     let elapsed = time.elapsed();
     println!("---Sync Stretto Finished in {}ms---", elapsed.as_millis());
     println!("{}", c.metrics);
@@ -91,6 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             c.insert(kc, kv.val, kv.cost).await;
         }
     }
+    c.wait().await.unwrap();
     let elapsed = time.elapsed();
     println!("---Async Stretto Finished in {}ms---", elapsed.as_millis());
     println!("{}", c.metrics);

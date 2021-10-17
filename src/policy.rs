@@ -1,4 +1,6 @@
-cfg_not_async! (use crossbeam_channel::RecvError;);
+cfg_not_async!(
+    use crossbeam_channel::RecvError;
+);
 #[cfg(test)]
 mod test;
 

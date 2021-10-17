@@ -65,6 +65,7 @@ func main() {
 			c.Set(kc, kv.Val, kv.Cost)
 		}
 	}
+	c.Wait()
 	elapsed := time.Since(t)
 	fmt.Printf("---Go Ristretto Finished in %dms---\n", elapsed.Milliseconds())
 	fmt.Println(c.Metrics.String())

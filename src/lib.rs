@@ -23,8 +23,8 @@
 //! ## Features
 //! * **Internal Mutability** - Do not need to use `Arc<RwLock<Cache<...>>` for concurrent code, you just need `Arc<Cache<...>`
 //! * **Sync and Async** - Stretto support async by `tokio` and sync by `crossbeam`.
-//! * In sync, Cache starts two extra OS level threads. One is policy thread, the other is writing thread.
-//! * In async, Cache starts two extra green threads. One is policy thread, the other is writing thread.
+//!     * In sync, Cache starts two extra OS level threads. One is policy thread, the other is writing thread.
+//!     * In async, Cache starts two extra green threads. One is policy thread, the other is writing thread.
 //! * **Store policy** Stretto only store the value, which means the cache does not store the key.
 //! * **High Hit Ratios** - with Dgrpah's developers unique admission/eviction policy pairing, Stretto's performance is best in class.
 //! * **Eviction: SampledLFU** - on par with exact LRU and better performance on Search and Database traces.
@@ -192,7 +192,6 @@ pub(crate) mod utils;
 extern crate atomic;
 
 #[cfg(feature = "log")]
-#[macro_use]
 extern crate log;
 
 #[cfg(feature = "serde")]
@@ -234,10 +233,10 @@ pub use utils::{ValueRef, ValueRefMut};
 
 use crate::ttl::Time;
 use std::collections::hash_map::RandomState;
+use std::fmt::{Debug, Formatter};
 use std::hash::{BuildHasher, BuildHasherDefault, Hash, Hasher};
 use std::marker::PhantomData;
 use twox_hash::XxHash64;
-use std::fmt::{Debug, Formatter};
 
 /// Item is the parameter when Cache reject, evict value,
 pub struct Item<V> {
@@ -261,6 +260,18 @@ pub struct Item<V> {
     pub exp: Time,
 }
 
+impl<V> Item<V> {
+    pub(crate) fn new(index: u64, conflict: u64, cost: i64, val: Option<V>, ttl: Time) -> Self {
+        Self {
+            val,
+            index,
+            conflict,
+            cost,
+            exp: ttl,
+        }
+    }
+}
+
 impl<V: Clone> Clone for Item<V> {
     fn clone(&self) -> Self {
         Self {
@@ -268,7 +279,7 @@ impl<V: Clone> Clone for Item<V> {
             index: self.index,
             conflict: self.conflict,
             cost: self.cost,
-            exp: self.exp
+            exp: self.exp,
         }
     }
 }
@@ -480,7 +491,9 @@ pub trait TransparentKey: Hash + Eq {
 /// [`DefaultKeyBuilder`]: struct.DefaultKeyBuilder.html
 /// [`TransparentKey`]: trait.TransparentKey.html
 #[derive(Default, Copy, Clone, Eq, PartialEq, Debug)]
-pub struct TransparentKeyBuilder<K: TransparentKey>{ _marker: PhantomData<K>}
+pub struct TransparentKeyBuilder<K: TransparentKey> {
+    _marker: PhantomData<K>,
+}
 
 impl<K: TransparentKey> KeyBuilder<K> for TransparentKeyBuilder<K> {
     #[inline]

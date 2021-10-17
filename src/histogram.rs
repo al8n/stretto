@@ -131,7 +131,7 @@ impl<const BS: usize, const CPB: usize> Histogram<BS, CPB> {
 impl<const BS: usize, const CPB: usize> Display for Histogram<BS, CPB> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let mut buf = Vec::<u8>::new();
-        buf.extend("\n -- Histogram: \n".as_bytes());
+        buf.extend("\n -- Histogram:\n".as_bytes());
         buf.extend(format!("Min value: {}\n", self.min.load(Ordering::SeqCst)).as_bytes());
         buf.extend(format!("Max value: {}\n", self.max.load(Ordering::SeqCst)).as_bytes());
         buf.extend(format!("Count: {}\n", self.count.load(Ordering::SeqCst)).as_bytes());
@@ -293,5 +293,27 @@ mod test {
             },
         ];
         assert_histogram_percentiles(cases);
+    }
+
+    #[test]
+    fn test_fmt() {
+        let h = init_histogram::<5, 6>(0.0, 16.0, 4.0);
+        (0..=16).filter(|x| *x % 4 == 0).for_each(|v| {
+            h.update(v);
+        });
+        let f = "\n -- Histogram:
+Min value: 0
+Max value: 16
+Count: 5
+50p: 8
+75p: 12
+90p: 16
+[0, 4) 1 20.00% 20.00%
+[4, 8) 1 20.00% 40.00%
+[8, 12) 1 20.00% 60.00%
+[12, 16) 1 20.00% 80.00%
+[16, infinity) 1 20.00% 100.00%
+ --\n";
+        assert_eq!(format!("{}", h.clone()), f)
     }
 }

@@ -472,16 +472,44 @@ fn new_histogram_bound() -> Vec<f64> {
 
 #[cfg(test)]
 mod test {
-    use crate::metrics::{MetricType, MetricsInner};
+    use crate::metrics::MetricsInner;
+    use crate::Metrics;
 
     #[test]
     fn test_metrics() {
-        let m = MetricsInner::new();
-        println!(
-            "{:?}",
-            m.all.keys().map(|typ| *typ).collect::<Vec<MetricType>>()
-        );
-        println!("{}", m)
+        let m = Metrics::new();
+        println!("{}", m);
+        assert!(m.get_hits().is_none());
+        assert!(m.get_misses().is_none());
+        assert!(m.get_keys_added().is_none());
+        assert!(m.get_keys_updated().is_none());
+        assert!(m.get_keys_evicted().is_none());
+        assert!(m.get_sets_dropped().is_none());
+        assert!(m.get_gets_dropped().is_none());
+        assert!(m.get_sets_dropped().is_none());
+        assert!(m.get_sets_rejected().is_none());
+        assert!(m.get_cost_evicted().is_none());
+        assert!(m.get_cost_added().is_none());
+        assert!(m.life_expectancy_seconds().is_none());
+        m.track_eviction(10);
+        assert!(m.is_noop());
+
+        let m = Metrics::new_op();
+        m.get_hits().unwrap();
+        m.get_misses().unwrap();
+        m.get_keys_added().unwrap();
+        m.get_keys_updated().unwrap();
+        m.get_keys_evicted().unwrap();
+        m.get_sets_dropped().unwrap();
+        m.get_gets_dropped().unwrap();
+        m.get_sets_dropped().unwrap();
+        m.get_sets_rejected().unwrap();
+        m.get_cost_evicted().unwrap();
+        m.get_cost_added().unwrap();
+        m.life_expectancy_seconds().unwrap();
+        m.track_eviction(10);
+        assert!(m.is_op());
+        println!("{}", m);
     }
 
     #[test]

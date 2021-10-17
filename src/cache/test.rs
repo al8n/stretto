@@ -1,14 +1,17 @@
 use crate::cache::{Cache, Item};
-use crate::{CacheCallback, Coster, DefaultKeyBuilder, Item as CrateItem, KeyBuilder, TransparentKeyBuilder, UpdateValidator, CacheBuilder, DefaultCoster, DefaultUpdateValidator, DefaultCacheCallback};
+use crate::{
+    CacheBuilder, CacheCallback, Coster, DefaultCacheCallback, DefaultCoster, DefaultKeyBuilder,
+    DefaultUpdateValidator, Item as CrateItem, KeyBuilder, TransparentKeyBuilder, UpdateValidator,
+};
 use parking_lot::Mutex;
 use rand::rngs::OsRng;
 use rand::Rng;
+use std::collections::hash_map::RandomState;
 use std::collections::HashSet;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use std::collections::hash_map::RandomState;
 
 static CHARSET: &'static [u8] = "abcdefghijklmnopqrstuvwxyz0123456789".as_bytes();
 
@@ -213,7 +216,7 @@ cfg_not_async! {
             eprintln!("{}", c.metrics);
             assert!(cost as f64 <= (1e6 * 1.05));
         }
-
+        c.wait().unwrap();
         for _ in 0..8 {
             let _ = stop_tx.send(());
         }
@@ -1219,7 +1222,7 @@ cfg_async! {
                 eprintln!("{}", tc.metrics);
                 assert!(cost as f64 <= (1e6 * 1.05));
             }
-
+            tc.wait().await.unwrap();
             for tx in txs {
                 let _ = tx.send(()).await;
             }
