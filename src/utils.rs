@@ -262,3 +262,94 @@ impl<T: ?Sized> Clone for SharedNonNull<T> {
 
 unsafe impl<T> Send for SharedNonNull<T> {}
 unsafe impl<T> Sync for SharedNonNull<T> {}
+
+#[cfg(test)]
+mod test {
+    use std::collections::HashMap;
+    use parking_lot::RwLock;
+    use crate::store::StoreItem;
+    use crate::ttl::Time;
+    use crate::utils::{change_lifetime_const, SharedNonNull, SharedValue};
+    use crate::{ValueRef, ValueRefMut};
+
+    #[test]
+    fn test_value_ref() {
+        let mut m = HashMap::new();
+        m.insert(1, StoreItem {
+            key: 1,
+            conflict: 0,
+            value: SharedValue::new(3),
+            expiration: Time::now(),
+        });
+        m.insert(2, StoreItem {
+            key: 2,
+            conflict: 0,
+            value: SharedValue::new(3),
+            expiration: Time::now(),
+        });
+        let lm = RwLock::new(m);
+
+        let l = lm.read();
+        let v = unsafe {
+            change_lifetime_const(l.get(&1).unwrap().value.get())
+        };
+        let vr = ValueRef::new(
+            l,
+            v,
+        );
+        assert_eq!(vr.as_ref(), &3);
+        eprintln!("{}", vr);
+        eprintln!("{:?}", vr);
+    }
+
+    #[test]
+    fn test_value_ref_mut() {
+        let mut m = HashMap::new();
+        m.insert(1, StoreItem {
+            key: 1,
+            conflict: 0,
+            value: SharedValue::new(3),
+            expiration: Time::now(),
+        });
+        m.insert(2, StoreItem {
+            key: 2,
+            conflict: 0,
+            value: SharedValue::new(3),
+            expiration: Time::now(),
+        });
+        let lm = RwLock::new(m);
+
+        let l = lm.write();
+        let v = unsafe {
+            &mut *l.get(&1).unwrap().value.as_ptr()
+        };
+        let mut vr = ValueRefMut::new(
+            l,
+            v,
+        );
+        assert_eq!(vr.as_ref(), &3);
+        assert_eq!(vr.as_mut(), &mut 3);
+        assert_eq!(vr.value(), &3);
+        assert_eq!(vr.clone_inner(), 3);
+        eprintln!("{}", vr);
+        eprintln!("{:?}", vr);
+        vr.write_once(4);
+    }
+
+    #[test]
+    fn test_shared_value() {
+        let sv = SharedValue::new(3);
+        assert_eq!(sv.clone().get(), &3);
+    }
+
+    #[test]
+    fn test_shared_non_null() {
+        let snn = SharedNonNull::new(&mut 3);
+        let r = unsafe {
+            snn.as_ref()
+        };
+        assert_eq!(r, &3);
+        let snn1 = snn.clone();
+        unsafe { assert_eq!(snn1.as_ref(), &3); }
+    }
+}

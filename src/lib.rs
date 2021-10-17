@@ -532,3 +532,15 @@ impl_transparent_key! {
     i64,
     isize
 }
+
+#[cfg(test)]
+mod test {
+    use crate::Item;
+    use crate::ttl::Time;
+
+    #[test]
+    fn test_item() {
+        let item = Item::new(0, 0,0,Some(0), Time::now());
+        eprintln!("{:?}", item.clone())
+    }
+}

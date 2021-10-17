@@ -486,6 +486,7 @@ mod test {
         assert!(m.get_keys_evicted().is_none());
         assert!(m.get_sets_dropped().is_none());
         assert!(m.get_gets_dropped().is_none());
+        assert!(m.get_gets_kept().is_none());
         assert!(m.get_sets_dropped().is_none());
         assert!(m.get_sets_rejected().is_none());
         assert!(m.get_cost_evicted().is_none());
@@ -502,6 +503,7 @@ mod test {
         m.get_keys_evicted().unwrap();
         m.get_sets_dropped().unwrap();
         m.get_gets_dropped().unwrap();
+        m.get_gets_kept().unwrap();
         m.get_sets_dropped().unwrap();
         m.get_sets_rejected().unwrap();
         m.get_cost_evicted().unwrap();
