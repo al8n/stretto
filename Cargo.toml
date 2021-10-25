@@ -17,19 +17,19 @@ exclude = [
     "**/*.sum",
     "benches/*"
 ]
-edition = "2018"
+edition = "2021"
 
 [[example]]
 path = "examples/async_example.rs"
 name = "async_example"
 required-features = ["async"]
-edition = "2018"
+edition = "2021"
 
 [[example]]
 path = "examples/sync_example.rs"
 name = "sync_example"
 required-features = ["sync"]
-edition = "2018"
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
@@ -49,6 +49,7 @@ serde = {version = "1", optional = true}
 serde_json = {version = "1.0", optional = true}
 tokio = { version = "1.12.0", optional = true }
 twox-hash = "1.6.1"
+wg = "0.1.1"
 
 [dev-dependencies]
 serde = {version = "1", features = ["serde_derive"]}
