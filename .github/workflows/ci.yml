@@ -56,7 +56,7 @@ jobs:
       - name: Run cargo-tarpaulin
         uses: actions-rs/tarpaulin@v0.1
         with:
-          args: '--run-types Tests,Doctests --features sync,async --workspace --out Xml'
+          args: '--run-types Tests,Doctests --features full --workspace --out Xml'
 
       - name: Upload to codecov.io
         uses: codecov/codecov-action@v1.0.2

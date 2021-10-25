@@ -79,13 +79,15 @@ fn main() {
     assert_eq!(v.value(), &"a");
     v.release();
 
-    // when we get the value, we will get a ValueRef, which contains a RwLockWriteGuard
-    // so when we finish use this value, we must release the ValueRefMut
-    let mut v = c.get_mut(&"a").unwrap();
-    v.write("aa");
-    assert_eq!(v.value(), &"aa");
-    // release the value
-    v.release(); // or use drop(v);
+    // lock will be auto released when out of scope
+    {
+        // when we get the value, we will get a ValueRef, which contains a RwLockWriteGuard
+        // so when we finish use this value, we must release the ValueRefMut
+        let mut v = c.get_mut(&"a").unwrap();
+        v.write("aa");
+        assert_eq!(v.value(), &"aa");
+        // release the value 
+    }
 
     // if you just want to do one operation
     let v = c.get_mut(&"a").unwrap();
@@ -121,6 +123,7 @@ async fn main() {
     // wait for value to pass through buffers
     c.wait().await.unwrap();
 
+    
     // when we get the value, we will get a ValueRef, which contains a RwLockReadGuard
     // so when we finish use this value, we must release the ValueRef
     let v = c.get(&"a").unwrap();
@@ -128,13 +131,16 @@ async fn main() {
     // release the value
     v.release(); // or drop(v)
 
-    // when we get the value, we will get a ValueRef, which contains a RwLockWriteGuard
-    // so when we finish use this value, we must release the ValueRefMut
-    let mut v = c.get_mut(&"a").unwrap();
-    v.write("aa");
-    assert_eq!(v.value(), &"aa");
-    // release the value
-    v.release(); // or use drop(v);
+    // lock will be auto released when out of scope
+    {
+        // when we get the value, we will get a ValueRef, which contains a RwLockWriteGuard
+        // so when we finish use this value, we must release the ValueRefMut
+        let mut v = c.get_mut(&"a").unwrap();
+        v.write("aa");
+        assert_eq!(v.value(), &"aa");
+        // release the value
+    }
+    
 
     // if you just want to do one operation
     let v = c.get_mut(&"a").unwrap();
