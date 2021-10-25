@@ -552,7 +552,7 @@ cfg_sync! {
         sleep(Duration::from_millis(100));
         let _ = stop_tx.send(());
         c.clear().unwrap();
-        sleep(Duration::from_millis(100));
+        c.wait().unwrap();
         assert_eq!(c.metrics.get_keys_added(), Some(0));
 
         (0..10).for_each(|i| {
