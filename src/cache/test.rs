@@ -520,44 +520,34 @@ cfg_sync! {
     }
 
     #[test]
-    fn test_cache_drop_clear() {
-        let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
-            .set_buffer_size(4096)
-            .set_metrics(true)
-            .set_ignore_internal_cost(true)
-            .finalize()
-            .unwrap();
+    fn test_cache_blockon_clear() {
+        let c: Cache<u64, u64, TransparentKeyBuilder<u64>> = Cache::builder(100, 10, TransparentKeyBuilder::default())
+                .set_ignore_internal_cost(true)
+                .finalize()
+                .unwrap();
 
-        let (stop_tx, stop_rx) = bounded(0);
+        let (stop_tx, stop_rx) = bounded(1);
+
+
         let tc = c.clone();
-
-        let ctr = Arc::new(AtomicU64::new(0));
-
-        let tctr = ctr.clone();
         spawn(move || {
-            let mut rng = OsRng::default();
-            loop {
-                select! {
-                    recv(stop_rx) -> _ => return,
-                    default => {
-                        let i = rng.gen::<u64>();
-                        if tc.insert(i, i, 1) {
-                            tctr.fetch_add(1, Ordering::SeqCst);
-                        }
-                    }
+                for _ in 0..10 {
+                    let tc = tc.clone();
+                    tc.wait().unwrap();
                 }
-            }
+                stop_tx.send(()).unwrap();
         });
 
-        sleep(Duration::from_millis(100));
-        let _ = stop_tx.send(());
-        c.clear().unwrap();
-        sleep(Duration::from_millis(100));
-        assert_eq!(c.metrics.get_keys_added(), Some(0));
+        for _ in 0..10 {
+            c.clear().unwrap();
+        }
 
-        (0..10).for_each(|i| {
-            assert!(c.get(&i).is_none());
-        })
+        select! {
+            recv(stop_rx) -> _  => {},
+            default(Duration::from_secs(1)) => {
+                panic!("timed out while waiting on cache")
+            }
+        }
     }
 
     #[test]
@@ -676,9 +666,7 @@ cfg_sync! {
         }
         eprintln!("process: {} cleanup: {}", process_win, clean_win);
     }
-
 }
-
 
 cfg_async! {
     mod async_test {
@@ -1254,46 +1242,37 @@ cfg_async! {
         }
 
         #[tokio::test]
-        async fn test_cache_drop_clear() {
-            let c = AsyncCache::builder(100, 10, TransparentKeyBuilder::default())
-                .set_buffer_size(4096)
-                .set_metrics(true)
+        async fn test_cache_blockon_clear() {
+            let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(100, 10, TransparentKeyBuilder::default())
                 .set_ignore_internal_cost(true)
                 .finalize()
                 .unwrap();
 
             let (stop_tx, mut stop_rx) = channel(1);
-            let tc = c.clone();
-            let ctr = Arc::new(AtomicU64::new(0));
-            let tctr = ctr.clone();
 
+
+            let tc = c.clone();
             spawn(async move {
-                sleep(Duration::from_millis(100)).await;
-                let _ = stop_tx.send(()).await;
+                for _ in 0..10 {
+                    let tc = tc.clone();
+                    tc.wait().await.unwrap();
+                }
+                stop_tx.send(()).await.unwrap();
             });
 
-            loop {
-                match stop_rx.try_recv() {
-                    Ok(_) => {
-                        break;
-                    },
-                    Err(_) => {
-                        let mut rng = OsRng::default();
-                        let i = rng.gen::<u64>();
-                        drop(rng);
-                        if tc.insert(i, i, 1).await {
-                            tctr.fetch_add(1, Ordering::SeqCst);
-                        }
-                    }
+            for _ in 0..10 {
+                c.clear().unwrap();
+            }
+
+            let sleep = sleep(Duration::from_secs(1));
+            tokio::pin!(sleep);
+
+            tokio::select! {
+                _ = stop_rx.recv() => {},
+                _ = &mut sleep => {
+                    panic!("timed out while waiting on cache")
                 }
             }
-            c.clear().unwrap();
-            sleep(Duration::from_millis(100)).await;
-            assert_eq!(c.metrics.get_keys_added(), Some(0));
-
-            (0..10).for_each(|i| {
-                assert!(c.get(&i).is_none());
-            })
         }
     }
 }
