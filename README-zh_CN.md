@@ -3,7 +3,9 @@
 </div>
 <div align="center">
 
-Stretto is a Rust implementation for https://github.com/dgraph-io/ristretto. A high performance thread-safe memory-bound Rust cache.
+Stretto is a pure Rust implementation for https://github.com/dgraph-io/ristretto. 
+
+A high performance thread-safe memory-bound Rust cache.
 
 [English](README.md) | 简体中文
 
@@ -21,10 +23,10 @@ Stretto is a Rust implementation for https://github.com/dgraph-io/ristretto. A h
 </div>
 
 ## Features
-* **Internal Mutability** - Do not need to use `Arc<RwLock<Cache<...>>` for concurrent code, you just need `Arc<Cache<...>`
+* **Internal Mutability** - Do not need to use `Arc<RwLock<Cache<...>>` for concurrent code, you just need `Cache<...>` or `AsyncCache<...>`
 * **Sync and Async** - Stretto support async by `tokio` and sync by `crossbeam`.
     * In sync, Cache starts two extra OS level threads. One is policy thread, the other is writing thread.
-    * In async, Cache starts two extra green threads. One is policy thread, the other is writing thread.
+    * In async, AsyncCache starts two extra green threads. One is policy thread, the other is writing thread.
 * **Store policy** Stretto only store the value, which means the cache does not store the key.
 * **High Hit Ratios** - with Dgraph's developers unique admission/eviction policy pairing, Ristretto's performance is best in class.
     * **Eviction: SampledLFU** - on par with exact LRU and better performance on Search and Database traces.
@@ -33,11 +35,12 @@ Stretto is a Rust implementation for https://github.com/dgraph-io/ristretto. A h
 * **Cost-Based Eviction** - any large new item deemed valuable can evict multiple smaller items (cost could be anything).
 * **Fully Concurrent** - you can use as many threads as you want with little throughput degradation.
 * **Metrics** - optional performance metrics for throughput, hit ratios, and other stats.
-* **Simple API** - just figure out your ideal `CacheBuilder` values and you're off and running.
+* **Simple API** - just figure out your ideal `CacheBuilder`/`AsyncCacheBuilder` values and you're off and running.
 
 ## Table of Contents
 
 * [Usage](#Usage)
+    * [Installation](#Installation)
     * [Example](#Example)
         * [Sync](#Sync)
         * [Async](#Async)
@@ -53,6 +56,31 @@ Stretto is a Rust implementation for https://github.com/dgraph-io/ristretto. A h
         * [callback](#callback)
         * [coster](#coster)
         * [hasher](#hasher)
+
+## Installation
+- Use Cache.
+```toml
+[dependencies]
+stretto = "0.2"
+```
+or
+```toml 
+[dependencies]
+stretto = { version = "0.2", features = ["sync"] }
+```
+
+
+- Use AsyncCache
+```toml 
+[dependencies]
+stretto = { version = "0.2", features = ["async"] }
+```
+
+- Use both Cache and AsyncCache
+```toml 
+[dependencies]
+stretto = { version = "0.2", features = ["full"] }
+```
 
 ## Usage
 ### Example
@@ -79,13 +107,15 @@ fn main() {
     assert_eq!(v.value(), &"a");
     v.release();
 
-    // when we get the value, we will get a ValueRef, which contains a RwLockWriteGuard
-    // so when we finish use this value, we must release the ValueRefMut
-    let mut v = c.get_mut(&"a").unwrap();
-    v.write("aa");
-    assert_eq!(v.value(), &"aa");
-    // release the value
-    v.release(); // or use drop(v);
+    // lock will be auto released when out of scope
+    {
+        // when we get the value, we will get a ValueRef, which contains a RwLockWriteGuard
+        // so when we finish use this value, we must release the ValueRefMut
+        let mut v = c.get_mut(&"a").unwrap();
+        v.write("aa");
+        assert_eq!(v.value(), &"aa");
+        // release the value 
+    }
 
     // if you just want to do one operation
     let v = c.get_mut(&"a").unwrap();
@@ -105,12 +135,12 @@ fn main() {
 
 #### Async
 ```rust
-use stretto::{Cache, DefaultKeyBuilder};
+use stretto::{AsyncCache, DefaultKeyBuilder};
 use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
-    let c = Cache::new(12960, 1e6 as i64, DefaultKeyBuilder::default()).unwrap();
+    let c = AsyncCache::new(12960, 1e6 as i64, DefaultKeyBuilder::default()).unwrap();
 
     // set a value with a cost of 1
     c.insert("a", "a", 1).await;
@@ -121,6 +151,7 @@ async fn main() {
     // wait for value to pass through buffers
     c.wait().await.unwrap();
 
+    
     // when we get the value, we will get a ValueRef, which contains a RwLockReadGuard
     // so when we finish use this value, we must release the ValueRef
     let v = c.get(&"a").unwrap();
@@ -128,13 +159,16 @@ async fn main() {
     // release the value
     v.release(); // or drop(v)
 
-    // when we get the value, we will get a ValueRef, which contains a RwLockWriteGuard
-    // so when we finish use this value, we must release the ValueRefMut
-    let mut v = c.get_mut(&"a").unwrap();
-    v.write("aa");
-    assert_eq!(v.value(), &"aa");
-    // release the value
-    v.release(); // or use drop(v);
+    // lock will be auto released when out of scope
+    {
+        // when we get the value, we will get a ValueRef, which contains a RwLockWriteGuard
+        // so when we finish use this value, we must release the ValueRefMut
+        let mut v = c.get_mut(&"a").unwrap();
+        v.write("aa");
+        assert_eq!(v.value(), &"aa");
+        // release the value
+    }
+    
 
     // if you just want to do one operation
     let v = c.get_mut(&"a").unwrap();

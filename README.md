@@ -3,7 +3,9 @@
 </div>
 <div align="center">
 
-Stretto is a pure Rust implementation for https://github.com/dgraph-io/ristretto. A high performance thread-safe memory-bound Rust cache.
+Stretto is a pure Rust implementation for https://github.com/dgraph-io/ristretto. 
+
+A high performance thread-safe memory-bound Rust cache.
 
 English | [简体中文](README-zh_CN.md)
 
@@ -21,10 +23,10 @@ English | [简体中文](README-zh_CN.md)
 </div>
 
 ## Features
-* **Internal Mutability** - Do not need to use `Arc<RwLock<Cache<...>>` for concurrent code, you just need `Cache<...>`
+* **Internal Mutability** - Do not need to use `Arc<RwLock<Cache<...>>` for concurrent code, you just need `Cache<...>` or `AsyncCache<...>`
 * **Sync and Async** - Stretto support async by `tokio` and sync by `crossbeam`.
   * In sync, Cache starts two extra OS level threads. One is policy thread, the other is writing thread.
-  * In async, Cache starts two extra green threads. One is policy thread, the other is writing thread.
+  * In async, AsyncCache starts two extra green threads. One is policy thread, the other is writing thread.
 * **Store policy** Stretto only store the value, which means the cache does not store the key. 
 * **High Hit Ratios** - with Dgraph's developers unique admission/eviction policy pairing, Ristretto's performance is best in class.
     * **Eviction: SampledLFU** - on par with exact LRU and better performance on Search and Database traces.
@@ -33,11 +35,12 @@ English | [简体中文](README-zh_CN.md)
 * **Cost-Based Eviction** - any large new item deemed valuable can evict multiple smaller items (cost could be anything).
 * **Fully Concurrent** - you can use as many threads as you want with little throughput degradation.
 * **Metrics** - optional performance metrics for throughput, hit ratios, and other stats.
-* **Simple API** - just figure out your ideal `CacheBuilder` values and you're off and running.
+* **Simple API** - just figure out your ideal `CacheBuilder`/`AsyncCacheBuilder` values and you're off and running.
 
 ## Table of Contents
 
 * [Usage](#Usage)
+    * [Installation](#Installation)
     * [Example](#Example)
       * [Sync](#Sync)
       * [Async](#Async)
@@ -53,6 +56,31 @@ English | [简体中文](README-zh_CN.md)
         * [callback](#callback)
         * [coster](#coster)
         * [hasher](#hasher)
+
+## Installation
+- Use Cache.
+```toml
+[dependencies]
+stretto = "0.2"
+```
+or
+```toml 
+[dependencies]
+stretto = { version = "0.2", features = ["sync"] }
+```
+
+
+- Use AsyncCache
+```toml 
+[dependencies]
+stretto = { version = "0.2", features = ["async"] }
+```
+
+- Use both Cache and AsyncCache
+```toml 
+[dependencies]
+stretto = { version = "0.2", features = ["full"] }
+```
 
 ## Usage
 ### Example
