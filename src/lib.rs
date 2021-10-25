@@ -21,10 +21,10 @@
 //! </div>
 //!
 //! ## Features
-//! * **Internal Mutability** - Do not need to use `Arc<RwLock<Cache<...>>` for concurrent code, you just need `Cache<...>`
+//! * **Internal Mutability** - Do not need to use `Arc<RwLock<Cache<...>>` for concurrent code, you just need `Cache<...>` or `AsyncCache<...>`
 //! * **Sync and Async** - Stretto support async by `tokio` and sync by `crossbeam`.
-//!     * In sync, Cache starts two extra OS level threads. One is policy thread, the other is writing thread.
-//!     * In async, Cache starts two extra green threads. One is policy thread, the other is writing thread.
+//!     * In sync, [`Cache`] starts two extra OS level threads. One is policy thread, the other is writing thread.
+//!     * In async, [`AsyncCache`] starts two extra green threads. One is policy thread, the other is writing thread.
 //! * **Store policy** Stretto only store the value, which means the cache does not store the key.
 //! * **High Hit Ratios** - with Dgrpah's developers unique admission/eviction policy pairing, Stretto's performance is best in class.
 //! * **Eviction: SampledLFU** - on par with exact LRU and better performance on Search and Database traces.
@@ -59,7 +59,7 @@
 //! Please see [examples](https://github.com/al8n/stretto/tree/main/examples) on github.
 //!
 //! ### Config
-//! The [`CacheBuilder`] struct is used when creating Cache instances if you want to customize the Cache settings.
+//! The [`CacheBuilder`] or [`AsyncCacheBuilder`] struct is used when creating [`Cache`]/[`AsyncCache`] instances if you want to customize the [`Cache`]/[`AsyncCache`] settings.
 //!
 //! #### num_counters
 //!
@@ -161,10 +161,13 @@
 //! [`TransparentKeyBuilder`]: struct.TransparentKeyBuilder.html
 //! [`DefaultKeyBuilder`]: struct.DefaultKeyBuilder.html
 //! [`CacheBuilder`]: struct.CacheBuilder.html
+//! [`AsyncCacheBuilder`]: struct.AsyncCacheBuilder.html
 //! [`insert`]: struct.Cache.html#method.insert
 //! [`UpdateValidator`]: trait.UpdateValidator.html
 //! [`CacheCallback`]: trait.CacheCallback.html
 //! [`Coster`]: trait.Coster.html
+//! [`Cache`]: struct.Cache.html
+//! [`AsyncCache`]: struct.AsyncCache.html
 #![deny(missing_docs)]
 mod error;
 #[macro_use]
@@ -197,36 +200,48 @@ extern crate log;
 #[cfg(feature = "serde")]
 extern crate serde;
 
-cfg_async! {
-    pub(crate) use tokio::sync::mpsc::{channel as bounded, Sender, UnboundedSender, Receiver, UnboundedReceiver};
-    pub(crate) use tokio::time::{Instant, sleep};
-    pub(crate) use tokio::task::{spawn, JoinHandle};
-    pub(crate) use tokio::select;
-    use tokio::sync::mpsc::{unbounded_channel};
+cfg_async!(
+    pub(crate) mod axync {
+        pub(crate) use tokio::select;
+        pub(crate) use tokio::sync::mpsc::{
+            channel as bounded, Receiver, Sender, UnboundedReceiver, UnboundedSender,
+        };
+        pub(crate) use tokio::task::{spawn, JoinHandle};
+        pub(crate) use tokio::time::{sleep, Instant};
+        pub(crate) type WaitGroup = wg::AsyncWaitGroup;
+        use tokio::sync::mpsc::unbounded_channel;
 
-    pub(crate) fn stop_channel() -> (Sender<()>, Receiver<()>) {
-        bounded(1)
+        pub(crate) fn stop_channel() -> (Sender<()>, Receiver<()>) {
+            bounded(1)
+        }
+
+        pub(crate) fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
+            unbounded_channel::<T>()
+        }
     }
 
-    pub(crate) fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
-        unbounded_channel::<T>()
+    pub use cache::{AsyncCache, AsyncCacheBuilder};
+);
+
+cfg_sync!(
+    pub(crate) mod sync {
+        pub(crate) use crossbeam_channel::{bounded, select, unbounded, Receiver, Sender};
+        pub(crate) use std::thread::{spawn, JoinHandle};
+        pub(crate) use std::time::Instant;
+
+        pub(crate) type UnboundedSender<T> = Sender<T>;
+        pub(crate) type UnboundedReceiver<T> = Receiver<T>;
+        pub(crate) type WaitGroup = wg::WaitGroup;
+
+        pub(crate) fn stop_channel() -> (Sender<()>, Receiver<()>) {
+            bounded(0)
+        }
     }
-}
 
-cfg_not_async! {
-    pub(crate) use std::time::Instant;
-    pub(crate) use std::thread::{JoinHandle, spawn};
-    pub(crate) use crossbeam_channel::{unbounded, bounded, Sender, Receiver, select};
+    pub use cache::{Cache, CacheBuilder};
+);
 
-    pub(crate) type UnboundedSender<T> = Sender<T>;
-    pub(crate) type UnboundedReceiver<T> = Receiver<T>;
 
-    pub(crate) fn stop_channel() -> (Sender<()>, Receiver<()>) {
-        bounded(0)
-    }
-}
-
-pub use cache::{Cache, CacheBuilder};
 pub use error::CacheError;
 pub use metrics::{MetricType, Metrics};
 pub use utils::{ValueRef, ValueRefMut};
@@ -535,12 +550,12 @@ impl_transparent_key! {
 
 #[cfg(test)]
 mod test {
-    use crate::Item;
     use crate::ttl::Time;
+    use crate::Item;
 
     #[test]
     fn test_item() {
-        let item = Item::new(0, 0,0,Some(0), Time::now());
+        let item = Item::new(0, 0, 0, Some(0), Time::now());
         eprintln!("{:?}", item.clone())
     }
 }

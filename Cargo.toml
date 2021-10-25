@@ -1,6 +1,6 @@
 [package]
 name = "stretto"
-version = "0.1.5"
+version = "0.2.0"
 authors = ["Al Liu <scygliu1@gmail.com>"]
 description = "Stretto is a high performance thread-safe memory-bound Rust cache."
 homepage = "https://github.com/al8n/stretto"
@@ -9,7 +9,7 @@ documentation = "https://docs.rs/stretto/"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
 keywords = ["cache", "caching", "concurrent", "tinylfu", "async"]
-categories = ["caching", "concurrency", "asynchronous"]
+categories = ["caching", "concurrency", "asynchronous", "data-structures"]
 exclude = [
     "**/*.json",
     "**/*.go",
@@ -34,14 +34,14 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
 default = ["sync"]
+full = ["sync", "async", "serilization"]
 async = ["tokio/rt-multi-thread", "tokio/test-util", "tokio/macros", "tokio/parking_lot"]
-sync = ["crossbeam-channel", "crossbeam-utils"]
+sync = ["crossbeam-channel"]
 serilization = ["serde", "serde/derive", "serde_json/default"]
 
 [dependencies]
 atomic = "0.5.0"
 crossbeam-channel = { version = "0.5.1", optional = true }
-crossbeam-utils = { version = "0.8.5", optional = true }
 log = { version = "0.4.14", optional = true }
 parking_lot = "0.11.2"
 rand = "0.8.4"

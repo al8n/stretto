@@ -204,6 +204,10 @@ impl<S: BuildHasher + Clone + 'static> ExpirationMap<S> {
             .remove(&bucket_num)
             .map(|bucket| bucket.map)
     }
+
+    pub fn hasher(&self) -> S {
+        self.hasher.clone()
+    }
 }
 
 unsafe impl<S: BuildHasher + Clone + 'static> Send for ExpirationMap<S> {}

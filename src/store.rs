@@ -1,3 +1,5 @@
+#[cfg(feature = "tokio")]
+use crate::policy::AsyncLFUPolicy;
 use crate::policy::LFUPolicy;
 use crate::ttl::{ExpirationMap, Time};
 use crate::utils::{change_lifetime_const, SharedValue, ValueRef, ValueRefMut};
@@ -254,9 +256,43 @@ impl<
         })
     }
 
+    #[cfg(feature = "tokio")]
+    pub fn cleanup_async<PS: BuildHasher + Clone + 'static>(
+        &self,
+        policy: Arc<AsyncLFUPolicy<PS>>,
+    ) -> Vec<CrateItem<V>> {
+        let now = Time::now();
+        self.em.cleanup(now).map_or(Vec::with_capacity(0), |m| {
+            m.iter()
+                // Sanity check. Verify that the store agrees that this key is expired.
+                .filter_map(|(k, v)| {
+                    self.expiration(k).and_then(|t| {
+                        if t.is_expired() {
+                            let cost = policy.cost(k);
+                            policy.remove(k);
+                            self.remove(k, *v).map(|sitem| CrateItem {
+                                val: Some(sitem.value.into_inner()),
+                                index: sitem.key,
+                                conflict: sitem.conflict,
+                                cost,
+                                exp: t,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect()
+        })
+    }
+
     pub fn clear(&self) {
         // TODO: item call back
         self.shards.iter().for_each(|shard| shard.write().clear());
+    }
+
+    pub fn hasher(&self) -> ES {
+        self.em.hasher()
     }
 
     pub fn item_size(&self) -> usize {

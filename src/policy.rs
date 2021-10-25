@@ -1,6 +1,3 @@
-cfg_not_async!(
-    use crossbeam_channel::RecvError;
-);
 #[cfg(test)]
 mod test;
 
@@ -8,17 +5,14 @@ use crate::{
     bbloom::Bloom,
     error::CacheError,
     metrics::{MetricType, Metrics},
-    select,
     sketch::CountMinSketch,
-    spawn, stop_channel, unbounded, JoinHandle, Receiver, Sender, UnboundedReceiver,
-    UnboundedSender,
 };
 use parking_lot::Mutex;
 use std::{
     collections::{hash_map::RandomState, HashMap},
     hash::BuildHasher,
     sync::{
-        atomic::{AtomicBool, AtomicI64, Ordering},
+        atomic::{AtomicI64, Ordering},
         Arc,
     },
 };
@@ -26,6 +20,182 @@ use std::{
 /// DEFAULT_SAMPLES is the number of items to sample when looking at eviction
 /// candidates. 5 seems to be the most optimal number [citation needed].
 const DEFAULT_SAMPLES: usize = 5;
+
+macro_rules! impl_policy {
+    ($policy: ident) => {
+        use crate::policy::PolicyPair;
+        use crate::policy::DEFAULT_SAMPLES;
+
+        impl $policy {
+            #[inline]
+            pub(crate) fn new(ctrs: usize, max_cost: i64) -> Result<Self, CacheError> {
+                Self::with_hasher(ctrs, max_cost, RandomState::new())
+            }
+        }
+
+        impl<S: BuildHasher + Clone + 'static> $policy<S> {
+            #[inline]
+            pub fn collect_metrics(&mut self, metrics: Arc<Metrics>) {
+                self.metrics = metrics.clone();
+                self.inner.lock().set_metrics(metrics);
+            }
+
+            pub fn add(&self, key: u64, cost: i64) -> (Option<Vec<PolicyPair>>, bool) {
+                let mut inner = self.inner.lock();
+                let max_cost = inner.costs.get_max_cost();
+
+                // cannot ad an item bigger than entire cache
+                if cost > max_cost {
+                    return (None, false);
+                }
+
+                // no need to go any further if the item is already in the cache
+                if inner.costs.update(&key, cost) {
+                    // an update does not count as an addition, so return false.
+                    return (None, false);
+                }
+
+                // If the execution reaches this point, the key doesn't exist in the cache.
+                // Calculate the remaining room in the cache (usually bytes).
+                let mut room = inner.costs.room_left(cost);
+                if room >= 0 {
+                    // There's enough room in the cache to store the new item without
+                    // overflowing. Do that now and stop here.
+                    inner.costs.increment(key, cost);
+                    self.metrics.add(MetricType::CostAdd, key, cost as u64);
+                    return (None, true);
+                }
+
+                // inc_hits is the hit count for the incoming item
+                let inc_hits = inner.admit.estimate(key);
+                // sample is the eviction candidate pool to be filled via random sampling.
+                // TODO: perhaps we should use a min heap here. Right now our time
+                // complexity is N for finding the min. Min heap should bring it down to
+                // O(lg N).
+                let mut sample = Vec::with_capacity(DEFAULT_SAMPLES);
+                let mut victims = Vec::new();
+
+                // Delete victims until there's enough space or a minKey is found that has
+                // more hits than incoming item.
+                while room < 0 {
+                    // fill up empty slots in sample
+                    sample = inner.costs.fill_sample(sample);
+
+                    // find minimally used item in sample
+                    let (mut min_key, mut min_hits, mut min_id, mut min_cost) =
+                        (0u64, i64::MAX, 0, 0i64);
+
+                    sample.iter().enumerate().for_each(|(idx, pair)| {
+                        // Look up hit count for sample key.
+                        let hits = inner.admit.estimate(pair.key);
+                        if hits < min_hits {
+                            min_key = pair.key;
+                            min_hits = hits;
+                            min_id = idx;
+                            min_cost = pair.cost;
+                        }
+                    });
+
+                    // If the incoming item isn't worth keeping in the policy, reject.
+                    if inc_hits < min_hits {
+                        self.metrics.add(MetricType::RejectSets, key, 1);
+                        return (Some(victims), false);
+                    }
+
+                    // Delete the victim from metadata.
+                    inner.costs.remove(&min_key).map(|cost| {
+                        self.metrics
+                            .add(MetricType::CostEvict, min_key, cost as u64);
+                        self.metrics.add(MetricType::KeyEvict, min_key, 1);
+                    });
+
+                    // Delete the victim from sample.
+                    let new_len = sample.len() - 1;
+                    sample[min_id] = sample[new_len];
+                    sample.drain(new_len..);
+                    // store victim in evicted victims slice
+                    victims.push(PolicyPair::new(min_key, min_cost));
+
+                    room = inner.costs.room_left(cost);
+                }
+
+                inner.costs.increment(key, cost);
+                self.metrics.add(MetricType::CostAdd, key, cost as u64);
+                (Some(victims), true)
+            }
+
+            #[inline]
+            pub fn contains(&self, k: &u64) -> bool {
+                let inner = self.inner.lock();
+                inner.costs.contains(k)
+            }
+
+            #[inline]
+            pub fn remove(&self, k: &u64) {
+                let mut inner = self.inner.lock();
+                inner.costs.remove(k).map(|cost| {
+                    self.metrics.add(MetricType::CostEvict, *k, cost as u64);
+                    self.metrics.add(MetricType::KeyEvict, *k, 1);
+                });
+            }
+
+            #[inline]
+            pub fn cap(&self) -> i64 {
+                let inner = self.inner.lock();
+                inner.costs.get_max_cost() - inner.costs.used
+            }
+
+            #[inline]
+            pub fn update(&self, k: &u64, cost: i64) {
+                let mut inner = self.inner.lock();
+                inner.costs.update(k, cost);
+            }
+
+            #[inline]
+            pub fn cost(&self, k: &u64) -> i64 {
+                let inner = self.inner.lock();
+                inner.costs.key_costs.get(k).map_or(-1, |cost| *cost)
+            }
+
+            #[inline]
+            pub fn clear(&self) {
+                let mut inner = self.inner.lock();
+                inner.admit.clear();
+                inner.costs.clear();
+            }
+
+            #[inline]
+            pub fn max_cost(&self) -> i64 {
+                let inner = self.inner.lock();
+                inner.costs.get_max_cost()
+            }
+
+            #[inline]
+            pub fn update_max_cost(&self, mc: i64) {
+                let inner = self.inner.lock();
+                inner.costs.update_max_cost(mc)
+            }
+        }
+
+        unsafe impl<S: BuildHasher + Clone + 'static> Send for $policy<S> {}
+        unsafe impl<S: BuildHasher + Clone + 'static> Sync for $policy<S> {}
+    };
+}
+
+cfg_sync!(
+    mod sync;
+    pub(crate) use sync::LFUPolicy;
+);
+
+cfg_async!(
+    mod axync;
+    pub(crate) use axync::AsyncLFUPolicy;
+);
+
+pub(crate) struct PolicyInner<S = RandomState> {
+    admit: TinyLFU,
+    costs: SampledLFU<S>,
+}
 
 #[derive(Copy, Clone, Debug, Default)]
 pub(crate) struct PolicyPair {
@@ -49,26 +219,6 @@ impl Into<PolicyPair> for (u64, i64) {
     }
 }
 
-struct PolicyInner<S = RandomState> {
-    admit: TinyLFU,
-    costs: SampledLFU<S>,
-}
-
-pub(crate) struct LFUPolicy<S = RandomState> {
-    inner: Arc<Mutex<PolicyInner<S>>>,
-    items_tx: UnboundedSender<Vec<u64>>,
-    stop_tx: Sender<()>,
-    is_closed: AtomicBool,
-    metrics: Arc<Metrics>,
-}
-
-impl LFUPolicy {
-    #[inline]
-    pub(crate) fn new(ctrs: usize, max_cost: i64) -> Result<Self, CacheError> {
-        Self::with_hasher(ctrs, max_cost, RandomState::new())
-    }
-}
-
 impl<S: BuildHasher + Clone + 'static> PolicyInner<S> {
     #[inline]
     fn set_metrics(&mut self, metrics: Arc<Metrics>) {
@@ -87,341 +237,6 @@ impl<S: BuildHasher + Clone + 'static> PolicyInner<S> {
 
 unsafe impl<S: BuildHasher + Clone + 'static> Send for PolicyInner<S> {}
 unsafe impl<S: BuildHasher + Clone + 'static> Sync for PolicyInner<S> {}
-
-impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
-    #[inline]
-    pub fn with_hasher(ctrs: usize, max_cost: i64, hasher: S) -> Result<Self, CacheError> {
-        let inner = PolicyInner::with_hasher(ctrs, max_cost, hasher)?;
-
-        let (items_tx, items_rx) = unbounded();
-        let (stop_tx, stop_rx) = stop_channel();
-
-        PolicyProcessor::new(inner.clone(), items_rx, stop_rx).spawn();
-
-        let this = Self {
-            inner: inner.clone(),
-            items_tx,
-            stop_tx,
-            is_closed: AtomicBool::new(false),
-            metrics: Arc::new(Metrics::new()),
-        };
-
-        Ok(this)
-    }
-
-    cfg_async! {
-        pub async fn push(&self, keys: Vec<u64>) -> Result<bool, CacheError> {
-            if self.is_closed.load(Ordering::SeqCst) {
-                return Ok(false);
-            }
-            let num_of_keys = keys.len() as u64;
-            if num_of_keys == 0 {
-                return Ok(true);
-            }
-            let first = keys[0];
-
-            select! {
-                rst = async { self.items_tx.send(keys) } => rst.map(|_| {
-                    self.metrics.add(MetricType::KeepGets, first, num_of_keys);
-                    true
-                })
-                .map_err(|e| {
-                    self.metrics.add(MetricType::DropGets, first, num_of_keys);
-                    CacheError::SendError(format!("sending on a disconnected channel, msg: {:?}", e))
-                }),
-                else => {
-                    self.metrics.add(MetricType::DropGets, first, num_of_keys);
-                    return Ok(false);
-                }
-            }
-        }
-
-        #[inline]
-        pub async fn close(&self) -> Result<(), CacheError> {
-            if self.is_closed.load(Ordering::SeqCst) {
-                return Ok(());
-            }
-
-            // block until the Processor thread returns.
-            self.stop_tx
-                .send(())
-                .await
-                .map_err(|e| CacheError::SendError(format!("{}", e)))?;
-                    self.is_closed.store(true, Ordering::SeqCst);
-                    Ok(())
-        }
-    }
-
-    cfg_not_async! {
-        pub fn push(&self, keys: Vec<u64>) -> Result<bool, CacheError> {
-            if self.is_closed.load(Ordering::SeqCst) {
-                return Ok(false);
-            }
-            let num_of_keys = keys.len() as u64;
-            if num_of_keys == 0 {
-                return Ok(true);
-            }
-            let first = keys[0];
-            select! {
-                send(self.items_tx, keys) -> res =>
-                    res
-                    .map(|_| {
-                        self.metrics.add(MetricType::KeepGets, first, num_of_keys);
-                        true
-                    })
-                    .map_err(|e| {
-                        self.metrics.add(MetricType::DropGets, first, num_of_keys);
-                        CacheError::SendError(format!("sending on a disconnected channel, msg: {:?}", e.0))
-                    }),
-                default => {
-                    self.metrics.add(MetricType::DropGets, first, num_of_keys);
-                    return Ok(false);
-                }
-            }
-        }
-
-        #[inline]
-        pub fn close(&self) -> Result<(), CacheError> {
-            if self.is_closed.load(Ordering::SeqCst) {
-                return Ok(());
-            }
-
-            // block until the Processor thread returns.
-            self.stop_tx
-                .send(())
-                .map_err(|e| CacheError::SendError(format!("{}", e)))?;
-            self.is_closed.store(true, Ordering::SeqCst);
-            Ok(())
-        }
-    }
-
-    #[inline]
-    pub fn collect_metrics(&mut self, metrics: Arc<Metrics>) {
-        self.metrics = metrics.clone();
-        self.inner.lock().set_metrics(metrics);
-    }
-
-    pub fn add(&self, key: u64, cost: i64) -> (Option<Vec<PolicyPair>>, bool) {
-        let mut inner = self.inner.lock();
-        let max_cost = inner.costs.get_max_cost();
-
-        // cannot ad an item bigger than entire cache
-        if cost > max_cost {
-            return (None, false);
-        }
-
-        // no need to go any further if the item is already in the cache
-        if inner.costs.update(&key, cost) {
-            // an update does not count as an addition, so return false.
-            return (None, false);
-        }
-
-        // If the execution reaches this point, the key doesn't exist in the cache.
-        // Calculate the remaining room in the cache (usually bytes).
-        let mut room = inner.costs.room_left(cost);
-        if room >= 0 {
-            // There's enough room in the cache to store the new item without
-            // overflowing. Do that now and stop here.
-            inner.costs.increment(key, cost);
-            self.metrics.add(MetricType::CostAdd, key, cost as u64);
-            return (None, true);
-        }
-
-        // inc_hits is the hit count for the incoming item
-        let inc_hits = inner.admit.estimate(key);
-        // sample is the eviction candidate pool to be filled via random sampling.
-        // TODO: perhaps we should use a min heap here. Right now our time
-        // complexity is N for finding the min. Min heap should bring it down to
-        // O(lg N).
-        let mut sample = Vec::with_capacity(DEFAULT_SAMPLES);
-        let mut victims = Vec::new();
-
-        // Delete victims until there's enough space or a minKey is found that has
-        // more hits than incoming item.
-        while room < 0 {
-            // fill up empty slots in sample
-            sample = inner.costs.fill_sample(sample);
-
-            // find minimally used item in sample
-            let (mut min_key, mut min_hits, mut min_id, mut min_cost) = (0u64, i64::MAX, 0, 0i64);
-
-            sample.iter().enumerate().for_each(|(idx, pair)| {
-                // Look up hit count for sample key.
-                let hits = inner.admit.estimate(pair.key);
-                if hits < min_hits {
-                    min_key = pair.key;
-                    min_hits = hits;
-                    min_id = idx;
-                    min_cost = pair.cost;
-                }
-            });
-
-            // If the incoming item isn't worth keeping in the policy, reject.
-            if inc_hits < min_hits {
-                self.metrics.add(MetricType::RejectSets, key, 1);
-                return (Some(victims), false);
-            }
-
-            // Delete the victim from metadata.
-            inner.costs.remove(&min_key).map(|cost| {
-                self.metrics
-                    .add(MetricType::CostEvict, min_key, cost as u64);
-                self.metrics.add(MetricType::KeyEvict, min_key, 1);
-            });
-
-            // Delete the victim from sample.
-            let new_len = sample.len() - 1;
-            sample[min_id] = sample[new_len];
-            sample.drain(new_len..);
-            // store victim in evicted victims slice
-            victims.push(PolicyPair::new(min_key, min_cost));
-
-            room = inner.costs.room_left(cost);
-        }
-
-        inner.costs.increment(key, cost);
-        self.metrics.add(MetricType::CostAdd, key, cost as u64);
-        (Some(victims), true)
-    }
-
-    #[inline]
-    pub fn contains(&self, k: &u64) -> bool {
-        let inner = self.inner.lock();
-        inner.costs.contains(k)
-    }
-
-    #[inline]
-    pub fn remove(&self, k: &u64) {
-        let mut inner = self.inner.lock();
-        inner.costs.remove(k).map(|cost| {
-            self.metrics.add(MetricType::CostEvict, *k, cost as u64);
-            self.metrics.add(MetricType::KeyEvict, *k, 1);
-        });
-    }
-
-    #[inline]
-    pub fn cap(&self) -> i64 {
-        let inner = self.inner.lock();
-        inner.costs.get_max_cost() - inner.costs.used
-    }
-
-    #[inline]
-    pub fn update(&self, k: &u64, cost: i64) {
-        let mut inner = self.inner.lock();
-        inner.costs.update(k, cost);
-    }
-
-    #[inline]
-    pub fn cost(&self, k: &u64) -> i64 {
-        let inner = self.inner.lock();
-        inner.costs.key_costs.get(k).map_or(-1, |cost| *cost)
-    }
-
-    #[inline]
-    pub fn clear(&self) {
-        let mut inner = self.inner.lock();
-        inner.admit.clear();
-        inner.costs.clear();
-    }
-
-    #[inline]
-    pub fn max_cost(&self) -> i64 {
-        let inner = self.inner.lock();
-        inner.costs.get_max_cost()
-    }
-
-    #[inline]
-    pub fn update_max_cost(&self, mc: i64) {
-        let inner = self.inner.lock();
-        inner.costs.update_max_cost(mc)
-    }
-}
-
-unsafe impl<S: BuildHasher + Clone + 'static> Send for LFUPolicy<S> {}
-unsafe impl<S: BuildHasher + Clone + 'static> Sync for LFUPolicy<S> {}
-
-struct PolicyProcessor<S: BuildHasher + Clone + 'static> {
-    inner: Arc<Mutex<PolicyInner<S>>>,
-    items_rx: UnboundedReceiver<Vec<u64>>,
-    stop_rx: Receiver<()>,
-}
-
-impl<S: BuildHasher + Clone + 'static> PolicyProcessor<S> {
-    #[inline]
-    fn new(
-        inner: Arc<Mutex<PolicyInner<S>>>,
-        items_rx: UnboundedReceiver<Vec<u64>>,
-        stop_rx: Receiver<()>,
-    ) -> Self {
-        Self {
-            inner,
-            items_rx,
-            stop_rx,
-        }
-    }
-
-    cfg_async! {
-        #[inline]
-        fn spawn(mut self) -> JoinHandle<()> {
-            spawn(async {
-                loop {
-                    select! {
-                        items = self.items_rx.recv() => self.handle_items(items),
-                        _ = self.stop_rx.recv() => {
-                            drop(self);
-                            return;
-                        },
-                    }
-                }
-            })
-        }
-
-        // TODO: None handle
-        #[inline]
-        fn handle_items(&self, items: Option<Vec<u64>>) {
-            match items {
-                Some(items) => {
-                    let mut inner = self.inner.lock();
-                    inner.admit.increments(items);
-                }
-                None => {
-                    // error!("policy processor error")
-                }
-            }
-        }
-    }
-
-    cfg_not_async! {
-        #[inline]
-        fn spawn(self) -> JoinHandle<()> {
-            spawn(move || loop {
-                select! {
-                        recv(self.items_rx) -> items => self.handle_items(items),
-                        recv(self.stop_rx) -> _ => {
-                            drop(self);
-                            return;
-                        },
-                    }
-            })
-        }
-
-        #[inline]
-        fn handle_items(&self, items: Result<Vec<u64>, RecvError>) {
-            match items {
-                Ok(items) => {
-                    let mut inner = self.inner.lock();
-                    inner.admit.increments(items);
-                }
-                Err(_) => {
-                    // error!("policy processor error: {}", e)
-                }
-            }
-        }
-    }
-}
-
-unsafe impl<S: BuildHasher + Clone + 'static> Send for PolicyProcessor<S> {}
-unsafe impl<S: BuildHasher + Clone + 'static> Sync for PolicyProcessor<S> {}
 
 /// SampledLFU stores key-costs paris.
 pub(crate) struct SampledLFU<S = RandomState> {

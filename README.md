@@ -105,12 +105,12 @@ fn main() {
 
 #### Async
 ```rust
-use stretto::{Cache, DefaultKeyBuilder};
+use stretto::{AsyncCache, DefaultKeyBuilder};
 use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
-    let c = Cache::new(12960, 1e6 as i64, DefaultKeyBuilder::default()).unwrap();
+    let c = AsyncCache::new(12960, 1e6 as i64, DefaultKeyBuilder::default()).unwrap();
 
     // set a value with a cost of 1
     c.insert("a", "a", 1).await;

@@ -1,20 +1,18 @@
-#[doc(hidden)]
-macro_rules! cfg_not_async {
+macro_rules! cfg_async {
     ($($item:item)*) => {
         $(
-            #[cfg(not(feature = "tokio"))]
-            #[cfg_attr(docsrs, doc(cfg(not(feature = "tokio"))))]
+            #[cfg(feature = "async")]
+            #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
             $item
         )*
     }
 }
 
-#[doc(hidden)]
-macro_rules! cfg_async {
+macro_rules! cfg_sync {
     ($($item:item)*) => {
         $(
-            #[cfg(feature = "tokio")]
-            #[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
+            #[cfg(feature = "sync")]
+            #[cfg_attr(docsrs, doc(cfg(feature = "sync")))]
             $item
         )*
     }

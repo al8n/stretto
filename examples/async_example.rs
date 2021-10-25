@@ -1,10 +1,10 @@
 use std::time::Duration;
-use stretto::{Cache, DefaultKeyBuilder};
+use stretto::{AsyncCache, DefaultKeyBuilder};
 
 #[tokio::main]
 async fn main() {
-    let c: Cache<&str, &str, DefaultKeyBuilder> =
-        Cache::new(12960, 1e6 as i64, DefaultKeyBuilder::default()).unwrap();
+    let c: AsyncCache<&str, &str, DefaultKeyBuilder> =
+        AsyncCache::new(12960, 1e6 as i64, DefaultKeyBuilder::default()).unwrap();
 
     // set a value with a cost of 1
     c.insert("a", "a", 1).await;
