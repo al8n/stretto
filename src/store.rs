@@ -1,4 +1,7 @@
-#[cfg(feature = "tokio")]
+mod flurry_store;
+mod parking_lot_store;
+
+#[cfg(feature = "async")]
 use crate::policy::AsyncLFUPolicy;
 use crate::policy::LFUPolicy;
 use crate::ttl::{ExpirationMap, Time};
