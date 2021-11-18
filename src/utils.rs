@@ -37,6 +37,7 @@ unsafe impl<'a, V: Send, S: BuildHasher> Send for ValueRef<'a, V, S> {}
 unsafe impl<'a, V: Send + Sync, S: BuildHasher> Sync for ValueRef<'a, V, S> {}
 
 impl<'a, V, S: BuildHasher> ValueRef<'a, V, S> {
+    #[inline]
     pub(crate) fn new(
         guard: RwLockReadGuard<'a, HashMap<u64, StoreItem<V>, S>>,
         val: &'a V,
@@ -45,11 +46,13 @@ impl<'a, V, S: BuildHasher> ValueRef<'a, V, S> {
     }
 
     /// Get the reference of the inner value.
+    #[inline]
     pub fn value(&self) -> &V {
         self.val
     }
 
     /// Drop self, release the inner `RwLockReadGuard`, which is the same as `drop()`
+    #[inline]
     pub fn release(self) {
         drop(self)
     }
@@ -57,6 +60,7 @@ impl<'a, V, S: BuildHasher> ValueRef<'a, V, S> {
 
 impl<'a, V: Copy, S: BuildHasher> ValueRef<'a, V, S> {
     /// Get the value and drop the inner RwLockReadGuard.
+    #[inline]
     pub fn read(self) -> V {
         let v = *self.val;
         drop(self);
@@ -94,6 +98,7 @@ unsafe impl<'a, V: Send, S: BuildHasher> Send for ValueRefMut<'a, V, S> {}
 unsafe impl<'a, V: Send + Sync, S: BuildHasher> Sync for ValueRefMut<'a, V, S> {}
 
 impl<'a, V, S: BuildHasher> ValueRefMut<'a, V, S> {
+    #[inline]
     pub(crate) fn new(
         guard: RwLockWriteGuard<'a, HashMap<u64, StoreItem<V>, S>>,
         val: &'a mut V,
@@ -102,27 +107,32 @@ impl<'a, V, S: BuildHasher> ValueRefMut<'a, V, S> {
     }
 
     /// Get the reference of the inner value.
+    #[inline]
     pub fn value(&self) -> &V {
         self.val
     }
 
     /// Get the mutable reference of the inner value.
+    #[inline]
     pub fn value_mut(&mut self) -> &mut V {
         self.val
     }
 
     /// Set the value
+    #[inline]
     pub fn write(&mut self, val: V) {
         *self.val = val
     }
 
     /// Set the value, and release the inner `RwLockWriteGuard` automatically
+    #[inline]
     pub fn write_once(self, val: V) {
         *self.val = val;
         self.release();
     }
 
     /// Drop self, release the inner `RwLockReadGuard`, which is the same as `drop()`
+    #[inline]
     pub fn release(self) {
         drop(self)
     }
