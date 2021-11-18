@@ -188,7 +188,6 @@ mod metrics;
 /// [1]: https://arxiv.org/abs/1512.00727
 #[allow(dead_code)]
 mod policy;
-mod ring;
 mod sketch;
 mod store;
 mod ttl;
