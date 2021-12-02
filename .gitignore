@@ -16,3 +16,6 @@ Cargo.lock
 
 benches/bin
 **.DS_Store
+
+benches/mock/mock-generator
+benches/ristretto-go/ristretto-go

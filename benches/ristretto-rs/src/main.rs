@@ -2,7 +2,7 @@
 extern crate serde;
 
 use std::path::Path;
-use stretto::{Cache, KeyBuilder};
+use stretto::KeyBuilder;
 
 #[global_allocator]
 static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -44,6 +44,7 @@ impl KeyBuilder<KC> for KH {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::fs;
     use std::time::Instant;
+    use stretto::Cache;
 
     let content = fs::read(Path::new("mock.json"))?;
     let dataset: Dataset = serde_json::from_slice(content.as_slice())?;
@@ -71,16 +72,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg(not(feature = "sync"))]
+#[cfg(feature = "async")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use tokio::fs;
     use tokio::time::Instant;
+    use stretto::AsyncCache;
 
     let content = fs::read(Path::new("mock.json")).await?;
     let dataset: Dataset = serde_json::from_slice(content.as_slice())?;
 
-    let c = Cache::builder(12960, 1e6 as i64, KH::default())
+    let c = AsyncCache::builder(12960, 1e6 as i64, KH::default())
         .set_metrics(true)
         .finalize()
         .unwrap();
