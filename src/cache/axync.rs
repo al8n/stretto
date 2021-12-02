@@ -108,28 +108,21 @@ use crate::ttl::{ExpirationMap, Time};
 /// [`UpdateValidator`]: trait.UpdateValidator.html
 /// [`CacheCallback`]: trait.CacheCallback.html
 /// [`Coster`]: trait.Coster.html
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 pub struct AsyncCacheBuilder<
     K: Hash + Eq,
     V: Send + Sync + 'static,
     KH: KeyBuilder<K>,
-    C: Coster<V>,
-    U: UpdateValidator<V>,
-    CB: CacheCallback<V>,
-    S: BuildHasher + Clone + 'static,
+    C = DefaultCoster<V>,
+    U = DefaultUpdateValidator<V>,
+    CB = DefaultCacheCallback<V>,
+    S = RandomState,
 > {
     inner: CacheBuilderCore<K, V, KH, C, U, CB, S>,
 }
 
 impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>>
-AsyncCacheBuilder<
-    K,
-    V,
-    KH,
-    DefaultCoster<V>,
-    DefaultUpdateValidator<V>,
-    DefaultCacheCallback<V>,
-    RandomState,
->
+AsyncCacheBuilder<K, V, KH>
 {
     /// Create a new AsyncCacheBuilder
     #[inline]
@@ -335,6 +328,7 @@ impl<V> Item<V> {
 /// * **Simple API** - just figure out your ideal [`CacheBuilder`] values and you're off and running.
 ///
 /// [`CacheBuilder`]: struct.CacheBuilder.html
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 pub struct AsyncCache<
     K,
     V,

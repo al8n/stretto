@@ -12,10 +12,10 @@ pub struct CacheBuilderCore<
     K: Hash + Eq,
     V: Send + Sync + 'static,
     KH: KeyBuilder<K>,
-    C: Coster<V>,
-    U: UpdateValidator<V>,
-    CB: CacheCallback<V>,
-    S: BuildHasher + Clone + 'static,
+    C = DefaultCoster<V>,
+    U = DefaultUpdateValidator<V>,
+    CB = DefaultCacheCallback<V>,
+    S = RandomState,
 > {
     /// metrics determines whether cache statistics are kept during the cache's
     /// lifetime. There *is* some overhead to keeping statistics, so you should
@@ -70,15 +70,7 @@ pub struct CacheBuilderCore<
 }
 
 impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>>
-    CacheBuilderCore<
-        K,
-        V,
-        KH,
-        DefaultCoster<V>,
-        DefaultUpdateValidator<V>,
-        DefaultCacheCallback<V>,
-        RandomState,
-    >
+    CacheBuilderCore<K, V, KH>
 {
     /// Create a new CacheBuilderCore
     #[inline]

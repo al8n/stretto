@@ -119,24 +119,16 @@ pub struct CacheBuilder<
     K: Hash + Eq,
     V: Send + Sync + 'static,
     KH: KeyBuilder<K>,
-    C: Coster<V>,
-    U: UpdateValidator<V>,
-    CB: CacheCallback<V>,
-    S: BuildHasher + Clone + 'static,
+    C = DefaultCoster<V>,
+    U = DefaultUpdateValidator<V>,
+    CB = DefaultCacheCallback<V>,
+    S = RandomState,
 > {
     inner: CacheBuilderCore<K, V, KH, C, U, CB, S>,
 }
 
 impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>>
-    CacheBuilder<
-        K,
-        V,
-        KH,
-        DefaultCoster<V>,
-        DefaultUpdateValidator<V>,
-        DefaultCacheCallback<V>,
-        RandomState,
-    >
+    CacheBuilder<K, V, KH>
 {
     /// Create a new AsyncCacheBuilder
     #[inline]
@@ -155,7 +147,7 @@ where
     C: Coster<V>,
     U: UpdateValidator<V>,
     CB: CacheCallback<V>,
-    S: BuildHasher + Clone + 'static + Send,
+    S: BuildHasher + Send + Clone + 'static,
 {
     /// Build Cache and start all threads needed by the Cache.
     #[inline]
