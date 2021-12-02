@@ -8,7 +8,6 @@ use std::hash::{BuildHasher, Hash};
 use std::marker::PhantomData;
 use std::time::Duration;
 
-
 pub struct CacheBuilderCore<
     K: Hash + Eq,
     V: Send + Sync + 'static,

@@ -309,6 +309,12 @@ macro_rules! impl_cache {
                 self.store.len()
             }
 
+            /// Returns true if the cache is empty
+            #[inline]
+            pub fn is_empty(&self) -> bool {
+                self.store.len() == 0
+            }
+
             #[inline]
             fn update(
                 &self,
@@ -347,6 +353,22 @@ macro_rules! impl_cache {
                         Some((index, $item::update(index, cost, external_cost)))
                     }
                 }
+            }
+        }
+
+        impl<K, V, KH, C, U, CB, S> AsRef<$cache<K, V, KH, C, U, CB, S>>
+            for $cache<K, V, KH, C, U, CB, S>
+        where
+            K: Hash + Eq,
+            V: Send + Sync + 'static,
+            KH: KeyBuilder<K>,
+            C: Coster<V>,
+            U: UpdateValidator<V>,
+            CB: CacheCallback<V>,
+            S: BuildHasher + Clone + 'static,
+        {
+            fn as_ref(&self) -> &$cache<K, V, KH, C, U, CB, S> {
+                self
             }
         }
 
@@ -472,7 +494,10 @@ macro_rules! impl_cache_processor {
                 if added {
                     if self.start_ts.len() > self.num_to_keep {
                         let mut ctr = 0;
-                        self.start_ts.retain(|_, _| { ctr += 1; ctr < self.num_to_keep - 1 });
+                        self.start_ts.retain(|_, _| {
+                            ctr += 1;
+                            ctr < self.num_to_keep - 1
+                        });
                         self.start_ts.insert(key, Time::now());
                     }
                 }

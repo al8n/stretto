@@ -103,7 +103,7 @@ impl<const BS: usize, const CPB: usize> Histogram<BS, CPB> {
             let mut pval = ((count as f64) * p) as i64;
 
             for (idx, val) in self.count_per_bucket.iter().enumerate() {
-                pval = pval - val.load(Ordering::SeqCst);
+                pval -= val.load(Ordering::SeqCst);
                 if pval <= 0 {
                     if idx == self.bounds.len() {
                         break;
@@ -224,7 +224,6 @@ mod test {
                 prev = lb;
             } else if idx == size {
                 *val = ub;
-                return;
             } else {
                 *val = prev + step;
                 prev = *val;
@@ -314,6 +313,6 @@ Count: 5
 [12, 16) 1 20.00% 80.00%
 [16, infinity) 1 20.00% 100.00%
  --\n";
-        assert_eq!(format!("{}", h.clone()), f)
+        assert_eq!(format!("{}", h), f)
     }
 }

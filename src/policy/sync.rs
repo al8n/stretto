@@ -30,7 +30,7 @@ impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
         PolicyProcessor::new(inner.clone(), items_rx, stop_rx).spawn();
 
         let this = Self {
-            inner: inner.clone(),
+            inner,
             items_tx,
             stop_tx,
             is_closed: AtomicBool::new(false),
@@ -62,7 +62,7 @@ impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
                 }),
             default => {
                 self.metrics.add(MetricType::DropGets, first, num_of_keys);
-                return Ok(false);
+                Ok(false)
             }
         }
     }

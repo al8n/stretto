@@ -190,7 +190,7 @@ impl<
                 }
 
                 self.em.update(key, conflict, item.expiration, expiration);
-                mem::swap(&mut val, &mut item.value.get_mut());
+                mem::swap(&mut val, item.value.get_mut());
                 item.expiration = expiration;
                 UpdateResult::Update(val)
             }
@@ -204,7 +204,7 @@ impl<
     pub fn remove(&self, key: &u64, conflict: u64) -> Option<StoreItem<V>> {
         let mut data = self.shards[(*key as usize) % NUM_OF_SHARDS].write();
 
-        match data.get(&key) {
+        match data.get(key) {
             None => None,
             Some(item) => {
                 if conflict != 0 && (conflict != item.conflict) {

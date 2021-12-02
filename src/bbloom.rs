@@ -68,15 +68,15 @@ impl Bloom {
         };
 
         let size = get_size(entries_locs.entries);
-        let this = Self {
+
+        Self {
             bitset: vec![0; (size.size >> 6) as usize],
             elem_num: 0,
             size: size.size - 1,
             size_exp: size.exp,
             set_locs: entries_locs.locs,
             shift: 64 - size.exp,
-        };
-        this
+        }
     }
 
     /// `size` makes Bloom filter with as bitset of size sz.

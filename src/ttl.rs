@@ -53,9 +53,7 @@ impl Time {
     }
 
     pub fn is_expired(&self) -> bool {
-        self.created_at
-            .elapsed()
-            .map_or(false, |d| if d >= self.d { true } else { false })
+        self.created_at.elapsed().map_or(false, |d| d >= self.d)
     }
 
     pub fn get_ttl(&self) -> Duration {

@@ -351,7 +351,7 @@ mod test {
     #[test]
     fn test_shared_value() {
         let sv = SharedValue::new(3);
-        assert_eq!(sv.clone().get(), &3);
+        assert_eq!(sv.get(), &3);
     }
 
     #[test]
@@ -359,7 +359,7 @@ mod test {
         let snn = SharedNonNull::new(&mut 3);
         let r = unsafe { snn.as_ref() };
         assert_eq!(r, &3);
-        let snn1 = snn.clone();
+        let snn1 = snn;
         unsafe {
             assert_eq!(snn1.as_ref(), &3);
         }

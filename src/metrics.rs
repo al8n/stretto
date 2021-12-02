@@ -129,7 +129,7 @@ impl Metrics {
     #[inline]
     pub(crate) fn track_eviction(&self, num_seconds: i64) {
         match self {
-            Metrics::Noop => return,
+            Metrics::Noop => {}
             Metrics::Op(m) => m.track_eviction(num_seconds),
         }
     }
@@ -148,76 +148,76 @@ impl Metrics {
     /// Returns the number of Get calls where a value was found for the corresponding key.
     #[inline]
     pub fn get_hits(&self) -> Option<u64> {
-        self.map(|ref m| m.get_hits())
+        self.map(|m| m.get_hits())
     }
 
     /// Returns the number of Get calls where a value was not found for the corresponding key.
     #[inline]
     pub fn get_misses(&self) -> Option<u64> {
-        self.map(|ref m| m.get_misses())
+        self.map(|m| m.get_misses())
     }
 
     /// Returns the total number of Set calls where a new key-value item was added.
     #[inline]
     pub fn get_keys_added(&self) -> Option<u64> {
-        self.map(|ref m| m.get_keys_added())
+        self.map(|m| m.get_keys_added())
     }
 
     /// Returns the total number of Set calls where a new key-value item was updated.
     #[inline]
     pub fn get_keys_updated(&self) -> Option<u64> {
-        self.map(|ref m| m.get_keys_updated())
+        self.map(|m| m.get_keys_updated())
     }
 
     /// Returns the total number of keys evicted.
     #[inline]
     pub fn get_keys_evicted(&self) -> Option<u64> {
-        self.map(|ref m| m.get_keys_evicted())
+        self.map(|m| m.get_keys_evicted())
     }
 
     /// Returns the sum of costs that have been added (successful Set calls).
     #[inline]
     pub fn get_cost_added(&self) -> Option<u64> {
-        self.map(|ref m| m.get_cost_added())
+        self.map(|m| m.get_cost_added())
     }
 
     /// Returns the sum of all costs that have been evicted.
     #[inline]
     pub fn get_cost_evicted(&self) -> Option<u64> {
-        self.map(|ref m| m.get_cost_evicted())
+        self.map(|m| m.get_cost_evicted())
     }
 
     /// Returns the number of Set calls that don't make it into internal
     /// buffers (due to contention or some other reason).
     #[inline]
     pub fn get_sets_dropped(&self) -> Option<u64> {
-        self.map(|ref m| m.get_sets_dropped())
+        self.map(|m| m.get_sets_dropped())
     }
 
     /// Returns the number of Set calls rejected by the policy (TinyLFU).
     #[inline]
     pub fn get_sets_rejected(&self) -> Option<u64> {
-        self.map(|ref m| m.get_sets_rejected())
+        self.map(|m| m.get_sets_rejected())
     }
 
     /// Returns the number of Get counter increments that are dropped
     /// internally.
     #[inline]
     pub fn get_gets_dropped(&self) -> Option<u64> {
-        self.map(|ref m| m.get_gets_dropped())
+        self.map(|m| m.get_gets_dropped())
     }
 
     /// Returns the number of Get counter increments that are kept.
     #[inline]
     pub fn get_gets_kept(&self) -> Option<u64> {
-        self.map(|ref m| m.get_gets_kept())
+        self.map(|m| m.get_gets_kept())
     }
 
     /// Ratio is the number of Hits over all accesses (Hits + Misses). This is the
     /// percentage of successful Get calls.
     #[inline]
     pub fn ratio(&self) -> Option<f64> {
-        self.map(|ref m| m.ratio())
+        self.map(|m| m.ratio())
     }
 
     /// Returns the histogram data of this metrics
@@ -225,7 +225,7 @@ impl Metrics {
     pub fn life_expectancy_seconds(
         &self,
     ) -> Option<Histogram<HISTOGRAM_BOUND_SIZE, HISTOGRAM_COUNT_PER_BUCKET_SIZE>> {
-        self.map(|ref m| m.life_expectancy_seconds())
+        self.map(|m| m.life_expectancy_seconds())
     }
 
     /// clear resets all the metrics
@@ -282,12 +282,10 @@ impl MetricsInner {
             })
             .collect();
 
-        let this = Self {
+        Self {
             all: Arc::new(map),
             life: h,
-        };
-
-        this
+        }
     }
 
     /// Returns the number of Get calls where a value was found for the corresponding key.
@@ -383,9 +381,9 @@ impl MetricsInner {
     #[inline]
     pub fn clear(&self) {
         METRIC_TYPES_ARRAY.iter().for_each(|typ| {
-            self.all
-                .get(typ)
-                .map(|arr| arr.iter().for_each(|val| val.store(0, Ordering::SeqCst)));
+            if let Some(arr) = self.all.get(typ) {
+                arr.iter().for_each(|val| val.store(0, Ordering::SeqCst))
+            }
         });
 
         self.life.clear()
@@ -407,10 +405,10 @@ impl MetricsInner {
     #[inline]
     fn get(&self, typ: &MetricType) -> u64 {
         let mut total = 0;
-        self.all.get(typ).map(|v| {
+        if let Some(v) = self.all.get(typ) {
             v.iter()
                 .for_each(|atom| total += atom.load(Ordering::SeqCst));
-        });
+        }
         total
     }
 }

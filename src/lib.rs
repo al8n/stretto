@@ -242,7 +242,6 @@ cfg_sync!(
     pub use cache::{Cache, CacheBuilder};
 );
 
-
 pub use error::CacheError;
 pub use metrics::{MetricType, Metrics};
 pub use utils::{ValueRef, ValueRefMut};

@@ -189,7 +189,7 @@ where
             hasher.clone(),
         ));
 
-        let mut policy = LFUPolicy::with_hasher(num_counters, max_cost, hasher.clone())?;
+        let mut policy = LFUPolicy::with_hasher(num_counters, max_cost, hasher)?;
 
         let coster = Arc::new(self.inner.coster.unwrap());
         let callback = Arc::new(self.inner.callback.unwrap());
@@ -282,10 +282,7 @@ impl<V> Item<V> {
 
     #[inline]
     fn is_update(&self) -> bool {
-        match self {
-            Item::Update { .. } => true,
-            _ => false,
-        }
+        matches!(self, Item::Update { .. })
     }
 }
 
@@ -429,7 +426,7 @@ where
         self.insert_buf_tx
             .send(wait_item)
             .map(|_| wg.wait())
-            .map_err(|e| CacheError::SendError(format!("cache set buf sender: {}", e.to_string())))
+            .map_err(|e| CacheError::SendError(format!("cache set buf sender: {}", e)))
     }
 
     /// remove an entry from Cache by key.
@@ -438,7 +435,7 @@ where
             return;
         }
 
-        let (index, conflict) = self.key_to_hash.build_key(&k);
+        let (index, conflict) = self.key_to_hash.build_key(k);
         // delete immediately
         let prev = self.store.remove(&index, conflict);
 
@@ -578,7 +575,7 @@ where
         msg.map(|item| self.handle_item(item)).map_err(|e| {
             CacheError::RecvError(format!(
                 "fail to receive msg from insert buffer: {}",
-                e.to_string()
+                e
             ))
         })
     }
@@ -600,7 +597,7 @@ where
         .map_err(|e| {
             CacheError::RecvError(format!(
                 "fail to receive msg from ticker: {}",
-                e.to_string()
+                e
             ))
         })
     }
