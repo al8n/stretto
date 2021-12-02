@@ -70,17 +70,9 @@ impl Time {
 }
 
 /// Bucket is a map of key to conflict.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Bucket<S = RandomState> {
     map: HashMap<u64, u64, S>,
-}
-
-impl Default for Bucket {
-    fn default() -> Self {
-        Self {
-            map: HashMap::new(),
-        }
-    }
 }
 
 impl<S: BuildHasher> Bucket<S> {

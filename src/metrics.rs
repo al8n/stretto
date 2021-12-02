@@ -95,10 +95,16 @@ pub enum Metrics {
     Op(MetricsInner),
 }
 
+impl Default for Metrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Metrics {
     /// Create a Noop metrics
     #[inline]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self::Noop
     }
 
@@ -262,6 +268,12 @@ pub struct MetricsInner {
 
     /// tracks the life expectancy of a key
     life: Histogram<HISTOGRAM_BOUND_SIZE, HISTOGRAM_COUNT_PER_BUCKET_SIZE>,
+}
+
+impl Default for MetricsInner {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MetricsInner {

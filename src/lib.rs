@@ -455,19 +455,10 @@ pub trait KeyBuilder<K: Hash + Eq + ?Sized> {
 /// [`KeyBuilder`]: trait.KeyBuilder.html
 /// [`TransparentKey`]: trait.TransparentKey.html
 /// [`TransparentKeyBuilder`]: struct.TransparentKeyBuilder.html
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct DefaultKeyBuilder {
     s: RandomState,
     xx: BuildHasherDefault<XxHash64>,
-}
-
-impl Default for DefaultKeyBuilder {
-    fn default() -> Self {
-        Self {
-            s: Default::default(),
-            xx: Default::default(),
-        }
-    }
 }
 
 impl<K: Hash + Eq + ?Sized> KeyBuilder<K> for DefaultKeyBuilder {

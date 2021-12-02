@@ -6,7 +6,7 @@
 use std::ptr::addr_of;
 
 const MASK: [u8; 8] = [1, 2, 4, 8, 16, 32, 64, 128];
-const LN_2: f64 = 0.69314718056;
+const LN_2: f64 = std::f64::consts::LN_2;
 
 struct Size {
     size: u64,
