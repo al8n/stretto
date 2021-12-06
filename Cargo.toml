@@ -35,7 +35,7 @@ edition = "2021"
 [features]
 default = ["sync"]
 full = ["sync", "async", "serilization"]
-async = ["tokio/default", "tokio/sync", "tokio/macros", "tokio/parking_lot"]
+async = ["tokio/default", "tokio/rt-multi-thread", "tokio/macros", "tokio/parking_lot"]
 sync = ["crossbeam-channel"]
 serilization = ["serde", "serde/derive", "serde_json/default"]
 
