@@ -32,13 +32,15 @@ impl<V> Debug for StoreItem<V> {
     }
 }
 
+type Shards<V, SS> = Box<[RwLock<HashMap<u64, StoreItem<V>, SS>>; NUM_OF_SHARDS]>;
+
 pub(crate) struct ShardedMap<
     V: Send + Sync + 'static,
     U = DefaultUpdateValidator<V>,
     SS = RandomState,
     ES = RandomState,
 > {
-    shards: Box<[RwLock<HashMap<u64, StoreItem<V>, SS>>; NUM_OF_SHARDS]>,
+    shards: Shards<V, SS>,
     em: ExpirationMap<ES>,
     store_item_size: usize,
     validator: U,

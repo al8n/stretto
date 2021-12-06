@@ -11,9 +11,9 @@ const MAXI64: i64 = i64::MAX;
 /// Histogram promises thread-safe.
 #[derive(Debug)]
 pub struct Histogram {
-    bounds: Arc<Box<[Atomic<f64>]>>,
+    bounds: Arc<Vec<Atomic<f64>>>,
     count: AtomicI64,
-    count_per_bucket: Arc<Box<[AtomicI64]>>,
+    count_per_bucket: Arc<Vec<AtomicI64>>,
     min: AtomicI64,
     max: AtomicI64,
     sum: AtomicI64,
@@ -24,14 +24,15 @@ impl Histogram {
     pub fn new(bounds: Vec<f64>) -> Self {
         let bounds = bounds
             .into_iter()
-            .map(|v| Atomic::new(v))
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        let cpb = bounds.len() + 1;
+            .map(Atomic::new)
+            .collect::<Vec<_>>();
+
+        let mut cpb = init_cpb(bounds.len() + 1);
+        cpb.shrink_to_fit();
         Histogram {
             bounds: Arc::new(bounds),
             count: AtomicI64::new(0),
-            count_per_bucket: Arc::new(init_cpb(cpb)),
+            count_per_bucket: Arc::new(cpb),
             min: AtomicI64::new(MAXI64),
             max: AtomicI64::new(0),
             sum: AtomicI64::new(0),
@@ -194,12 +195,11 @@ impl Clone for Histogram {
     }
 }
 
-fn init_cpb(num: usize) -> Box<[AtomicI64]> {
+fn init_cpb(num: usize) -> Vec<AtomicI64> {
     vec![0; num]
         .into_iter()
-        .map(|v| AtomicI64::new(v))
+        .map(AtomicI64::new)
         .collect::<Vec<_>>()
-        .into_boxed_slice()
 }
 
 #[cfg(test)]

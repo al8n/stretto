@@ -210,11 +210,11 @@ impl PolicyPair {
     }
 }
 
-impl Into<PolicyPair> for (u64, i64) {
-    fn into(self) -> PolicyPair {
-        PolicyPair {
-            key: self.0,
-            cost: self.1,
+impl From<(u64, i64)> for PolicyPair {
+    fn from(pair: (u64, i64)) -> Self {
+        Self {
+            key: pair.0,
+            cost: pair.1,
         }
     }
 }
