@@ -171,6 +171,7 @@
 //! [`Cache`]: struct.Cache.html
 //! [`AsyncCache`]: struct.AsyncCache.html
 #![deny(missing_docs)]
+#![allow(clippy::too_many_arguments, clippy::type_complexity)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(docsrs, allow(unused_attributes))]
 mod error;

@@ -370,12 +370,16 @@ impl<S: BuildHasher + Clone + 'static> SampledLFU<S> {
                 let k = *k;
                 if self.metrics.is_op() {
                     self.metrics.add(MetricType::KeyUpdate, k, 1);
-                    if prev_val > cost {
-                        let diff = (prev_val - cost) as u64 - 1;
-                        self.metrics.add(MetricType::CostAdd, k, !diff);
-                    } else if cost > prev_val {
-                        let diff = (cost - prev_val) as u64;
-                        self.metrics.add(MetricType::CostAdd, k, diff);
+                    match prev_val.cmp(&cost) {
+                        std::cmp::Ordering::Less => {
+                            let diff = (cost - prev_val) as u64;
+                            self.metrics.add(MetricType::CostAdd, k, diff);
+                        }
+                        std::cmp::Ordering::Equal => {}
+                        std::cmp::Ordering::Greater => {
+                            let diff = (prev_val - cost) as u64 - 1;
+                            self.metrics.add(MetricType::CostAdd, k, !diff);
+                        }
                     }
                 }
 

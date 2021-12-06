@@ -122,8 +122,13 @@ impl<S: BuildHasher + Clone + 'static> PolicyProcessor<S> {
                 let mut inner = self.inner.lock();
                 inner.admit.increments(items);
             }
-            Err(_) => {
-                // error!("policy processor error: {}", e)
+            #[cfg(feature = "log")]
+            Err(e) => {
+                log::error!("policy processor error: {}", e)
+            }
+            #[cfg(not(feature = "log"))]
+            Err(e) => {
+                let _ = e;
             }
         }
     }

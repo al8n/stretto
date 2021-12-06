@@ -402,10 +402,10 @@ impl MetricsInner {
 
     #[inline]
     pub(crate) fn add(&self, typ: MetricType, hash: u64, delta: u64) {
-        self.all.get(&typ).map(|val| {
+        if let Some(val) = self.all.get(&typ) {
             let idx = ((hash % 25) * 10) as usize;
             val[idx].fetch_add(delta, Ordering::SeqCst);
-        });
+        }
     }
 
     #[inline]

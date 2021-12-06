@@ -22,10 +22,7 @@ pub struct Histogram {
 impl Histogram {
     /// Returns a new instance of HistogramData with properly initialized fields.
     pub fn new(bounds: Vec<f64>) -> Self {
-        let bounds = bounds
-            .into_iter()
-            .map(Atomic::new)
-            .collect::<Vec<_>>();
+        let bounds = bounds.into_iter().map(Atomic::new).collect::<Vec<_>>();
 
         let mut cpb = init_cpb(bounds.len() + 1);
         cpb.shrink_to_fit();
