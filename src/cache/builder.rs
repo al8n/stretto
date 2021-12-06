@@ -1,7 +1,7 @@
 use crate::cache::{DEFAULT_CLEANUP_DURATION, DEFAULT_INSERT_BUF_SIZE};
 use crate::{
-    CacheCallback, Coster, DefaultCacheCallback, DefaultCoster, DefaultUpdateValidator, KeyBuilder,
-    UpdateValidator,
+    CacheCallback, Coster, DefaultCacheCallback, DefaultCoster, DefaultKeyBuilder,
+    DefaultUpdateValidator, KeyBuilder, UpdateValidator,
 };
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash};
@@ -11,7 +11,7 @@ use std::time::Duration;
 pub struct CacheBuilderCore<
     K: Hash + Eq,
     V: Send + Sync + 'static,
-    KH: KeyBuilder<K>,
+    KH = DefaultKeyBuilder,
     C = DefaultCoster<V>,
     U = DefaultUpdateValidator<V>,
     CB = DefaultCacheCallback<V>,
@@ -69,10 +69,33 @@ pub struct CacheBuilderCore<
     marker_v: PhantomData<fn(V)>,
 }
 
+impl<K: Hash + Eq, V: Send + Sync + 'static> CacheBuilderCore<K, V> {
+    /// Create a new CacheBuilderCore
+    #[inline]
+    pub fn new(num_counters: usize, max_cost: i64) -> Self {
+        Self {
+            num_counters,
+            max_cost,
+            // buffer_items: DEFAULT_BUFFER_ITEMS,
+            insert_buffer_size: DEFAULT_INSERT_BUF_SIZE,
+            metrics: false,
+            callback: Some(DefaultCacheCallback::default()),
+            key_to_hash: DefaultKeyBuilder::default(),
+            update_validator: Some(DefaultUpdateValidator::default()),
+            coster: Some(DefaultCoster::default()),
+            ignore_internal_cost: false,
+            cleanup_duration: DEFAULT_CLEANUP_DURATION,
+            marker_k: Default::default(),
+            marker_v: Default::default(),
+            hasher: Some(RandomState::default()),
+        }
+    }
+}
+
 impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>> CacheBuilderCore<K, V, KH> {
     /// Create a new CacheBuilderCore
     #[inline]
-    pub fn new(num_counters: usize, max_cost: i64, index: KH) -> Self {
+    pub fn new_with_key_builder(num_counters: usize, max_cost: i64, index: KH) -> Self {
         Self {
             num_counters,
             max_cost,

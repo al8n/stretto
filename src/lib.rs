@@ -171,6 +171,8 @@
 //! [`Cache`]: struct.Cache.html
 //! [`AsyncCache`]: struct.AsyncCache.html
 #![deny(missing_docs)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
+#![cfg_attr(docsrs, allow(unused_attributes))]
 mod error;
 #[macro_use]
 mod macros;

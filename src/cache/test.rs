@@ -108,7 +108,7 @@ mod sync_test {
     fn new_test_cache<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>>(
         kh: KH,
     ) -> Cache<K, V, KH> {
-        Cache::new(100, 10, kh).unwrap()
+        Cache::new_with_key_builder(100, 10, kh).unwrap()
     }
 
     fn retry_set<C: Coster<u64>, U: UpdateValidator<u64>, CB: CacheCallback<u64>>(
@@ -133,7 +133,7 @@ mod sync_test {
     #[test]
     fn test_cache_builder() {
         let _: Cache<u64, u64, DefaultKeyBuilder> =
-            CacheBuilder::new(100, 10, TransparentKeyBuilder::default())
+            CacheBuilder::new_with_key_builder(100, 10, TransparentKeyBuilder::default())
                 .set_coster(DefaultCoster::default())
                 .set_update_validator(DefaultUpdateValidator::default())
                 .set_callback(DefaultCacheCallback::default())
@@ -151,7 +151,8 @@ mod sync_test {
     fn test_cache_key_to_hash() {
         let ctr = Arc::new(AtomicU64::new(0));
 
-        let c: Cache<u64, u64, KHTest> = Cache::new(10, 1000, KHTest { ctr: ctr.clone() }).unwrap();
+        let c: Cache<u64, u64, KHTest> =
+            Cache::new_with_key_builder(10, 1000, KHTest { ctr: ctr.clone() }).unwrap();
 
         assert!(c.insert(1, 1, 1));
         sleep(Duration::from_millis(10));
@@ -171,7 +172,7 @@ mod sync_test {
 
     #[test]
     fn test_cache_max_cost() {
-        let c = Cache::builder(12960, 1e6 as i64, DefaultKeyBuilder::default())
+        let c = Cache::builder(12960, 1e6 as i64)
             .set_metrics(true)
             .finalize()
             .unwrap();
@@ -225,7 +226,8 @@ mod sync_test {
 
     #[test]
     fn test_cache_update_max_cost() {
-        let c = Cache::builder(10, 10, TransparentKeyBuilder::default())
+        let c = Cache::builder(10, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
             .finalize()
             .unwrap();
 
@@ -250,7 +252,7 @@ mod sync_test {
     #[test]
     fn test_cache_multiple_close() {
         let c: Cache<i64, i64, TransparentKeyBuilder<i64>> =
-            Cache::new(100, 10, TransparentKeyBuilder::default()).unwrap();
+            Cache::new_with_key_builder(100, 10, TransparentKeyBuilder::default()).unwrap();
 
         let _ = c.close();
         let _ = c.close();
@@ -299,7 +301,8 @@ mod sync_test {
     #[test]
     fn test_cache_process_items() {
         let cb = Arc::new(Mutex::new(HashSet::new()));
-        let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = Cache::builder(100, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
             .set_coster(TestCoster::default())
             .set_callback(TestCallback::new(cb.clone()))
             .set_ignore_internal_cost(true)
@@ -334,7 +337,8 @@ mod sync_test {
 
     #[test]
     fn test_cache_get() {
-        let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = Cache::builder(100, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
             .set_ignore_internal_cost(true)
             .set_metrics(true)
             .finalize()
@@ -359,7 +363,8 @@ mod sync_test {
 
     #[test]
     fn test_cache_set() {
-        let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = Cache::builder(100, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
             .set_ignore_internal_cost(true)
             .set_metrics(true)
             .finalize()
@@ -381,7 +386,8 @@ mod sync_test {
 
     #[test]
     fn test_cache_internal_cost() {
-        let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = Cache::builder(100, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
             .set_metrics(true)
             .finalize()
             .unwrap();
@@ -395,7 +401,8 @@ mod sync_test {
 
     #[test]
     fn test_recache_with_ttl() {
-        let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = Cache::builder(100, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
             .set_ignore_internal_cost(true)
             .set_metrics(true)
             .finalize()
@@ -426,7 +433,8 @@ mod sync_test {
     #[test]
     fn test_cache_set_with_ttl() {
         let cb = Arc::new(Mutex::new(HashSet::new()));
-        let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = Cache::builder(100, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
             .set_callback(TestCallback::new(cb.clone()))
             .set_ignore_internal_cost(true)
             .finalize()
@@ -472,7 +480,8 @@ mod sync_test {
 
     #[test]
     fn test_cache_remove_with_ttl() {
-        let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = Cache::builder(100, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
             .set_ignore_internal_cost(true)
             .finalize()
             .unwrap();
@@ -489,7 +498,8 @@ mod sync_test {
 
     #[test]
     fn test_cache_get_ttl() {
-        let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = Cache::builder(100, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
             .set_metrics(true)
             .set_ignore_internal_cost(true)
             .finalize()
@@ -533,11 +543,11 @@ mod sync_test {
 
     #[test]
     fn test_cache_blockon_clear() {
-        let c: Cache<u64, u64, TransparentKeyBuilder<u64>> =
-            Cache::builder(100, 10, TransparentKeyBuilder::default())
-                .set_ignore_internal_cost(true)
-                .finalize()
-                .unwrap();
+        let c: Cache<u64, u64, TransparentKeyBuilder<u64>> = Cache::builder(100, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
+            .set_ignore_internal_cost(true)
+            .finalize()
+            .unwrap();
 
         let (stop_tx, stop_rx) = bounded(1);
 
@@ -564,7 +574,8 @@ mod sync_test {
 
     #[test]
     fn test_cache_clear() {
-        let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = Cache::builder(100, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
             .set_metrics(true)
             .set_ignore_internal_cost(true)
             .finalize()
@@ -585,7 +596,8 @@ mod sync_test {
 
     #[test]
     fn test_cache_metrics_clear() {
-        let c = Cache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = Cache::builder(100, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
             .set_metrics(true)
             .finalize()
             .unwrap();
@@ -614,7 +626,7 @@ mod sync_test {
     fn test_cache_drop_updates() {
         fn test() {
             let set = Arc::new(Mutex::new(HashSet::new()));
-            let c = Cache::builder(100, 10, DefaultKeyBuilder::default())
+            let c = Cache::builder(100, 10)
                 .set_callback(TestCallbackDropUpdates { set: set.clone() })
                 .set_metrics(true)
                 // This is important. The race condition shows up only when the insert buf
@@ -652,7 +664,8 @@ mod sync_test {
         let mut clean_win = 0;
 
         for _ in 0..10 {
-            let c = Cache::builder(100, 1000, TransparentKeyBuilder::default())
+            let c = Cache::builder(100, 1000)
+                .set_key_builder(TransparentKeyBuilder::default())
                 .set_metrics(true)
                 .finalize()
                 .unwrap();
@@ -705,7 +718,7 @@ mod async_test {
     async fn new_test_cache<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>>(
         kh: KH,
     ) -> AsyncCache<K, V, KH> {
-        AsyncCache::new(100, 10, kh).unwrap()
+        AsyncCache::new_with_key_builder(100, 10, kh).unwrap()
     }
 
     async fn retry_set<C: Coster<u64>, U: UpdateValidator<u64>, CB: CacheCallback<u64>>(
@@ -730,7 +743,7 @@ mod async_test {
     #[tokio::test]
     async fn test_cache_builder() {
         let _: AsyncCache<u64, u64, DefaultKeyBuilder> =
-            AsyncCacheBuilder::new(100, 10, TransparentKeyBuilder::default())
+            AsyncCacheBuilder::new_with_key_builder(100, 10, TransparentKeyBuilder::default())
                 .set_coster(DefaultCoster::default())
                 .set_update_validator(DefaultUpdateValidator::default())
                 .set_callback(DefaultCacheCallback::default())
@@ -749,7 +762,7 @@ mod async_test {
         let ctr = Arc::new(AtomicU64::new(0));
 
         let c: AsyncCache<u64, u64, KHTest> =
-            AsyncCache::new(10, 1000, KHTest { ctr: ctr.clone() }).unwrap();
+            AsyncCache::new_with_key_builder(10, 1000, KHTest { ctr: ctr.clone() }).unwrap();
 
         assert!(c.insert(1, 1, 1).await);
         sleep(Duration::from_millis(10)).await;
@@ -769,7 +782,8 @@ mod async_test {
 
     #[tokio::test]
     async fn test_cache_update_max_cost() {
-        let c = AsyncCache::builder(10, 10, TransparentKeyBuilder::default())
+        let c = AsyncCache::builder(10, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
             .finalize()
             .unwrap();
 
@@ -794,7 +808,7 @@ mod async_test {
     #[tokio::test]
     async fn test_cache_multiple_close() {
         let c: AsyncCache<i64, i64, TransparentKeyBuilder<i64>> =
-            AsyncCache::new(100, 10, TransparentKeyBuilder::default()).unwrap();
+            AsyncCache::new_with_key_builder(100, 10, TransparentKeyBuilder::default()).unwrap();
 
         let _ = c.close().await;
         let _ = c.close().await;
@@ -847,7 +861,8 @@ mod async_test {
     #[tokio::test]
     async fn test_cache_process_items() {
         let cb = Arc::new(Mutex::new(HashSet::new()));
-        let c = AsyncCache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = AsyncCache::builder(100, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
             .set_coster(TestCoster::default())
             .set_callback(TestCallback::new(cb.clone()))
             .set_ignore_internal_cost(true)
@@ -882,7 +897,8 @@ mod async_test {
 
     #[tokio::test]
     async fn test_cache_get() {
-        let c = AsyncCache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = AsyncCache::builder(100, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
             .set_ignore_internal_cost(true)
             .set_metrics(true)
             .finalize()
@@ -907,7 +923,8 @@ mod async_test {
 
     #[tokio::test]
     async fn test_cache_set() {
-        let c = AsyncCache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = AsyncCache::builder(100, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
             .set_ignore_internal_cost(true)
             .set_metrics(true)
             .finalize()
@@ -929,7 +946,8 @@ mod async_test {
 
     #[tokio::test]
     async fn test_cache_internal_cost() {
-        let c = AsyncCache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = AsyncCache::builder(100, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
             .set_metrics(true)
             .finalize()
             .unwrap();
@@ -943,7 +961,8 @@ mod async_test {
 
     #[tokio::test]
     async fn test_recache_with_ttl() {
-        let c = AsyncCache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = AsyncCache::builder(100, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
             .set_ignore_internal_cost(true)
             .set_metrics(true)
             .finalize()
@@ -974,7 +993,8 @@ mod async_test {
     #[tokio::test]
     async fn test_cache_set_with_ttl() {
         let cb = Arc::new(Mutex::new(HashSet::new()));
-        let c = AsyncCache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = AsyncCache::builder(100, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
             .set_callback(TestCallback::new(cb.clone()))
             .set_ignore_internal_cost(true)
             .finalize()
@@ -1020,7 +1040,8 @@ mod async_test {
 
     #[tokio::test]
     async fn test_cache_remove_with_ttl() {
-        let c = AsyncCache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = AsyncCache::builder(100, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
             .set_ignore_internal_cost(true)
             .finalize()
             .unwrap();
@@ -1037,7 +1058,8 @@ mod async_test {
 
     #[tokio::test]
     async fn test_cache_get_ttl() {
-        let c = AsyncCache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = AsyncCache::builder(100, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
             .set_metrics(true)
             .set_ignore_internal_cost(true)
             .finalize()
@@ -1081,7 +1103,8 @@ mod async_test {
 
     #[tokio::test]
     async fn test_cache_clear() {
-        let c = AsyncCache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = AsyncCache::builder(100, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
             .set_metrics(true)
             .set_ignore_internal_cost(true)
             .finalize()
@@ -1102,7 +1125,8 @@ mod async_test {
 
     #[tokio::test]
     async fn test_cache_metrics_clear() {
-        let c = AsyncCache::builder(100, 10, TransparentKeyBuilder::default())
+        let c = AsyncCache::builder(100, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
             .set_metrics(true)
             .finalize()
             .unwrap();
@@ -1133,7 +1157,7 @@ mod async_test {
     async fn test_cache_drop_updates() {
         async fn test() {
             let set = Arc::new(Mutex::new(HashSet::new()));
-            let c = AsyncCache::builder(100, 10, DefaultKeyBuilder::default())
+            let c = AsyncCache::builder(100, 10)
                 .set_callback(TestCallbackDropUpdates { set: set.clone() })
                 .set_metrics(true)
                 // This is important. The race condition shows up only when the insert buf
@@ -1173,7 +1197,8 @@ mod async_test {
         let mut clean_win = 0;
 
         for _ in 0..10 {
-            let c = AsyncCache::builder(100, 1000, TransparentKeyBuilder::default())
+            let c = AsyncCache::builder(100, 1000)
+                .set_key_builder(TransparentKeyBuilder::default())
                 .set_metrics(true)
                 .finalize()
                 .unwrap();
@@ -1202,7 +1227,7 @@ mod async_test {
 
     #[tokio::test]
     async fn test_cache_max_cost() {
-        let c = AsyncCache::builder(12960, 1e6 as i64, DefaultKeyBuilder::default())
+        let c = AsyncCache::builder(12960, 1e6 as i64)
             .set_metrics(true)
             .finalize()
             .unwrap();
@@ -1263,11 +1288,11 @@ mod async_test {
 
     #[tokio::test]
     async fn test_cache_blockon_clear() {
-        let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> =
-            AsyncCache::builder(100, 10, TransparentKeyBuilder::default())
-                .set_ignore_internal_cost(true)
-                .finalize()
-                .unwrap();
+        let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(100, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
+            .set_ignore_internal_cost(true)
+            .finalize()
+            .unwrap();
 
         let (stop_tx, mut stop_rx) = channel(1);
 

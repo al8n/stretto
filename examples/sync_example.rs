@@ -1,8 +1,8 @@
 use std::time::Duration;
-use stretto::{Cache, DefaultKeyBuilder};
+use stretto::Cache;
 
 fn main() {
-    let c = Cache::new(12960, 1e6 as i64, DefaultKeyBuilder::default()).unwrap();
+    let c = Cache::new(12960, 1e6 as i64).unwrap();
 
     // set a value with a cost of 1
     c.insert("a", "a", 1);

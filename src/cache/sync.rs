@@ -6,10 +6,7 @@ use crate::sync::{
     UnboundedReceiver, UnboundedSender, WaitGroup,
 };
 use crate::ttl::{ExpirationMap, Time};
-use crate::{
-    metrics::MetricType, CacheCallback, CacheError, Coster, DefaultCacheCallback, DefaultCoster,
-    DefaultUpdateValidator, KeyBuilder, Metrics, UpdateValidator,
-};
+use crate::{metrics::MetricType, CacheCallback, CacheError, Coster, DefaultCacheCallback, DefaultCoster, DefaultUpdateValidator, KeyBuilder, Metrics, UpdateValidator, DefaultKeyBuilder};
 use crossbeam_channel::{tick, RecvError};
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
@@ -118,7 +115,7 @@ use std::time::Duration;
 pub struct CacheBuilder<
     K: Hash + Eq,
     V: Send + Sync + 'static,
-    KH: KeyBuilder<K>,
+    KH = DefaultKeyBuilder,
     C = DefaultCoster<V>,
     U = DefaultUpdateValidator<V>,
     CB = DefaultCacheCallback<V>,
@@ -127,14 +124,26 @@ pub struct CacheBuilder<
     inner: CacheBuilderCore<K, V, KH, C, U, CB, S>,
 }
 
+impl<K: Hash + Eq, V: Send + Sync + 'static>
+CacheBuilder<K, V>
+{
+    /// Create a new Builder
+    #[inline]
+    pub fn new(num_counters: usize, max_cost: i64) -> Self {
+        Self {
+            inner: CacheBuilderCore::new(num_counters, max_cost),
+        }
+    }
+}
+
 impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>>
     CacheBuilder<K, V, KH>
 {
     /// Create a new AsyncCacheBuilder
     #[inline]
-    pub fn new(num_counters: usize, max_cost: i64, kh: KH) -> Self {
+    pub fn new_with_key_builder(num_counters: usize, max_cost: i64, kh: KH) -> Self {
         Self {
-            inner: CacheBuilderCore::new(num_counters, max_cost, kh),
+            inner: CacheBuilderCore::new_with_key_builder(num_counters, max_cost, kh),
         }
     }
 }
@@ -333,7 +342,7 @@ where
 pub struct Cache<
     K,
     V,
-    KH,
+    KH = DefaultKeyBuilder,
     C = DefaultCoster<V>,
     U = DefaultUpdateValidator<V>,
     CB = DefaultCacheCallback<V>,
@@ -341,7 +350,6 @@ pub struct Cache<
 > where
     K: Hash + Eq,
     V: Send + Sync + 'static,
-    KH: KeyBuilder<K>,
 {
     /// store is the central concurrent hashmap where key-value items are stored.
     pub(crate) store: Arc<ShardedMap<V, U, S, S>>,

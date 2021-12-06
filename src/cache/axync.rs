@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use crate::cache::builder::CacheBuilderCore;
-use crate::{metrics::MetricType, CacheCallback, CacheError, Coster, DefaultCacheCallback, DefaultCoster, DefaultUpdateValidator, KeyBuilder, Metrics, UpdateValidator};
+use crate::{metrics::MetricType, CacheCallback, CacheError, Coster, DefaultCacheCallback, DefaultCoster, DefaultUpdateValidator, KeyBuilder, Metrics, UpdateValidator, DefaultKeyBuilder};
 use crate::axync::{bounded, Receiver, Sender, stop_channel, unbounded, UnboundedReceiver, UnboundedSender, WaitGroup, select, JoinHandle, sleep, Instant, spawn};
 use crate::policy::AsyncLFUPolicy;
 use crate::store::ShardedMap;
@@ -112,7 +112,7 @@ use crate::ttl::{ExpirationMap, Time};
 pub struct AsyncCacheBuilder<
     K: Hash + Eq,
     V: Send + Sync + 'static,
-    KH: KeyBuilder<K>,
+    KH = DefaultKeyBuilder,
     C = DefaultCoster<V>,
     U = DefaultUpdateValidator<V>,
     CB = DefaultCacheCallback<V>,
@@ -121,14 +121,26 @@ pub struct AsyncCacheBuilder<
     inner: CacheBuilderCore<K, V, KH, C, U, CB, S>,
 }
 
+impl<K: Hash + Eq, V: Send + Sync + 'static>
+AsyncCacheBuilder<K, V>
+{
+    /// Create a new AsyncCacheBuilder
+    #[inline]
+    pub fn new(num_counters: usize, max_cost: i64) -> Self {
+        Self {
+            inner: CacheBuilderCore::new(num_counters, max_cost),
+        }
+    }
+}
+
 impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>>
 AsyncCacheBuilder<K, V, KH>
 {
     /// Create a new AsyncCacheBuilder
     #[inline]
-    pub fn new(num_counters: usize, max_cost: i64, kh: KH) -> Self {
+    pub fn new_with_key_builder(num_counters: usize, max_cost: i64, kh: KH) -> Self {
         Self {
-            inner: CacheBuilderCore::new(num_counters, max_cost, kh),
+            inner: CacheBuilderCore::new_with_key_builder(num_counters, max_cost, kh),
         }
     }
 }
@@ -332,7 +344,7 @@ impl<V> Item<V> {
 pub struct AsyncCache<
     K,
     V,
-    KH,
+    KH = DefaultKeyBuilder,
     C = DefaultCoster<V>,
     U = DefaultUpdateValidator<V>,
     CB = DefaultCacheCallback<V>,

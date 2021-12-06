@@ -61,7 +61,7 @@ macro_rules! impl_builder {
             /// Set whether record the metrics or not.
             ///
             /// Metrics is true when you want real-time logging of a variety of stats.
-            /// The reason this is a CacheBuilderCore flag is because there's a 10% throughput performance overhead.
+            /// The reason this is a Builder flag is because there's a 10% throughput performance overhead.
             #[inline]
             pub fn set_metrics(self, val: bool) -> Self {
                 Self {
@@ -71,7 +71,7 @@ macro_rules! impl_builder {
 
             /// Set whether ignore the internal cost or not.
             ///
-            /// By default, when [`insert`] a value in the Cache, there will always 56 for internal cost,
+            /// By default, when `insert` a value in the Cache, there will always 56 for internal cost,
             /// because the size of stored item in Cache is 56(excluding the size of value).
             /// Set it to true to ignore the internal cost.
             #[inline]
@@ -117,15 +117,17 @@ macro_rules! impl_builder {
 
             /// Set the coster for the Cache.
             ///
-            /// [`Coster`] is a trait you can pass to the [`CacheBuilderCore`] in order to evaluate
-            /// item cost at runtime, and only for the [`insert`] calls that aren't dropped (this is
+            /// [`Coster`] is a trait you can pass to the `Builder` in order to evaluate
+            /// item cost at runtime, and only for the `insert` calls that aren't dropped (this is
             /// useful if calculating item cost is particularly expensive, and you don't want to
             /// waste time on items that will be dropped anyways).
             ///
             /// To signal to Stretto that you'd like to use this [`Coster`] trait:
             ///
             /// 1. Set the [`Coster`] field to your own [`Coster`] implementation.
-            /// 2. When calling [`insert`] for new items or item updates, use a cost of 0.
+            /// 2. When calling `insert` for new items or item updates, use a cost of 0.
+            ///
+            /// [`Coster`]: trait.Coster.html
             #[inline]
             pub fn set_coster<NC: Coster<V>>(self, coster: NC) -> $ty<K, V, KH, NC, U, CB, S> {
                 $ty {
@@ -138,6 +140,8 @@ macro_rules! impl_builder {
             /// By default, the Cache will always update the value if the value already exists in the cache.
             /// [`UpdateValidator`] is a trait to support customized update policy (check if the value should be updated
             /// if the value already exists in the cache).
+            ///
+            /// [`UpdateValidator`]: trait.UpdateValidator.html
             #[inline]
             pub fn set_update_validator<NU: UpdateValidator<V>>(
                 self,
@@ -151,6 +155,8 @@ macro_rules! impl_builder {
             /// Set the callbacks for the Cache.
             ///
             /// [`CacheCallback`] is for customize some extra operations on values when related event happens.
+            ///
+            /// [`CacheCallback`]: trait.CacheCallback.html
             #[inline]
             pub fn set_callback<NCB: CacheCallback<V>>(
                 self,
@@ -181,31 +187,40 @@ macro_rules! impl_cache {
         use crate::store::UpdateResult;
         use crate::{ValueRef, ValueRefMut};
 
-        impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>> $cache<K, V, KH> {
+        impl<K: Hash + Eq, V: Send + Sync + 'static> $cache<K, V> {
             /// Returns a Cache instance with default configruations.
             #[inline]
-            pub fn new(num_counters: usize, max_cost: i64, index: KH) -> Result<Self, CacheError> {
-                $builder::new(num_counters, max_cost, index).finalize()
+            pub fn new(num_counters: usize, max_cost: i64) -> Result<Self, CacheError> {
+                $builder::new(num_counters, max_cost).finalize()
             }
 
-            /// Returns a [`CacheBuilder`].
-            ///
-            /// [`CacheBuilder`]: struct.CacheBuilder.html
+            /// Returns a Builder.
             #[inline]
             pub fn builder(
                 num_counters: usize,
                 max_cost: i64,
-                index: KH,
             ) -> $builder<
                 K,
                 V,
-                KH,
+                DefaultKeyBuilder,
                 DefaultCoster<V>,
                 DefaultUpdateValidator<V>,
                 DefaultCacheCallback<V>,
                 RandomState,
             > {
-                $builder::new(num_counters, max_cost, index)
+                $builder::new(num_counters, max_cost)
+            }
+        }
+
+        impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>> $cache<K, V, KH> {
+            /// Returns a Cache instance with default configruations.
+            #[inline]
+            pub fn new_with_key_builder(
+                num_counters: usize,
+                max_cost: i64,
+                index: KH,
+            ) -> Result<Self, CacheError> {
+                $builder::new_with_key_builder(num_counters, max_cost, index).finalize()
             }
         }
 
