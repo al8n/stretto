@@ -1,6 +1,6 @@
 [package]
 name = "stretto"
-version = "0.2.2"
+version = "0.2.3"
 authors = ["Al Liu <scygliu1@gmail.com>"]
 description = "Stretto is a high performance thread-safe memory-bound Rust cache."
 homepage = "https://github.com/al8n/stretto"
@@ -35,7 +35,7 @@ edition = "2021"
 [features]
 default = ["sync"]
 full = ["sync", "async", "serilization"]
-async = ["tokio/rt-multi-thread", "tokio/test-util", "tokio/macros", "tokio/parking_lot"]
+async = ["tokio/default", "tokio/macros", "tokio/parking_lot"]
 sync = ["crossbeam-channel"]
 serilization = ["serde", "serde/derive", "serde_json/default"]
 
@@ -54,3 +54,4 @@ wg = "0.2.0"
 [dev-dependencies]
 serde = {version = "1", features = ["serde_derive"]}
 serde_json = "1"
+tokio = {version = "1.14.0", features = ["rt-multi-thread", "test-util"]}

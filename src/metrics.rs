@@ -1,11 +1,11 @@
-use crate::{histogram::Histogram, utils::vec_to_array};
+use crate::histogram::Histogram;
+use crate::utils::vec_to_array;
 use std::collections::BTreeMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 const HISTOGRAM_BOUND_SIZE: usize = 16;
-const HISTOGRAM_COUNT_PER_BUCKET_SIZE: usize = HISTOGRAM_BOUND_SIZE + 1;
 
 const NUMS_OF_METRIC_TYPE: usize = 11;
 const SIZE_FOR_EACH_TYPE: usize = 256;
@@ -228,9 +228,7 @@ impl Metrics {
 
     /// Returns the histogram data of this metrics
     #[inline]
-    pub fn life_expectancy_seconds(
-        &self,
-    ) -> Option<Histogram<HISTOGRAM_BOUND_SIZE, HISTOGRAM_COUNT_PER_BUCKET_SIZE>> {
+    pub fn life_expectancy_seconds(&self) -> Option<Histogram> {
         self.map(|m| m.life_expectancy_seconds())
     }
 
@@ -267,7 +265,7 @@ pub struct MetricsInner {
     all: Arc<BTreeMap<MetricType, [AtomicU64; SIZE_FOR_EACH_TYPE]>>,
 
     /// tracks the life expectancy of a key
-    life: Histogram<HISTOGRAM_BOUND_SIZE, HISTOGRAM_COUNT_PER_BUCKET_SIZE>,
+    life: Histogram,
 }
 
 impl Default for MetricsInner {
@@ -279,9 +277,7 @@ impl Default for MetricsInner {
 impl MetricsInner {
     #[inline]
     pub fn new() -> Self {
-        let h = Histogram::<HISTOGRAM_BOUND_SIZE, HISTOGRAM_COUNT_PER_BUCKET_SIZE>::new(
-            new_histogram_bound(),
-        );
+        let h = Histogram::new(new_histogram_bound());
 
         let map: BTreeMap<MetricType, [AtomicU64; SIZE_FOR_EACH_TYPE]> = METRIC_TYPES_ARRAY
             .iter()
@@ -383,9 +379,7 @@ impl MetricsInner {
 
     /// Returns the histogram data of this metrics
     #[inline]
-    pub fn life_expectancy_seconds(
-        &self,
-    ) -> Histogram<HISTOGRAM_BOUND_SIZE, HISTOGRAM_COUNT_PER_BUCKET_SIZE> {
+    pub fn life_expectancy_seconds(&self) -> Histogram {
         self.life.clone()
     }
 

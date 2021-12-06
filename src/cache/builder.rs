@@ -69,9 +69,7 @@ pub struct CacheBuilderCore<
     marker_v: PhantomData<fn(V)>,
 }
 
-impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>>
-    CacheBuilderCore<K, V, KH>
-{
+impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>> CacheBuilderCore<K, V, KH> {
     /// Create a new CacheBuilderCore
     #[inline]
     pub fn new(num_counters: usize, max_cost: i64, index: KH) -> Self {

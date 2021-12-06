@@ -243,6 +243,7 @@ cfg_sync!(
 );
 
 pub use error::CacheError;
+pub use histogram::Histogram;
 pub use metrics::{MetricType, Metrics};
 pub use utils::{ValueRef, ValueRefMut};
 
@@ -537,16 +538,4 @@ impl_transparent_key! {
     i32,
     i64,
     isize
-}
-
-#[cfg(test)]
-mod test {
-    use crate::ttl::Time;
-    use crate::Item;
-
-    #[test]
-    fn test_item() {
-        let item = Item::new(0, 0, 0, Some(0), Time::now());
-        eprintln!("{:?}", item.clone())
-    }
 }

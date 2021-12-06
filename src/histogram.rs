@@ -1,4 +1,3 @@
-use crate::utils::vec_to_array;
 use atomic::Atomic;
 use std::fmt::{Display, Formatter};
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -11,25 +10,28 @@ const MAXI64: i64 = i64::MAX;
 ///
 /// Histogram promises thread-safe.
 #[derive(Debug)]
-pub struct Histogram<const BS: usize, const CPB: usize> {
-    bounds: Arc<[Atomic<f64>; BS]>,
+pub struct Histogram {
+    bounds: Arc<Box<[Atomic<f64>]>>,
     count: AtomicI64,
-    count_per_bucket: Arc<[AtomicI64; CPB]>,
+    count_per_bucket: Arc<Box<[AtomicI64]>>,
     min: AtomicI64,
     max: AtomicI64,
     sum: AtomicI64,
 }
 
-impl<const BS: usize, const CPB: usize> Histogram<BS, CPB> {
+impl Histogram {
     /// Returns a new instance of HistogramData with properly initialized fields.
     pub fn new(bounds: Vec<f64>) -> Self {
-        let bounds: [Atomic<f64>; BS] =
-            vec_to_array::<Atomic<f64>, BS>(bounds.iter().map(|val| Atomic::new(*val)).collect());
-
+        let bounds = bounds
+            .into_iter()
+            .map(|v| Atomic::new(v))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let cpb = bounds.len() + 1;
         Histogram {
             bounds: Arc::new(bounds),
             count: AtomicI64::new(0),
-            count_per_bucket: Arc::new(init_cpb::<CPB>()),
+            count_per_bucket: Arc::new(init_cpb(cpb)),
             min: AtomicI64::new(MAXI64),
             max: AtomicI64::new(0),
             sum: AtomicI64::new(0),
@@ -128,7 +130,7 @@ impl<const BS: usize, const CPB: usize> Histogram<BS, CPB> {
     }
 }
 
-impl<const BS: usize, const CPB: usize> Display for Histogram<BS, CPB> {
+impl Display for Histogram {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let mut buf = Vec::<u8>::new();
         buf.extend("\n -- Histogram:\n".as_bytes());
@@ -179,7 +181,7 @@ impl<const BS: usize, const CPB: usize> Display for Histogram<BS, CPB> {
     }
 }
 
-impl<const BS: usize, const CPB: usize> Clone for Histogram<BS, CPB> {
+impl Clone for Histogram {
     fn clone(&self) -> Self {
         Self {
             bounds: self.bounds.clone(),
@@ -192,8 +194,12 @@ impl<const BS: usize, const CPB: usize> Clone for Histogram<BS, CPB> {
     }
 }
 
-fn init_cpb<const N: usize>() -> [AtomicI64; N] {
-    vec_to_array::<AtomicI64, N>(vec![0; N].iter().map(|_| AtomicI64::new(0)).collect())
+fn init_cpb(num: usize) -> Box<[AtomicI64]> {
+    vec![0; num]
+        .into_iter()
+        .map(|v| AtomicI64::new(v))
+        .collect::<Vec<_>>()
+        .into_boxed_slice()
 }
 
 #[cfg(test)]
@@ -209,11 +215,7 @@ mod test {
         expect: f64,
     }
 
-    fn init_histogram<const BS: usize, const CPB: usize>(
-        lb: f64,
-        ub: f64,
-        step: f64,
-    ) -> Histogram<BS, CPB> {
+    fn init_histogram(lb: f64, ub: f64, step: f64) -> Histogram {
         let size = ((ub - lb) / step).ceil() as usize;
         let mut bounds = vec![0f64; size + 1];
 
@@ -233,7 +235,7 @@ mod test {
     }
 
     fn assert_histogram_percentiles(ps: Vec<PercentileTestCase>) {
-        let h = init_histogram::<122, 123>(32.0, 514.0, 4.0);
+        let h = init_histogram(32.0, 514.0, 4.0);
 
         ps.iter().for_each(|case| {
             (case.lower_bound..=case.upper_bound)
@@ -256,7 +258,7 @@ mod test {
 
     #[test]
     fn test_mean() {
-        let h = init_histogram::<5, 6>(0.0, 16.0, 4.0);
+        let h = init_histogram(0.0, 16.0, 4.0);
         (0..=16).filter(|x| *x % 4 == 0).for_each(|v| {
             h.update(v);
         });
@@ -296,7 +298,7 @@ mod test {
 
     #[test]
     fn test_fmt() {
-        let h = init_histogram::<5, 6>(0.0, 16.0, 4.0);
+        let h = init_histogram(0.0, 16.0, 4.0);
         (0..=16).filter(|x| *x % 4 == 0).for_each(|v| {
             h.update(v);
         });
