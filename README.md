@@ -66,38 +66,37 @@ stretto = "0.2"
 or
 ```toml 
 [dependencies]
-stretto = { version = "0.2", features = ["sync"] }
+stretto = { version = "0.3", features = ["sync"] }
 ```
 
 
 - Use AsyncCache
 ```toml 
 [dependencies]
-stretto = { version = "0.2", features = ["async"] }
+stretto = { version = "0.3", features = ["async"] }
 ```
 
 - Use both Cache and AsyncCache
 ```toml 
 [dependencies]
-stretto = { version = "0.2", features = ["full"] }
+stretto = { version = "0.3", features = ["full"] }
 ```
 
 ## Usage
 ### Example
 #### Sync
 ```rust
-use stretto::{Cache, DefaultKeyBuilder};
 use std::time::Duration;
+use stretto::Cache;
 
 fn main() {
-    let c = Cache::new(12960, 1e6 as i64, DefaultKeyBuilder::default()).unwrap();
+    let c = Cache::new(12960, 1e6 as i64).unwrap();
 
     // set a value with a cost of 1
     c.insert("a", "a", 1);
-
     // set a value with a cost of 1 and ttl
     c.insert_with_ttl("b", "b", 1, Duration::from_secs(3));
-    
+
     // wait for value to pass through buffers
     c.wait().unwrap();
 
@@ -114,7 +113,7 @@ fn main() {
         let mut v = c.get_mut(&"a").unwrap();
         v.write("aa");
         assert_eq!(v.value(), &"aa");
-        // release the value 
+        // release the value
     }
 
     // if you just want to do one operation
@@ -135,23 +134,22 @@ fn main() {
 
 #### Async
 ```rust
-use stretto::{AsyncCache, DefaultKeyBuilder};
 use std::time::Duration;
+use stretto::AsyncCache;
 
 #[tokio::main]
 async fn main() {
-    let c = AsyncCache::new(12960, 1e6 as i64, DefaultKeyBuilder::default()).unwrap();
+    let c: AsyncCache<&str, &str> = AsyncCache::new(12960, 1e6 as i64).unwrap();
 
     // set a value with a cost of 1
     c.insert("a", "a", 1).await;
 
     // set a value with a cost of 1 and ttl
     c.insert_with_ttl("b", "b", 1, Duration::from_secs(3)).await;
-    
+
     // wait for value to pass through buffers
     c.wait().await.unwrap();
 
-    
     // when we get the value, we will get a ValueRef, which contains a RwLockReadGuard
     // so when we finish use this value, we must release the ValueRef
     let v = c.get(&"a").unwrap();
@@ -168,7 +166,6 @@ async fn main() {
         assert_eq!(v.value(), &"aa");
         // release the value
     }
-    
 
     // if you just want to do one operation
     let v = c.get_mut(&"a").unwrap();
