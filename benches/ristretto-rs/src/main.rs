@@ -49,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let content = fs::read(Path::new("mock.json"))?;
     let dataset: Dataset = serde_json::from_slice(content.as_slice())?;
 
-    let c = Cache::builder(12960, 1e6 as i64, KH::default())
+    let c = Cache::builder(12960, 1e6 as i64)
         .set_metrics(true)
         .finalize()
         .unwrap();
@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             hash: kv.hash,
             conflict: kv.conflict,
         };
-        if let None = c.get(&kc) {
+        if c.get(&kc).is_none() {
             c.insert(kc, kv.val, kv.cost);
         }
     }
@@ -82,7 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let content = fs::read(Path::new("mock.json")).await?;
     let dataset: Dataset = serde_json::from_slice(content.as_slice())?;
 
-    let c = AsyncCache::builder(12960, 1e6 as i64, KH::default())
+    let c = AsyncCache::builder(12960, 1e6 as i64)
         .set_metrics(true)
         .finalize()
         .unwrap();
@@ -93,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             hash: kv.hash,
             conflict: kv.conflict,
         };
-        if let None = c.get(&kc) {
+        if c.get(&kc).is_none() {
             c.insert(kc, kv.val, kv.cost).await;
         }
     }
