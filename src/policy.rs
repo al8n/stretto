@@ -72,6 +72,7 @@ macro_rules! impl_policy {
                 // TODO: perhaps we should use a min heap here. Right now our time
                 // complexity is N for finding the min. Min heap should bring it down to
                 // O(lg N). We try to use std::collections::BinaryHeap, but it is very slower.
+                // https://github.com/al8n/stretto/pull/6/commits/c3a2a549ad4b033651470774224c583e2322d08a
                 let mut sample = Vec::with_capacity(DEFAULT_SAMPLES);
                 let mut victims = Vec::new();
 
