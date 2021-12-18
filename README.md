@@ -61,7 +61,7 @@ English | [简体中文](README-zh_CN.md)
 - Use Cache.
 ```toml
 [dependencies]
-stretto = "0.2"
+stretto = "0.3"
 ```
 or
 ```toml 

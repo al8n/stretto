@@ -1,6 +1,6 @@
 [package]
 name = "stretto"
-version = "0.3.1"
+version = "0.3.2"
 authors = ["Al Liu <scygliu1@gmail.com>"]
 description = "Stretto is a high performance thread-safe memory-bound Rust cache."
 homepage = "https://github.com/al8n/stretto"

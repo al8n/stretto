@@ -9,7 +9,7 @@ use crate::{
 };
 use parking_lot::Mutex;
 use std::{
-    collections::{hash_map::RandomState, BinaryHeap, HashMap},
+    collections::{hash_map::RandomState, HashMap},
     hash::BuildHasher,
     sync::{
         atomic::{AtomicI64, Ordering},
@@ -24,8 +24,7 @@ const DEFAULT_SAMPLES: usize = 5;
 macro_rules! impl_policy {
     ($policy: ident) => {
         use crate::policy::DEFAULT_SAMPLES;
-        use crate::policy::{PolicyPair, PolicyPairOrd};
-        use std::collections::BinaryHeap;
+        use crate::policy::PolicyPair;
 
         impl $policy {
             #[inline]
@@ -70,47 +69,54 @@ macro_rules! impl_policy {
                 // inc_hits is the hit count for the incoming item
                 let inc_hits = inner.admit.estimate(key);
                 // sample is the eviction candidate pool to be filled via random sampling.
-                let mut sample = BinaryHeap::with_capacity(DEFAULT_SAMPLES);
+                // TODO: perhaps we should use a min heap here. Right now our time
+                // complexity is N for finding the min. Min heap should bring it down to
+                // O(lg N). We try to use std::collections::BinaryHeap, but it is very slower.
+                let mut sample = Vec::with_capacity(DEFAULT_SAMPLES);
                 let mut victims = Vec::new();
 
                 // Delete victims until there's enough space or a minKey is found that has
                 // more hits than incoming item.
                 while room < 0 {
                     // fill up empty slots in sample
-                    sample = inner.fill_sample(sample);
+                    sample = inner.costs.fill_sample(sample);
 
-                    // find minimally used key
-                    // note that this removes from the heap as well
-                    match sample.pop() {
-                        Some(policy_pair_ord) => {
-                            let PolicyPairOrd {
-                                policy_pair,
-                                hits: min_hits,
-                            } = policy_pair_ord;
-                            let PolicyPair {
-                                key: min_key,
-                                cost: min_cost,
-                            } = policy_pair;
-                            // If the incoming item isn't worth keeping in the policy, reject.
-                            if inc_hits < min_hits {
-                                self.metrics.add(MetricType::RejectSets, key, 1);
-                                return (Some(victims), false);
-                            }
+                    // find minimally used item in sample
+                    let (mut min_key, mut min_hits, mut min_id, mut min_cost) =
+                        (0u64, i64::MAX, 0, 0i64);
 
-                            // Delete the victim from metadata.
-                            inner.costs.remove(&min_key).map(|cost| {
-                                self.metrics
-                                    .add(MetricType::CostEvict, min_key, cost as u64);
-                                self.metrics.add(MetricType::KeyEvict, min_key, 1);
-                            });
-
-                            // store victim in evicted victims slice
-                            victims.push(PolicyPair::new(min_key, min_cost));
-
-                            room = inner.costs.room_left(cost);
+                    sample.iter().enumerate().for_each(|(idx, pair)| {
+                        // Look up hit count for sample key.
+                        let hits = inner.admit.estimate(pair.key);
+                        if hits < min_hits {
+                            min_key = pair.key;
+                            min_hits = hits;
+                            min_id = idx;
+                            min_cost = pair.cost;
                         }
-                        _ => {}
+                    });
+
+                    // If the incoming item isn't worth keeping in the policy, reject.
+                    if inc_hits < min_hits {
+                        self.metrics.add(MetricType::RejectSets, key, 1);
+                        return (Some(victims), false);
                     }
+
+                    // Delete the victim from metadata.
+                    inner.costs.remove(&min_key).map(|cost| {
+                        self.metrics
+                            .add(MetricType::CostEvict, min_key, cost as u64);
+                        self.metrics.add(MetricType::KeyEvict, min_key, 1);
+                    });
+
+                    // Delete the victim from sample.
+                    let new_len = sample.len() - 1;
+                    sample[min_id] = sample[new_len];
+                    sample.drain(new_len..);
+                    // store victim in evicted victims slice
+                    victims.push(PolicyPair::new(min_key, min_cost));
+
+                    room = inner.costs.room_left(cost);
                 }
 
                 inner.costs.increment(key, cost);
@@ -191,7 +197,7 @@ pub(crate) struct PolicyInner<S = RandomState> {
     costs: SampledLFU<S>,
 }
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, Default)]
 pub(crate) struct PolicyPair {
     pub(crate) key: u64,
     pub(crate) cost: i64,
@@ -213,24 +219,6 @@ impl From<(u64, i64)> for PolicyPair {
     }
 }
 
-#[derive(PartialEq, Eq, PartialOrd)]
-pub(crate) struct PolicyPairOrd {
-    pub(crate) policy_pair: PolicyPair,
-    pub(crate) hits: i64,
-}
-
-impl PolicyPairOrd {
-    fn new(policy_pair: PolicyPair, hits: i64) -> PolicyPairOrd {
-        PolicyPairOrd { policy_pair, hits }
-    }
-}
-
-impl Ord for PolicyPairOrd {
-    fn cmp(&self, other: &PolicyPairOrd) -> std::cmp::Ordering {
-        self.hits.cmp(&other.hits)
-    }
-}
-
 impl<S: BuildHasher + Clone + 'static> PolicyInner<S> {
     #[inline]
     fn set_metrics(&mut self, metrics: Arc<Metrics>) {
@@ -244,18 +232,6 @@ impl<S: BuildHasher + Clone + 'static> PolicyInner<S> {
             costs: SampledLFU::with_hasher(max_cost, hasher),
         };
         Ok(Arc::new(Mutex::new(this)))
-    }
-
-    fn fill_sample(&self, mut pairs: BinaryHeap<PolicyPairOrd>) -> BinaryHeap<PolicyPairOrd> {
-        if pairs.len() >= self.costs.samples {
-            pairs
-        } else {
-            for (k, v) in self.costs.key_costs.iter() {
-                let hits = self.admit.estimate(*k);
-                pairs.push(PolicyPairOrd::new(PolicyPair::new(*k, *v), hits));
-            }
-            pairs
-        }
     }
 }
 

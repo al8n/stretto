@@ -50,6 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dataset: Dataset = serde_json::from_slice(content.as_slice())?;
 
     let c = Cache::builder(12960, 1e6 as i64)
+        .set_key_builder(KH::default())
         .set_metrics(true)
         .finalize()
         .unwrap();
@@ -83,6 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dataset: Dataset = serde_json::from_slice(content.as_slice())?;
 
     let c = AsyncCache::builder(12960, 1e6 as i64)
+        .set_key_builder(KH::default())
         .set_metrics(true)
         .finalize()
         .unwrap();
