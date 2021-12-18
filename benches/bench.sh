@@ -2,6 +2,7 @@
 
 set -ue
 
+rm -rf bin
 mkdir -p bin
 
 cd mock
