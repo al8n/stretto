@@ -39,47 +39,51 @@ A high performance thread-safe memory-bound Rust cache.
 
 ## Table of Contents
 
-* [Usage](#Usage)
-    * [Installation](#Installation)
-    * [Example](#Example)
-        * [Sync](#Sync)
-        * [Async](#Async)
-    * [Config](#Config)
-        * [num_counters](#num_counters)
-        * [max_cost](#max_cost)
-        * [key_builder](#key_builder)
-        * [buffer_size](#buffer_size)
-        * [metrics](#metrics)
-        * [ignore_internal_cost](#ignore_internal_cost)
-        * [cleanup_duration](#cleanup_duration)
-        * [update_validator](#update_validator)
-        * [callback](#callback)
-        * [coster](#coster)
-        * [hasher](#hasher)
+- [Features](#features)
+- [Table of Contents](#table-of-contents)
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Example](#example)
+    - [Sync](#sync)
+    - [Async](#async)
+  - [Config](#config)
+    - [num_counters](#num_counters)
+    - [max_cost](#max_cost)
+    - [key_builder](#key_builder)
+    - [buffer_size](#buffer_size)
+    - [metrics](#metrics)
+    - [ignore_internal_cost](#ignore_internal_cost)
+    - [cleanup_duration](#cleanup_duration)
+    - [update_validator](#update_validator)
+    - [callback](#callback)
+    - [coster](#coster)
+    - [hasher](#hasher)
+- [Acknowledgements](#acknowledgements)
+- [License](#license)
 
 ## Installation
 - Use Cache.
 ```toml
 [dependencies]
-stretto = "0.2"
+stretto = "0.4"
 ```
 or
 ```toml 
 [dependencies]
-stretto = { version = "0.2", features = ["sync"] }
+stretto = { version = "0.4", features = ["sync"] }
 ```
 
 
 - Use AsyncCache
 ```toml 
 [dependencies]
-stretto = { version = "0.2", features = ["async"] }
+stretto = { version = "0.4", features = ["async"] }
 ```
 
 - Use both Cache and AsyncCache
 ```toml 
 [dependencies]
-stretto = { version = "0.2", features = ["full"] }
+stretto = { version = "0.4", features = ["full"] }
 ```
 
 ## Usage
