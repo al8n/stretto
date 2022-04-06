@@ -405,6 +405,11 @@ impl<K, V, KH, C, U, CB, S> AsyncCache<K, V, KH, C, U, CB, S>
         self.insert_with_ttl(key, val, cost, Duration::ZERO).await
     }
 
+    /// `try_insert` is the non-panicking version of [`insert`](#method.insert)
+    pub async fn try_insert(&self, key: K, val: V, cost: i64) -> Result<bool, CacheError> {
+        self.try_insert_with_ttl(key, val, cost, Duration::ZERO).await
+    }
+
     /// `insert_with_ttl` works like Set but adds a key-value pair to the cache that will expire
     /// after the specified TTL (time to live) has passed. A zero value means the value never
     /// expires, which is identical to calling `insert`.
@@ -412,10 +417,20 @@ impl<K, V, KH, C, U, CB, S> AsyncCache<K, V, KH, C, U, CB, S>
         self.insert_in(key, val, cost, ttl, false).await
     }
 
+    /// `try_insert_with_ttl` is the non-panicking version of [`insert_with_ttl`](#method.insert_with_ttl)
+    pub async fn try_insert_with_ttl(&self, key: K, val: V, cost: i64, ttl: Duration) -> Result<bool, CacheError> {
+        self.try_insert_in(key, val, cost, ttl, false).await
+    }
+
     /// `insert_if_present` is like `insert`, but only updates the value of an existing key. It
     /// does NOT add the key to cache if it's absent.
     pub async fn insert_if_present(&self, key: K, val: V, cost: i64) -> bool {
         self.insert_in(key, val, cost, Duration::ZERO, true).await
+    }
+
+    /// `try_insert_if_present` is the non-panicking version of [`insert_if_present`](#method.insert_if_present)
+    pub async fn try_insert_if_present(&self, key: K, val: V, cost: i64) -> Result<bool, CacheError> {
+        self.try_insert_in(key, val, cost, Duration::ZERO, true).await
     }
 
     /// wait until the previous operations finished.
@@ -471,11 +486,16 @@ impl<K, V, KH, C, U, CB, S> AsyncCache<K, V, KH, C, U, CB, S>
 
     #[inline]
     async fn insert_in(&self, key: K, val: V, cost: i64, ttl: Duration, only_update: bool) -> bool {
+        self.try_insert_in(key, val, cost, ttl, only_update).await.unwrap()
+    }
+
+    #[inline]
+    async fn try_insert_in(&self, key: K, val: V, cost: i64, ttl: Duration, only_update: bool) -> Result<bool, CacheError> {
         if self.is_closed.load(Ordering::SeqCst) {
-            return false;
+            return Ok(false);
         }
 
-        if let Some((index, item)) = self.update(key, val, cost, ttl, only_update) {
+        if let Some((index, item)) = self.try_update(key, val, cost, ttl, only_update)? {
             let is_update = item.is_update();
             // Attempt to send item to policy.
             select! {
@@ -484,26 +504,26 @@ impl<K, V, KH, C, U, CB, S> AsyncCache<K, V, KH, C, U, CB, S>
                             // Return true if this was an update operation since we've already
                             // updated the store. For all the other operations (set/delete), we
                             // return false which means the item was not inserted.
-                            true
+                            Ok(true)
                         } else {
                             self.metrics.add(MetricType::DropSets, index, 1);
-                            false
+                            Ok(false)
                         }
-                    }, |_| true),
+                    }, |_| Ok(true)),
                     else => {
                         if is_update {
                             // Return true if this was an update operation since we've already
                             // updated the store. For all the other operations (set/delete), we
                             // return false which means the item was not inserted.
-                            true
+                            Ok(true)
                         } else {
                             self.metrics.add(MetricType::DropSets, index, 1);
-                            false
+                            Ok(false)
                         }
                     }
                 }
         } else {
-            false
+            Ok(false)
         }
     }
 }

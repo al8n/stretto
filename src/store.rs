@@ -3,7 +3,7 @@ use crate::policy::AsyncLFUPolicy;
 use crate::policy::LFUPolicy;
 use crate::ttl::{ExpirationMap, Time};
 use crate::utils::{change_lifetime_const, SharedValue, ValueRef, ValueRefMut};
-use crate::{DefaultUpdateValidator, Item as CrateItem, UpdateValidator};
+use crate::{CacheError, DefaultUpdateValidator, Item as CrateItem, UpdateValidator};
 use parking_lot::RwLock;
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
@@ -143,7 +143,13 @@ impl<
         }
     }
 
-    pub fn insert(&self, key: u64, val: V, conflict: u64, expiration: Time) {
+    pub fn try_insert(
+        &self,
+        key: u64,
+        val: V,
+        conflict: u64,
+        expiration: Time,
+    ) -> Result<(), CacheError> {
         let mut data = self.shards[(key as usize) % NUM_OF_SHARDS].write();
 
         match data.get(&key) {
@@ -156,14 +162,15 @@ impl<
                 // The item existed already. We need to check the conflict key and reject the
                 // update if they do not match. Only after that the expiration map is updated.
                 if conflict != 0 && (conflict != sitem.conflict) {
-                    return;
+                    return Ok(());
                 }
 
                 if !self.validator.should_update(sitem.value.get(), &val) {
-                    return;
+                    return Ok(());
                 }
 
-                self.em.update(key, conflict, sitem.expiration, expiration);
+                self.em
+                    .try_update(key, conflict, sitem.expiration, expiration)?;
             }
         }
 
@@ -176,27 +183,44 @@ impl<
                 expiration,
             },
         );
+
+        Ok(())
     }
 
-    pub fn update(&self, key: u64, mut val: V, conflict: u64, expiration: Time) -> UpdateResult<V> {
+    pub fn insert(&self, key: u64, val: V, conflict: u64, expiration: Time) {
+        self.try_insert(key, val, conflict, expiration).unwrap();
+    }
+
+    pub fn try_update(
+        &self,
+        key: u64,
+        mut val: V,
+        conflict: u64,
+        expiration: Time,
+    ) -> Result<UpdateResult<V>, CacheError> {
         let mut data = self.shards[(key as usize) % NUM_OF_SHARDS].write();
         match data.get_mut(&key) {
-            None => UpdateResult::NotExist(val),
+            None => Ok(UpdateResult::NotExist(val)),
             Some(item) => {
                 if conflict != 0 && (conflict != item.conflict) {
-                    return UpdateResult::Conflict(val);
+                    return Ok(UpdateResult::Conflict(val));
                 }
 
                 if !self.validator.should_update(item.value.get(), &val) {
-                    return UpdateResult::Reject(val);
+                    return Ok(UpdateResult::Reject(val));
                 }
 
-                self.em.update(key, conflict, item.expiration, expiration);
+                self.em
+                    .try_update(key, conflict, item.expiration, expiration)?;
                 mem::swap(&mut val, item.value.get_mut());
                 item.expiration = expiration;
-                UpdateResult::Update(val)
+                Ok(UpdateResult::Update(val))
             }
         }
+    }
+
+    pub fn update(&self, key: u64, val: V, conflict: u64, expiration: Time) -> UpdateResult<V> {
+        self.try_update(key, val, conflict, expiration).unwrap()
     }
 
     pub fn len(&self) -> usize {
