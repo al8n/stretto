@@ -331,14 +331,14 @@ macro_rules! impl_cache {
             }
 
             #[inline]
-            fn update(
+            fn try_update(
                 &self,
                 key: K,
                 val: V,
                 cost: i64,
                 ttl: Duration,
                 only_update: bool,
-            ) -> Option<(u64, $item<V>)> {
+            ) -> Result<Option<(u64, $item<V>)>, CacheError> {
                 let expiration = if ttl.is_zero() {
                     Time::now()
                 } else {
@@ -350,22 +350,22 @@ macro_rules! impl_cache {
                 // cost is eventually updated. The expiration must also be immediately updated
                 // to prevent items from being prematurely removed from the map.
                 let external_cost = if cost == 0 { self.coster.cost(&val) } else { 0 };
-                match self.store.update(index, val, conflict, expiration) {
+                match self.store.try_update(index, val, conflict, expiration)? {
                     UpdateResult::NotExist(v)
                     | UpdateResult::Reject(v)
                     | UpdateResult::Conflict(v) => {
                         if only_update {
-                            None
+                            Ok(None)
                         } else {
-                            Some((
+                            Ok(Some((
                                 index,
                                 $item::new(index, conflict, cost + external_cost, v, expiration),
-                            ))
+                            )))
                         }
                     }
                     UpdateResult::Update(v) => {
                         self.callback.on_exit(Some(v));
-                        Some((index, $item::update(index, cost, external_cost)))
+                        Ok(Some((index, $item::update(index, cost, external_cost))))
                     }
                 }
             }

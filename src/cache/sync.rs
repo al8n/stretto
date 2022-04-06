@@ -6,7 +6,10 @@ use crate::sync::{
     UnboundedReceiver, UnboundedSender, WaitGroup,
 };
 use crate::ttl::{ExpirationMap, Time};
-use crate::{metrics::MetricType, CacheCallback, CacheError, Coster, DefaultCacheCallback, DefaultCoster, DefaultUpdateValidator, KeyBuilder, Metrics, UpdateValidator, DefaultKeyBuilder};
+use crate::{
+    metrics::MetricType, CacheCallback, CacheError, Coster, DefaultCacheCallback, DefaultCoster,
+    DefaultKeyBuilder, DefaultUpdateValidator, KeyBuilder, Metrics, UpdateValidator,
+};
 use crossbeam_channel::{tick, RecvError};
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
@@ -124,9 +127,7 @@ pub struct CacheBuilder<
     inner: CacheBuilderCore<K, V, KH, C, U, CB, S>,
 }
 
-impl<K: Hash + Eq, V: Send + Sync + 'static>
-CacheBuilder<K, V>
-{
+impl<K: Hash + Eq, V: Send + Sync + 'static> CacheBuilder<K, V> {
     /// Create a new Builder
     #[inline]
     pub fn new(num_counters: usize, max_cost: i64) -> Self {
@@ -136,9 +137,7 @@ CacheBuilder<K, V>
     }
 }
 
-impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>>
-    CacheBuilder<K, V, KH>
-{
+impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>> CacheBuilder<K, V, KH> {
     /// Create a new AsyncCacheBuilder
     #[inline]
     pub fn new_with_key_builder(num_counters: usize, max_cost: i64, kh: KH) -> Self {
@@ -402,6 +401,11 @@ where
         self.insert_with_ttl(key, val, cost, Duration::ZERO)
     }
 
+    /// `try_insert` is the non-panicking version of [`insert`](#method.insert)
+    pub fn try_insert(&self, key: K, val: V, cost: i64) -> Result<bool, CacheError> {
+        self.try_insert_with_ttl(key, val, cost, Duration::ZERO)
+    }
+
     /// `insert_with_ttl` works like Set but adds a key-value pair to the cache that will expire
     /// after the specified TTL (time to live) has passed. A zero value means the value never
     /// expires, which is identical to calling `insert`.
@@ -409,10 +413,26 @@ where
         self.insert_in(key, val, cost, ttl, false)
     }
 
+    /// `try_insert_with_ttl` is the non-panicking version of [`insert_with_ttl`](#method.insert_with_ttl)
+    pub fn try_insert_with_ttl(
+        &self,
+        key: K,
+        val: V,
+        cost: i64,
+        ttl: Duration,
+    ) -> Result<bool, CacheError> {
+        self.try_insert_in(key, val, cost, ttl, false)
+    }
+
     /// `insert_if_present` is like `insert`, but only updates the value of an existing key. It
     /// does NOT add the key to cache if it's absent.
     pub fn insert_if_present(&self, key: K, val: V, cost: i64) -> bool {
         self.insert_in(key, val, cost, Duration::ZERO, true)
+    }
+
+    /// `try_insert_if_present` is the non-panicking version of [`insert_if_present`](#method.insert_if_present)
+    pub fn try_insert_if_present(&self, key: K, val: V, cost: i64) -> Result<bool, CacheError> {
+        self.try_insert_in(key, val, cost, Duration::ZERO, true)
     }
 
     /// wait until all the previous operations finished.
@@ -468,12 +488,25 @@ where
 
     #[inline]
     fn insert_in(&self, key: K, val: V, cost: i64, ttl: Duration, only_update: bool) -> bool {
+        self.try_insert_in(key, val, cost, ttl, only_update)
+            .unwrap()
+    }
+
+    #[inline]
+    fn try_insert_in(
+        &self,
+        key: K,
+        val: V,
+        cost: i64,
+        ttl: Duration,
+        only_update: bool,
+    ) -> Result<bool, CacheError> {
         if self.is_closed.load(Ordering::SeqCst) {
-            return false;
+            return Ok(false);
         }
 
-        self.update(key, val, cost, ttl, only_update)
-            .map_or(false, |(index, item)| {
+        self.try_update(key, val, cost, ttl, only_update)?
+            .map_or(Ok(false), |(index, item)| {
                 let is_update = item.is_update();
                 // Attempt to send item to policy.
                 select! {
@@ -483,22 +516,22 @@ where
                                 // Return true if this was an update operation since we've already
                                 // updated the store. For all the other operations (set/delete), we
                                 // return false which means the item was not inserted.
-                                true
+                                Ok(true)
                             } else {
                                 self.metrics.add(MetricType::DropSets, index, 1);
-                                false
+                                Ok(false)
                             }
-                        }, |_| true)
+                        }, |_| Ok(true))
                     },
                     default => {
                         if item.is_update() {
                             // Return true if this was an update operation since we've already
                             // updated the store. For all the other operations (set/delete), we
                             // return false which means the item was not inserted.
-                            true
+                            Ok(true)
                         } else {
                             self.metrics.add(MetricType::DropSets, index, 1);
-                            false
+                            Ok(false)
                         }
                     }
                 }
@@ -573,10 +606,7 @@ where
         msg: Result<Item<V>, RecvError>,
     ) -> Result<(), CacheError> {
         msg.map(|item| self.handle_item(item)).map_err(|e| {
-            CacheError::RecvError(format!(
-                "fail to receive msg from insert buffer: {}",
-                e
-            ))
+            CacheError::RecvError(format!("fail to receive msg from insert buffer: {}", e))
         })
     }
 
@@ -594,12 +624,7 @@ where
                     self.callback.on_evict(victim);
                 })
         })
-        .map_err(|e| {
-            CacheError::RecvError(format!(
-                "fail to receive msg from ticker: {}",
-                e
-            ))
-        })
+        .map_err(|e| CacheError::RecvError(format!("fail to receive msg from ticker: {}", e)))
     }
 }
 

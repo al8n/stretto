@@ -5,6 +5,8 @@ use std::hash::BuildHasher;
 use std::ops::{Deref, DerefMut};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::CacheError;
+
 fn storage_bucket(t: Time) -> i64 {
     (t.unix() + 1) as i64
 }
@@ -150,9 +152,15 @@ impl<S: BuildHasher + Clone + 'static> ExpirationMap<S> {
         }
     }
 
-    pub fn update(&self, key: u64, conflict: u64, old_exp_time: Time, new_exp_time: Time) {
+    pub fn try_update(
+        &self,
+        key: u64,
+        conflict: u64,
+        old_exp_time: Time,
+        new_exp_time: Time,
+    ) -> Result<(), CacheError> {
         if old_exp_time.is_zero() && new_exp_time.is_zero() {
-            return;
+            return Ok(());
         }
 
         let m = self.buckets.read();
@@ -160,10 +168,12 @@ impl<S: BuildHasher + Clone + 'static> ExpirationMap<S> {
             (storage_bucket(old_exp_time), storage_bucket(new_exp_time));
 
         if old_bucket_num == new_bucket_num {
-            return;
+            return Ok(());
         }
 
-        let mut m = m.borrow_mut();
+        let mut m = m
+            .try_borrow_mut()
+            .map_err(|e| CacheError::UpdateError(e.to_string()))?;
         m.remove(&old_bucket_num);
 
         match m.get_mut(&new_bucket_num) {
@@ -176,6 +186,8 @@ impl<S: BuildHasher + Clone + 'static> ExpirationMap<S> {
                 bucket.map.insert(key, conflict);
             }
         }
+
+        Ok(())
     }
 
     pub fn remove(&self, key: &u64, expiration: Time) {

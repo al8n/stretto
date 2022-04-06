@@ -25,6 +25,9 @@ pub enum CacheError {
 
     /// Error when receive msg between threads.
     RecvError(String),
+
+    /// Error when updating entries
+    UpdateError(String),
 }
 
 impl CacheError {
@@ -44,6 +47,7 @@ impl CacheError {
             CacheError::InvalidNumCounters => write!(f, "num_counters can't be zero"),
             CacheError::InvalidMaxCost => write!(f, "max_cost can't be zero"),
             CacheError::InvalidBufferSize => write!(f, "buffer_size can't be zero"),
+            CacheError::UpdateError(msg) => write!(f, "update error: {} ", msg),
         }
     }
 }
