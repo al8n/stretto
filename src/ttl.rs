@@ -130,16 +130,22 @@ impl<S: BuildHasher + Clone + 'static> ExpirationMap<S> {
     }
 
     pub fn insert(&self, key: u64, conflict: u64, expiration: Time) {
+        self.try_insert(key, conflict, expiration).unwrap();
+    }
+
+    pub fn try_insert(&self, key: u64, conflict: u64, expiration: Time) -> Result<(), CacheError> {
         // Items that don't expire don't need to be in the expiration map.
         if expiration.is_zero() {
-            return;
+            return Ok(());
         }
 
         let bucket_num = storage_bucket(expiration);
 
         let m = self.buckets.read();
 
-        let mut m = m.borrow_mut();
+        let mut m = m
+            .try_borrow_mut()
+            .map_err(|e| CacheError::InsertError(e.to_string()))?;
         match m.get_mut(&bucket_num) {
             None => {
                 let mut bucket = Bucket::with_hasher(self.hasher.clone());
@@ -150,6 +156,8 @@ impl<S: BuildHasher + Clone + 'static> ExpirationMap<S> {
                 bucket.map.insert(key, conflict);
             }
         }
+
+        Ok(())
     }
 
     pub fn try_update(
@@ -191,20 +199,36 @@ impl<S: BuildHasher + Clone + 'static> ExpirationMap<S> {
     }
 
     pub fn remove(&self, key: &u64, expiration: Time) {
+        self.try_remove(key, expiration).unwrap()
+    }
+
+    pub fn try_remove(&self, key: &u64, expiration: Time) -> Result<(), CacheError> {
         let bucket_num = storage_bucket(expiration);
         let m = self.buckets.read();
-        if let Some(bucket) = m.borrow_mut().get_mut(&bucket_num) {
+        if let Some(bucket) = m
+            .try_borrow_mut()
+            .map_err(|e| CacheError::RemoveError(e.to_string()))?
+            .get_mut(&bucket_num)
+        {
             bucket.remove(key);
         };
+
+        Ok(())
     }
 
     pub fn cleanup(&self, now: Time) -> Option<HashMap<u64, u64, S>> {
+        self.try_cleanup(now).unwrap()
+    }
+
+    pub fn try_cleanup(&self, now: Time) -> Result<Option<HashMap<u64, u64, S>>, CacheError> {
         let bucket_num = cleanup_bucket(now);
-        self.buckets
+        Ok(self
+            .buckets
             .read()
-            .borrow_mut()
+            .try_borrow_mut()
+            .map_err(|e| CacheError::CleanupError(e.to_string()))?
             .remove(&bucket_num)
-            .map(|bucket| bucket.map)
+            .map(|bucket| bucket.map))
     }
 
     pub fn hasher(&self) -> S {

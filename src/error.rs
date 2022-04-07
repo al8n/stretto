@@ -28,6 +28,18 @@ pub enum CacheError {
 
     /// Error when updating entries
     UpdateError(String),
+
+    /// Error when inserting entries
+    InsertError(String),
+
+    /// Error when removing entries
+    RemoveError(String),
+
+    /// Error when cleaning up
+    CleanupError(String),
+
+    /// Channel send error
+    ChannelError(String),
 }
 
 impl CacheError {
@@ -48,6 +60,10 @@ impl CacheError {
             CacheError::InvalidMaxCost => write!(f, "max_cost can't be zero"),
             CacheError::InvalidBufferSize => write!(f, "buffer_size can't be zero"),
             CacheError::UpdateError(msg) => write!(f, "update error: {} ", msg),
+            CacheError::InsertError(msg) => write!(f, "insert error: {} ", msg),
+            CacheError::RemoveError(msg) => write!(f, "remove error: {} ", msg),
+            CacheError::CleanupError(msg) => write!(f, "cleanup error: {} ", msg),
+            CacheError::ChannelError(msg) => write!(f, "channel error: {} ", msg),
         }
     }
 }

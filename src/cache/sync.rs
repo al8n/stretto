@@ -398,7 +398,7 @@ where
     /// the cost parameter to 0 and Coster will be ran when needed in order to find
     /// the items true cost.
     pub fn insert(&self, key: K, val: V, cost: i64) -> bool {
-        self.insert_with_ttl(key, val, cost, Duration::ZERO)
+        self.try_insert(key, val, cost).unwrap()
     }
 
     /// `try_insert` is the non-panicking version of [`insert`](#method.insert)
@@ -410,7 +410,7 @@ where
     /// after the specified TTL (time to live) has passed. A zero value means the value never
     /// expires, which is identical to calling `insert`.
     pub fn insert_with_ttl(&self, key: K, val: V, cost: i64, ttl: Duration) -> bool {
-        self.insert_in(key, val, cost, ttl, false)
+        self.try_insert_with_ttl(key, val, cost, ttl).unwrap()
     }
 
     /// `try_insert_with_ttl` is the non-panicking version of [`insert_with_ttl`](#method.insert_with_ttl)
@@ -427,7 +427,7 @@ where
     /// `insert_if_present` is like `insert`, but only updates the value of an existing key. It
     /// does NOT add the key to cache if it's absent.
     pub fn insert_if_present(&self, key: K, val: V, cost: i64) -> bool {
-        self.insert_in(key, val, cost, Duration::ZERO, true)
+        self.try_insert_if_present(key, val, cost).unwrap()
     }
 
     /// `try_insert_if_present` is the non-panicking version of [`insert_if_present`](#method.insert_if_present)
@@ -444,20 +444,25 @@ where
         let wg = WaitGroup::new();
         let wait_item = Item::Wait(wg.add(1));
         self.insert_buf_tx
-            .send(wait_item)
+            .try_send(wait_item)
             .map(|_| wg.wait())
             .map_err(|e| CacheError::SendError(format!("cache set buf sender: {}", e)))
     }
 
     /// remove an entry from Cache by key.
     pub fn remove(&self, k: &K) {
+        self.try_remove(k).unwrap();
+    }
+
+    /// try to remove an entry from Cache by key.
+    pub fn try_remove(&self, k: &K) -> Result<(), CacheError> {
         if self.is_closed.load(Ordering::SeqCst) {
-            return;
+            return Ok(());
         }
 
         let (index, conflict) = self.key_to_hash.build_key(k);
         // delete immediately
-        let prev = self.store.remove(&index, conflict);
+        let prev = self.store.try_remove(&index, conflict)?;
 
         if let Some(prev) = prev {
             self.callback.on_exit(Some(prev.value.into_inner()));
@@ -466,7 +471,17 @@ where
         // So we must push the same item to `setBuf` with the deletion flag.
         // This ensures that if a set is followed by a delete, it will be
         // applied in the correct order.
-        let _ = self.insert_buf_tx.send(Item::delete(index, conflict));
+        let _ = self
+            .insert_buf_tx
+            .try_send(Item::delete(index, conflict))
+            .map_err(|e| {
+                CacheError::ChannelError(format!(
+                    "failed to send message to the insert buffer: {}",
+                    e.to_string()
+                ))
+            })?;
+
+        Ok(())
     }
 
     /// `close` stops all threads and closes all channels.
@@ -484,12 +499,6 @@ where
         self.policy.close()?;
         self.is_closed.store(true, Ordering::SeqCst);
         Ok(())
-    }
-
-    #[inline]
-    fn insert_in(&self, key: K, val: V, cost: i64, ttl: Duration, only_update: bool) -> bool {
-        self.try_insert_in(key, val, cost, ttl, only_update)
-            .unwrap()
     }
 
     #[inline]
@@ -605,9 +614,10 @@ where
         &mut self,
         msg: Result<Item<V>, RecvError>,
     ) -> Result<(), CacheError> {
-        msg.map(|item| self.handle_item(item)).map_err(|e| {
+        msg.map_err(|e| {
             CacheError::RecvError(format!("fail to receive msg from insert buffer: {}", e))
         })
+        .and_then(|item| self.handle_item(item))
     }
 
     #[inline]
@@ -615,16 +625,16 @@ where
         &mut self,
         res: Result<Instant, RecvError>,
     ) -> Result<(), CacheError> {
-        res.map(|_| {
-            self.store
-                .cleanup(self.policy.clone())
-                .into_iter()
-                .for_each(|victim| {
-                    self.prepare_evict(&victim);
-                    self.callback.on_evict(victim);
+        Ok(res
+            .map_err(|e| CacheError::RecvError(format!("fail to receive msg from ticker: {}", e)))
+            .and_then(|_| {
+                self.store.try_cleanup(self.policy.clone()).map(|items| {
+                    items.into_iter().for_each(|victim| {
+                        self.prepare_evict(&victim);
+                        self.callback.on_evict(victim);
+                    });
                 })
-        })
-        .map_err(|e| CacheError::RecvError(format!("fail to receive msg from ticker: {}", e)))
+            })?)
     }
 }
 
