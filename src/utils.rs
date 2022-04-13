@@ -239,45 +239,47 @@ pub(crate) unsafe fn change_lifetime_const<'a, 'b, T>(x: &'a T) -> &'b T {
     &*(x as *const T)
 }
 
-// TODO: should use SharedNonNull to replace Arc?
-#[repr(transparent)]
-#[allow(dead_code)]
-pub(crate) struct SharedNonNull<T: ?Sized> {
-    ptr: NonNull<T>,
-}
+// // TODO: should use SharedNonNull to replace Arc?
+// #[repr(transparent)]
+// #[allow(dead_code)]
+// pub(crate) struct SharedNonNull<T: ?Sized> {
+//     ptr: NonNull<T>,
+// }
 
-impl<T> SharedNonNull<T> {
-    #[allow(dead_code)]
-    pub fn new(ptr: *mut T) -> Self {
-        unsafe {
-            Self {
-                ptr: NonNull::new_unchecked(ptr),
-            }
-        }
-    }
+// impl<T> SharedNonNull<T> {
+//     #[allow(dead_code)]
+//     pub fn new(ptr: *mut T) -> Self {
+//         unsafe {
+//             Self {
+//                 ptr: NonNull::new_unchecked(ptr),
+//             }
+//         }
+//     }
 
-    #[allow(dead_code)]
-    pub unsafe fn as_ref(&self) -> &T {
-        self.ptr.as_ref()
-    }
-}
+//     #[allow(dead_code)]
+//     pub unsafe fn as_ref(&self) -> &T {
+//         self.ptr.as_ref()
+//     }
+// }
 
-impl<T: ?Sized> Copy for SharedNonNull<T> {}
+// impl<T: ?Sized> Copy for SharedNonNull<T> {}
 
-impl<T: ?Sized> Clone for SharedNonNull<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
+// impl<T: ?Sized> Clone for SharedNonNull<T> {
+//     fn clone(&self) -> Self {
+//         *self
+//     }
+// }
 
-unsafe impl<T> Send for SharedNonNull<T> {}
-unsafe impl<T> Sync for SharedNonNull<T> {}
+// unsafe impl<T> Send for SharedNonNull<T> {}
+// unsafe impl<T> Sync for SharedNonNull<T> {}
 
 #[cfg(test)]
 mod test {
     use crate::store::StoreItem;
     use crate::ttl::Time;
-    use crate::utils::{change_lifetime_const, SharedNonNull, SharedValue};
+    use crate::utils::{change_lifetime_const, 
+        // SharedNonNull, 
+        SharedValue};
     use crate::{ValueRef, ValueRefMut};
     use parking_lot::RwLock;
     use std::collections::HashMap;
@@ -354,14 +356,14 @@ mod test {
         assert_eq!(sv.get(), &3);
     }
 
-    #[test]
-    fn test_shared_non_null() {
-        let snn = SharedNonNull::new(&mut 3);
-        let r = unsafe { snn.as_ref() };
-        assert_eq!(r, &3);
-        let snn1 = snn;
-        unsafe {
-            assert_eq!(snn1.as_ref(), &3);
-        }
-    }
+    // #[test]
+    // fn test_shared_non_null() {
+    //     let snn = SharedNonNull::new(&mut 3);
+    //     let r = unsafe { snn.as_ref() };
+    //     assert_eq!(r, &3);
+    //     let snn1 = snn;
+    //     unsafe {
+    //         assert_eq!(snn1.as_ref(), &3);
+    //     }
+    // }
 }
