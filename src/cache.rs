@@ -428,7 +428,7 @@ macro_rules! impl_cache_processor {
             S: BuildHasher + Clone + 'static + Send,
         {
             #[inline]
-            fn handle_item(&mut self, item: $item<V>) {
+            fn handle_item(&mut self, item: $item<V>) -> Result<(), CacheError> {
                 match item {
                     $item::New {
                         key,
@@ -438,9 +438,9 @@ macro_rules! impl_cache_processor {
                         expiration,
                     } => {
                         let cost = self.calculate_internal_cost(cost);
-                        let (victims, added) = self.policy.add(key, cost);
+                        let (victim_sets, added) = self.policy.add(key, cost);
                         if added {
-                            self.store.insert(key, value, conflict, expiration);
+                            self.store.try_insert(key, value, conflict, expiration)?;
                             self.track_admission(key);
                         } else {
                             self.callback.on_reject(CrateItem {
@@ -452,9 +452,9 @@ macro_rules! impl_cache_processor {
                             });
                         }
 
-                        victims.iter().for_each(|victims| {
-                            victims.iter().for_each(|victim| {
-                                let sitem = self.store.remove(&victim.key, 0);
+                        for victims in victim_sets {
+                            for victim in victims {
+                                let sitem = self.store.try_remove(&victim.key, 0)?;
                                 if let Some(sitem) = sitem {
                                     let item = CrateItem {
                                         index: victim.key,
@@ -465,8 +465,10 @@ macro_rules! impl_cache_processor {
                                     };
                                     self.on_evict(item);
                                 }
-                            })
-                        });
+                            }
+                        }
+
+                        Ok(())
                     }
                     $item::Update {
                         key,
@@ -474,15 +476,22 @@ macro_rules! impl_cache_processor {
                         external_cost,
                     } => {
                         let cost = self.calculate_internal_cost(cost) + external_cost;
-                        self.policy.update(&key, cost)
+                        self.policy.update(&key, cost);
+
+                        Ok(())
                     }
                     $item::Delete { key, conflict } => {
                         self.policy.remove(&key); // deals with metrics updates.
-                        if let Some(sitem) = self.store.remove(&key, conflict) {
+                        if let Some(sitem) = self.store.try_remove(&key, conflict)? {
                             self.callback.on_exit(Some(sitem.value.into_inner()));
                         }
+
+                        Ok(())
                     }
-                    $item::Wait(wg) => wg.done(),
+                    $item::Wait(wg) => {
+                        wg.done();
+                        Ok(())
+                    }
                 }
             }
 
