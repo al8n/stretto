@@ -7,7 +7,7 @@ Stretto is a pure Rust implementation for https://github.com/dgraph-io/ristretto
 
 A high performance thread-safe memory-bound Rust cache.
 
-English | [简体中文](README-zh_CN.md)
+English | [简体中文](README-zh_hans.md)
 
 [<img alt="github" src="https://img.shields.io/badge/GITHUB-Stretto-8da0cb?style=for-the-badge&logo=Github" height="22">][Github-url]
 [<img alt="Build" src="https://img.shields.io/github/workflow/status/al8n/stretto/CI/main?logo=Github-Actions&style=for-the-badge" height="22">][CI-url]

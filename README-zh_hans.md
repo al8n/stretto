@@ -3,9 +3,9 @@
 </div>
 <div align="center">
 
-Stretto is a pure Rust implementation for https://github.com/dgraph-io/ristretto. 
+[`ristretto`](https://github.com/dgraph-io/ristretto) 项目的纯 Rust 实现. 
 
-A high performance thread-safe memory-bound Rust cache.
+高性能、线程安全、遵循内存基本法的 Rust 缓存。
 
 [English](README.md) | 简体中文
 
@@ -22,31 +22,31 @@ A high performance thread-safe memory-bound Rust cache.
 
 </div>
 
-## Features
-* **Internal Mutability** - Do not need to use `Arc<RwLock<Cache<...>>` for concurrent code, you just need `Cache<...>` or `AsyncCache<...>`
-* **Sync and Async** - Stretto support async by `tokio` and sync by `crossbeam`.
-    * In sync, Cache starts two extra OS level threads. One is policy thread, the other is writing thread.
-    * In async, AsyncCache starts two extra green threads. One is policy thread, the other is writing thread.
-* **Store policy** Stretto only store the value, which means the cache does not store the key.
-* **High Hit Ratios** - with Dgraph's developers unique admission/eviction policy pairing, Ristretto's performance is best in class.
-    * **Eviction: SampledLFU** - on par with exact LRU and better performance on Search and Database traces.
-    * **Admission: TinyLFU** - extra performance with little memory overhead (12 bits per counter).
-* **Fast Throughput** - use a variety of techniques for managing contention and the result is excellent throughput.
-* **Cost-Based Eviction** - any large new item deemed valuable can evict multiple smaller items (cost could be anything).
-* **Fully Concurrent** - you can use as many threads as you want with little throughput degradation.
-* **Metrics** - optional performance metrics for throughput, hit ratios, and other stats.
-* **Simple API** - just figure out your ideal `CacheBuilder`/`AsyncCacheBuilder` values and you're off and running.
+## 特性
+* **内部可变性** - 毋须为并发编程而使用 `Arc<RwLock<Cache<...>>`，用 `Cache<...>` 或者 `AsyncCache<...>` 就够了！
+* **异同两制** - `stretto` 通过 `crossbeam` 实现同步版本, 使用 `tokio` 实现异步支持。但是本质是统一的。
+    * 在同步版本中，缓存会开启两个额外的操作系统线程。一个是策略线程，另一个为写入线程；
+    * 在异步版本中，缓存会开启两个额外的 `tokio` 协程。一个为策略协程，另一个为写入协程。
+* **写入策略** - `stretto` 仅会存储键值对中的值，并不会存储键。
+* **高命中率** - 在 `Dgraph` 开发者独树一帜的录入/撤除策略的加持下，Ristretto 的性能在同级下是坠吼的。
+    * **录入：TinyLFU 算法** - 更高的性能，仅需为每个计数器额外 +12bits。
+    * **撤除：SampledLFU 算法** - 性能比肩 LRU，但在搜索与数据库追踪上更胜一筹。
+* **高吞吐量** - 多种操作处理冲突，带来催人跑的高带宽。
+* **基于权重** - 插入大权重的新缓存项可以淘汰多个低权重的缓存项。（权重可以是任何属性）
+* **完全并行** - 在并行中性能仅会略微降低。新线程？开，都可以开。
+* **可选度量** - 可选的吞吐量、命中率或者其他统计指标的度量衡。
+* **Simple API** - 考察、设定您理想的 `CacheBuilder`/`AsyncCacheBuilder` 参数，然后起飞！🚀
 
-## Table of Contents
+## 目录
 
-- [Features](#features)
-- [Table of Contents](#table-of-contents)
-- [Installation](#installation)
-- [Usage](#usage)
-  - [Example](#example)
-    - [Sync](#sync)
-    - [Async](#async)
-  - [Config](#config)
+- [特性](#特性)
+- [目录](#目录)
+- [安装](#安装)
+- [操作方法](#操作方法)
+  - [示例](#示例)
+    - [同步](#同步)
+    - [异步](#异步)
+  - [配置](#配置)
     - [num_counters](#num_counters)
     - [max_cost](#max_cost)
     - [key_builder](#key_builder)
@@ -58,37 +58,37 @@ A high performance thread-safe memory-bound Rust cache.
     - [callback](#callback)
     - [coster](#coster)
     - [hasher](#hasher)
-- [Acknowledgements](#acknowledgements)
-- [License](#license)
+- [鸣谢](#鸣谢)
+- [许可](#许可)
 
-## Installation
-- Use Cache.
+## 安装
+- 使用同步缓存
 ```toml
 [dependencies]
 stretto = "0.4"
 ```
-or
+或
 ```toml 
 [dependencies]
 stretto = { version = "0.4", features = ["sync"] }
 ```
 
 
-- Use AsyncCache
+- 使用异步缓存
 ```toml 
 [dependencies]
 stretto = { version = "0.4", features = ["async"] }
 ```
 
-- Use both Cache and AsyncCache
+- 同步异步同时使用
 ```toml 
 [dependencies]
 stretto = { version = "0.4", features = ["full"] }
 ```
 
-## Usage
-### Example
-#### Sync
+## 操作方法
+### 示例
+#### 同步
 ```rust
 use stretto::{Cache, DefaultKeyBuilder};
 use std::time::Duration;
@@ -96,32 +96,34 @@ use std::time::Duration;
 fn main() {
     let c = Cache::new(12960, 1e6 as i64, DefaultKeyBuilder::default()).unwrap();
 
-    // set a value with a cost of 1
+    // 设定一个键为 "a", 权为 1 的值
     c.insert("a", "a", 1);
 
-    // set a value with a cost of 1 and ttl
+    // 设定一个键为 "a"，权为 1 的带生存期的值
     c.insert_with_ttl("b", "b", 1, Duration::from_secs(3));
     
-    // wait for value to pass through buffers
+    // 等待值存入缓存中
     c.wait().unwrap();
 
-    // when we get the value, we will get a ValueRef, which contains a RwLockReadGuard
-    // so when we finish use this value, we must release the ValueRef
+    // 当尝试访问值时，会返回一个包含了 RwLockReadGuard 的 ValueRef
+    // 当完成使用这个值时，ValueRef 需要释放
     let v = c.get(&"a").unwrap();
     assert_eq!(v.value(), &"a");
-    v.release();
+    // 手动释放
+    v.release(); // 或者析构 v
 
-    // lock will be auto released when out of scope
+    // 离开作用域后锁会被自动释放
     {
-        // when we get the value, we will get a ValueRef, which contains a RwLockWriteGuard
-        // so when we finish use this value, we must release the ValueRefMut
+        // 当尝试访问值时，会返回一个包含了 RwLockReadGuard 的 ValueRef
+        // 当完成使用这个值时，ValueRef 需要释放
+
         let mut v = c.get_mut(&"a").unwrap();
         v.write("aa");
         assert_eq!(v.value(), &"aa");
-        // release the value 
+        // 释放值
     }
 
-    // if you just want to do one operation
+    // 如果只对 v 操作一次
     let v = c.get_mut(&"a").unwrap();
     v.write_once("aaa");
 
@@ -129,15 +131,15 @@ fn main() {
     assert_eq!(v.value(), &"aaa");
     v.release();
 
-    // clear the cache
+    // 缓存清零
     c.clear().unwrap();
-    // wait all the operations are finished
+    // 等待所有操作完成
     c.wait().unwrap();
     assert!(c.get(&"a").is_none());
 }
 ```
 
-#### Async
+#### 异步
 ```rust
 use stretto::{AsyncCache, DefaultKeyBuilder};
 use std::time::Duration;
@@ -146,35 +148,35 @@ use std::time::Duration;
 async fn main() {
     let c = AsyncCache::new(12960, 1e6 as i64, DefaultKeyBuilder::default()).unwrap();
 
-    // set a value with a cost of 1
+    // 设定一个键为 "a" 权为 1 的值
     c.insert("a", "a", 1).await;
 
-    // set a value with a cost of 1 and ttl
+    // 设定一个键为 "a"，权为 1 的带生存期的值
     c.insert_with_ttl("b", "b", 1, Duration::from_secs(3)).await;
     
-    // wait for value to pass through buffers
+    // 等待值存入缓存中
     c.wait().await.unwrap();
 
     
-    // when we get the value, we will get a ValueRef, which contains a RwLockReadGuard
-    // so when we finish use this value, we must release the ValueRef
+    // 当尝试访问值时，会返回一个包含了 RwLockReadGuard 的 ValueRef
+    // 当完成使用这个值时，ValueRef 需要释放
     let v = c.get(&"a").unwrap();
     assert_eq!(v.value(), &"a");
-    // release the value
-    v.release(); // or drop(v)
+    // 释放值
+    v.release(); // 或者直接析构 v
 
-    // lock will be auto released when out of scope
+    // 离开作用域时锁会自动释放
     {
-        // when we get the value, we will get a ValueRef, which contains a RwLockWriteGuard
-        // so when we finish use this value, we must release the ValueRefMut
+        // 当尝试访问值时，会返回一个包含了 RwLockReadGuard 的 ValueRef
+        // 当完成使用这个值时，ValueRef 需要释放
         let mut v = c.get_mut(&"a").unwrap();
         v.write("aa");
         assert_eq!(v.value(), &"aa");
-        // release the value
+        // 释放值
     }
     
 
-    // if you just want to do one operation
+    // 如果只对 v 操作一次
     let v = c.get_mut(&"a").unwrap();
     v.write_once("aaa");
 
@@ -183,155 +185,146 @@ async fn main() {
     assert_eq!(v.value(), &"aaa");
     v.release();
 
-    // clear the cache
+    // 缓存清空
     c.clear().unwrap();
-    // wait all the operations are finished
+    // 等待操作完成
     c.wait().await.unwrap();
 
     assert!(c.get(&"a").is_none());
 }
 ```
-### Config
-The `CacheBuilder` struct is used when creating Cache instances if you want to customize the Cache settings.
+### 配置
+如果希望定制缓存，请使用 `CacheBuilder` 来创建 `Cache` 对象。
 
 #### num_counters
 
-`num_counters` is the number of 4-bit access counters to keep for admission and eviction. Dgraph's developers have seen good performance in setting this to 10x the number of items you expect to keep in the cache when full.
+`num_counters` （计数器数）是用于保存录入与淘汰信息的 4 位访问计数器的数目。Dgraph 的开发者们在将其设为约 10 倍于缓存容量的时候获得了不错的性能。
 
-For example, if you expect each item to have a cost of 1 and `max_cost` is 100, set `num_counters` to 1,000. Or, if you use variable cost values but expect the cache to hold around 10,000 items when full, set num_counters to 100,000. The important thing is the *number of unique items* in the full cache, not necessarily the `max_cost` value.
+比如，在每个缓存项的权为 1 且 `max_cost` 设定为 100 时，应将 `num_counters` 设为 1,000；或者如果缓存项权值不等，而期望缓存可以容纳约 10,000 项时，应将 `num_counter` 设为 100,000——应当考虑的是可以装满缓存的**唯一键值数量**而非 `max_cost` 的值。
 
 #### max_cost
 
-`max_cost` is how eviction decisions are made. For example, if max_cost is 100 and a new item with a cost of 1 increases total cache cost to 101, 1 item will be evicted.
+`max_cost` （最大权值和）是缓存是否进行撤除操作的参考。在 `max_cost` 为 100 时，如果插入一个权为 1 的项使得缓存内总权值之和为 101，那么一个缓存项会被淘汰。
 
-`max_cost` can also be used to denote the max size in bytes. For example, if max_cost is 1,000,000 (1MB) and the cache is full with 1,000 1KB items, a new item (that's accepted) would cause 5 1KB items to be evicted.
+`max_cost` 可以被用于表示缓存的最大体积（字节）。举个例子，如果 `max_cost` 为 1,000,000 (1 MB，1 兆字节) 而缓存已经装入 1,000 个 1 KB 的项，一个被接收的新缓存项会导致 5 个 1KB 的缓存项被撤除。
 
-`max_cost` could be anything as long as it matches how you're using the cost values when calling `insert`.
+权值可以是任意属性，亦即 `max_cost` 也可以指代任何属性的权值的和的最大值。
 
 #### key_builder
 
 ```rust
 pub trait KeyBuilder<K: Hash + Eq + ?Sized> {
-    /// hash_index is used to hash the key to u64
+    /// hash_index 用于将键哈希运算成一个 u64 值
     fn hash_index(&self, key: &K) -> u64;
 
-    /// if you want a 128bit hashes, you should implement this method,
-    /// or leave this method return 0
+    /// 如果希望使用一个 128 位哈希，需要实现此方法。
+    /// 默认返回 0
     fn hash_conflict(&self, key: &K) -> u64 { 0 }
 
-    /// build the key to 128bit hashes.
+    /// 将键进行哈希运算，返回 128 位哈希结果。
     fn build_key(&self, k: &K) -> (u64, u64) {
         (self.hash_index(k), self.hash_conflict(k))
     }
 }
 ```
 
-KeyBuilder is the hashing algorithm used for every key. In Stretto, the Cache will never store the real key.
-The key will be processed by `KeyBuilder`. Stretto has two default built-in key builder,
-one is `TransparentKeyBuilder`, the other is `DefaultKeyBuilder`. If your key implements `TransparentKey` trait,
-you can use `TransparentKeyBuilder` which is faster than `DefaultKeyBuilder`. Otherwise, you should use `DefaultKeyBuilder`
-You can also write your own key builder for the Cache, by implementing `KeyBuilder` trait.
+`KeyBuilder`（键生成器）是使用于所有的键的哈希算法。`Stretto` 并不会存储键的真正的值，
+而是会将其使用 `KeyBuilder` 处理。
+`Stretto` 内建了两套默认的键生成器，
+一套为 `TransparentKeyBuilder`（透明键生成器），另一套为 `DefaultKeyBuilder`（默认键生成器）。
+只有当键类型实现了 `TransparentKey` 特性时，才可以使用相比 `DefaultKeyBuider` 更快的 `TransparentKeyBuilder`。
 
-Note that if you want 128bit hashes you should use the full `(u64, u64)`,
-otherwise just fill the `u64` at the `0` position, and it will behave like
-any 64bit hash.
+用户可以通过实现 `KeyBuilder` 特质另起炉灶，自己实现一套键生成器。
+
+注意当希望使用 128 位哈希时请将 `(u64, u64)` 中的两项都用到。如果只想使用 64 位哈希可以将元组中第一个（索引为 0）的值置 0。
 
 #### buffer_size
 
-`buffer_size` is the size of the insert buffers. The Dgraph's developers find that 32 * 1024 gives a good performance.
+`buffer_size`（缓存大小）是插入缓存的大小。Dgraph 的开发者们发现设为 32 × 1024 （的整倍数？）时性能很好。
 
-If for some reason you see insert performance decreasing with lots of contention (you shouldn't), try increasing this value in increments of 32 * 1024. This is a fine-tuning mechanism and you probably won't have to touch this.
+如果偶然发现插入性能大幅下降，同时出现较多冲突（通常并不会），请尝试将该值设定为更高的 32 × 1024 的整倍数。缓存的内部机制调教得当，用户一般不会需要修改该值。
 
 #### metrics
 
-Metrics is true when you want real-time logging of a variety of stats. The reason this is a CacheBuilder flag is because there's a 10% throughput performance overhead.
-
+Metrics（度量）应当在需要实时日志记录多种状态信息的时候设置为 `true`。之所以并未设定成默认启用，是因为可能会降低 10% 的吞吐量。
 #### ignore_internal_cost
 
-Set to true indicates to the cache that the cost of internally storing the value should be ignored. This is useful when the
-cost passed to set is not using bytes as units. Keep in mind that setting this to true will increase the memory usage.
+设定为 `true` 时缓存将会忽略存储值的内部开销，这在开销不以比特为单位时很有用。不过谨记这会导致更高的内存占用。
 
 #### cleanup_duration
 
-The Cache will cleanup the expired values every 500ms by default.
+默认情况下缓存会每 500 毫秒清理一次过期的值
 
 #### update_validator
 
 ```rust
 pub trait UpdateValidator<V>: Send + Sync + 'static {
-    /// should_update is called when a value already exists in cache and is being updated.
+    /// should_update 在一个已经存在于缓存中的值被更新时调用
     fn should_update(&self, prev: &V, curr: &V) -> bool;
 }
 ```
 
-By default, the Cache will always update the value if the value already exists in the cache,
-this trait is for you to check if the value should be updated.
-
+默认状态下，缓存总是会更新已经在缓存中的值。
+该特性用于确认该值是否被更新。
 #### callback
 
 ```rust
 pub trait CacheCallback<V: Send + Sync>: Send + Sync + 'static {
-    /// on_exit is called whenever a value is removed from cache. This can be
-    /// used to do manual memory deallocation. Would also be called on eviction
-    /// and rejection of the value.
+    /// on_exit 在一个值被移除 (remove) 出缓存的时候调用。
+    /// 可以用于实现手动内存释放。
+    /// 在撤除 (evict) 或者拒绝 (reject) 值的时候亦会被调用
     fn on_exit(&self, val: Option<V>);
 
-    /// on_evict is called for every eviction and passes the hashed key, value,
-    /// and cost to the function.
+    /// on_evict 在撤除值的时候会被调用，同时会将哈希键、值和权传给函数。
     fn on_evict(&self, item: Item<V>) {
         self.on_exit(item.val)
     }
 
-    /// on_reject is called for every rejection done via the policy.
+    /// on_reject 会被 policy 为每个所拒绝的值调用
     fn on_reject(&self, item: Item<V>) {
         self.on_exit(item.val)
     }
 }
 ```
 
-CacheCallback is for customize some extra operations on values when related event happens.
+CacheCallBack（缓存回调）被用于定制在事件发生时对值的额外操作。
 
 #### coster
 
 ```rust
 pub trait Coster<V>: Send + Sync + 'static {
-    /// cost evaluates a value and outputs a corresponding cost. This function
-    /// is ran after insert is called for a new item or an item update with a cost
-    /// param of 0.
+    /// cost 函数对值进行求值并返回对应的权重，该函数
+    /// 会在一个新值插入或一个值更新为 0 权值时被调用
     fn cost(&self, val: &V) -> i64;
 }
 ```
 
-Cost is a trait you can pass to the CacheBuilder in order to evaluate
-item cost at runtime, and only for the `insert` calls that aren't dropped (this is
-useful if calculating item cost is particularly expensive, and you don't want to
-waste time on items that will be dropped anyways).
+`Cost` 是一个可以传给 `CacheBuilder` 进行运行时权重求值的特征，并且仅仅对未丢弃的 `insert` 函数调用使用——这在计算权值相当耗时或者耗资源时非常有用，尤其是当用户不想在迟早被析构的值上浪费时间时。
 
-To signal to Stretto that you'd like to use this Coster trait:
+用户可以通过如下方法使得 Stretto 使用自己定制的 Coster 特征：
 
-1. Set the Coster field to your own Coster implementation.
-2. When calling `insert` for new items or item updates, use a `cost` of 0.
+1. 将 `Coster` 值设定为自己的 `Coster` 实现；
+2. 在插入新缓存项或更新缓存项，调用 `insert`时，将 `cost` 设为 0。
 
 #### hasher
 
-The hasher for the Cache, default is SipHasher.
+缓存的哈希器，默认为 `SipHasher`。
 
-## Acknowledgements
-- Thanks Dgraph's developers for providing amazing Go version [Ristretto](https://github.com/dgraph-io/ristretto) implementation.
+## 鸣谢
+- 感谢 Dgraph 的开发者们，提供了如此亦可赛艇的 [Ristretto](https://github.com/dgraph-io/ristretto) Go 语言实现。
 
-## License
+## 许可
 
 <sup>
-Licensed under either of <a href="https://opensource.org/licenses/Apache-2.0">Apache License, Version
-2.0</a> or <a href="https://opensource.org/licenses/MIT">MIT license</a> at your option.
+根据您的选择，在 <a href="https://opensource.org/licenses/Apache-2.0">Apache 许可证
+2.0 版</a> 或 <a href="https://opensource.org/licenses/MIT">MIT 许可证</a> 下进行授权。
+
 </sup>
 
 <br>
 
 <sub>
-Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in this project by you, as defined in the Apache-2.0 license,
-shall be dual licensed as above, without any additional terms or conditions.
+除非您明确说明，任何由您有意提交以纳入本项目的贡献，如Apache-2.0许可证所定义的，应按上述规定进行双重许可，没有任何附加条款或条件。
 </sub>
 
 [Github-url]: https://github.com/al8n/stretto/
