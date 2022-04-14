@@ -3,7 +3,7 @@
 </div>
 <div align="center">
 
-[`ristretto`](https://github.com/dgraph-io/ristretto) 项目的纯 Rust 实现. 
+[Ristretto](https://github.com/dgraph-io/ristretto) 项目的纯 Rust 实现. 
 
 高性能、线程安全、内存绑定的 Rust 缓存。
 
@@ -23,12 +23,12 @@
 </div>
 
 ## 特性
-* **内部可变性** - 毋须为并发编程而使用 `Arc<RwLock<Cache<...>>`，用 `Cache<...>` 或者 `AsyncCache<...>` 就够了！
+* **内部可变** - 毋须为并发编程而使用 `Arc<RwLock<Cache<...>>`，用 `Cache<...>` 或者 `AsyncCache<...>` 就够了。
 * **异同两制** - `stretto` 通过 `crossbeam` 实现同步版本, 使用 `tokio` 实现异步支持。但是本质是统一的。
     * 在同步版本中，缓存会开启两个额外的操作系统线程。一个是策略线程，另一个为写入线程；
     * 在异步版本中，缓存会开启两个额外的 `tokio` 协程。一个为策略协程，另一个为写入协程。
 * **写入策略** - `stretto` 仅会存储键值对中的值，并不会存储键。
-* **高命中率** - 在 `Dgraph` 开发者独树一帜的录入/撤除策略的加持下，Ristretto 的性能在同级下是坠吼的。
+* **高命中率** - 在 `Dgraph` 开发者独树一帜的录入/撤除策略的加持下，Ristretto 的性能在同级下是坠吼的，跑得比谁都快。
     * **录入：TinyLFU 算法** - 更高的性能，仅需为每个计数器额外 +12bits。
     * **撤除：SampledLFU 算法** - 性能比肩 LRU，但在搜索与数据库追踪上更胜一筹。
 * **高吞吐量** - 多种操作处理冲突，带来催人跑的高带宽。
@@ -151,8 +151,8 @@ async fn main() {
     // 设定一个键为 "a" 权为 1 的值
     c.insert("a", "a", 1).await;
 
-    // 设定一个键为 "a"，权为 1 的带生存期的值
-    c.insert_with_ttl("b", "b", 1, Duration::from_secs(3)).await;
+    // 设定一个键为 "a"，权为 1，生存期为 1s 的值
+    c.insert_with_ttl("b", "b", 1, Duration::from_secs(1)).await;
     
     // 等待值存入缓存中
     c.wait().await.unwrap();
