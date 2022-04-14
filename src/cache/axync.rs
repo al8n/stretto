@@ -414,7 +414,7 @@ impl<K, V, KH, C, U, CB, S> AsyncCache<K, V, KH, C, U, CB, S>
     /// after the specified TTL (time to live) has passed. A zero value means the value never
     /// expires, which is identical to calling `insert`.
     pub async fn insert_with_ttl(&self, key: K, val: V, cost: i64, ttl: Duration) -> bool {
-        self.insert_in(key, val, cost, ttl, false).await
+        self.try_insert_in(key, val, cost, ttl, false).await.unwrap()
     }
 
     /// `try_insert_with_ttl` is the non-panicking version of [`insert_with_ttl`](#method.insert_with_ttl)
@@ -425,7 +425,7 @@ impl<K, V, KH, C, U, CB, S> AsyncCache<K, V, KH, C, U, CB, S>
     /// `insert_if_present` is like `insert`, but only updates the value of an existing key. It
     /// does NOT add the key to cache if it's absent.
     pub async fn insert_if_present(&self, key: K, val: V, cost: i64) -> bool {
-        self.insert_in(key, val, cost, Duration::ZERO, true).await
+        self.try_insert_in(key, val, cost, Duration::ZERO, true).await.unwrap()
     }
 
     /// `try_insert_if_present` is the non-panicking version of [`insert_if_present`](#method.insert_if_present)
@@ -442,8 +442,7 @@ impl<K, V, KH, C, U, CB, S> AsyncCache<K, V, KH, C, U, CB, S>
         let wg = WaitGroup::new();
         let wait_item = Item::Wait(wg.add(1));
         match self.insert_buf_tx
-            .send(wait_item)
-            .await {
+            .try_send(wait_item) {
             Ok(_) => Ok(wg.wait().await),
             Err(e) => Err(CacheError::SendError(format!("cache set buf sender: {}", e.to_string()))),
         }
@@ -451,13 +450,18 @@ impl<K, V, KH, C, U, CB, S> AsyncCache<K, V, KH, C, U, CB, S>
 
     /// remove entry from Cache by key.
     pub async fn remove(&self, k: &K) {
+        self.try_remove(k).await.unwrap()
+    }
+
+    /// try to remove an entry from the Cache by key
+    pub async fn try_remove(&self, k: &K) -> Result<(), CacheError> {
         if self.is_closed.load(Ordering::SeqCst) {
-            return;
+            return Ok(());
         }
 
         let (index, conflict) = self.key_to_hash.build_key(&k);
         // delete immediately
-        let prev = self.store.remove(&index, conflict);
+        let prev = self.store.try_remove(&index, conflict)?;
 
         if let Some(prev) = prev {
             self.callback.on_exit(Some(prev.value.into_inner()));
@@ -467,6 +471,8 @@ impl<K, V, KH, C, U, CB, S> AsyncCache<K, V, KH, C, U, CB, S>
         // This ensures that if a set is followed by a delete, it will be
         // applied in the correct order.
         let _ = self.insert_buf_tx.send(Item::delete(index, conflict)).await;
+
+        Ok(())
     }
 
     /// `close` stops all threads and closes all channels.
@@ -478,15 +484,15 @@ impl<K, V, KH, C, U, CB, S> AsyncCache<K, V, KH, C, U, CB, S>
 
         self.clear()?;
         // Block until processItems thread is returned
-        self.stop_tx.send(()).await.map_err(|e| CacheError::SendError(format!("fail to send stop signal to working thread, {}", e)))?;
+        self.stop_tx
+            .send(())
+            .await
+            .map_err(
+                |e| CacheError::SendError(format!("fail to send stop signal to working thread, {}", e))
+            )?;
         self.policy.close().await?;
         self.is_closed.store(true, Ordering::SeqCst);
         Ok(())
-    }
-
-    #[inline]
-    async fn insert_in(&self, key: K, val: V, cost: i64, ttl: Duration, only_update: bool) -> bool {
-        self.try_insert_in(key, val, cost, ttl, only_update).await.unwrap()
     }
 
     #[inline]
@@ -599,14 +605,15 @@ impl<V, U, CB, S> CacheProcessor<V, U, CB, S>
 
     #[inline]
     pub(crate) fn handle_insert_event(&mut self, res: Option<Item<V>>) -> Result<(), CacheError> {
-        res.map(|item| self.handle_item(item))
-            .ok_or(CacheError::RecvError(format!("fail to receive msg from insert buffer")))
+        res
+          .ok_or_else(|| CacheError::RecvError(format!("fail to receive msg from insert buffer")))
+          .and_then(|item| self.handle_item(item))
     }
 
     #[inline]
     pub(crate) fn handle_cleanup_event(&mut self) -> Result<(), CacheError> {
         self.store
-            .cleanup_async(self.policy.clone())
+            .try_cleanup_async(self.policy.clone())?
             .into_iter()
             .for_each(|victim| {
                 self.prepare_evict(&victim);

@@ -156,7 +156,7 @@ impl<
             None => {
                 // The value is not in the map already. There's no need to return anything.
                 // Simply add the expiration map.
-                self.em.insert(key, conflict, expiration);
+                self.em.try_insert(key, conflict, expiration)?;
             }
             Some(sitem) => {
                 // The item existed already. We need to check the conflict key and reject the
@@ -228,20 +228,24 @@ impl<
     }
 
     pub fn remove(&self, key: &u64, conflict: u64) -> Option<StoreItem<V>> {
+        self.try_remove(key, conflict).unwrap()
+    }
+
+    pub fn try_remove(&self, key: &u64, conflict: u64) -> Result<Option<StoreItem<V>>, CacheError> {
         let mut data = self.shards[(*key as usize) % NUM_OF_SHARDS].write();
 
         match data.get(key) {
-            None => None,
+            None => Ok(None),
             Some(item) => {
                 if conflict != 0 && (conflict != item.conflict) {
-                    return None;
+                    return Ok(None);
                 }
 
                 if !item.expiration.is_zero() {
-                    self.em.remove(key, item.expiration);
+                    self.em.try_remove(key, item.expiration)?;
                 }
 
-                data.remove(key)
+                Ok(data.remove(key))
             }
         }
     }
@@ -257,29 +261,45 @@ impl<
         &self,
         policy: Arc<LFUPolicy<PS>>,
     ) -> Vec<CrateItem<V>> {
+        self.try_cleanup(policy).unwrap()
+    }
+
+    pub fn try_cleanup<PS: BuildHasher + Clone + 'static>(
+        &self,
+        policy: Arc<LFUPolicy<PS>>,
+    ) -> Result<Vec<CrateItem<V>>, CacheError> {
         let now = Time::now();
-        self.em.cleanup(now).map_or(Vec::with_capacity(0), |m| {
-            m.iter()
-                // Sanity check. Verify that the store agrees that this key is expired.
-                .filter_map(|(k, v)| {
-                    self.expiration(k).and_then(|t| {
-                        if t.is_expired() {
-                            let cost = policy.cost(k);
-                            policy.remove(k);
-                            self.remove(k, *v).map(|sitem| CrateItem {
-                                val: Some(sitem.value.into_inner()),
-                                index: sitem.key,
-                                conflict: sitem.conflict,
-                                cost,
-                                exp: t,
+        Ok(self
+            .em
+            .try_cleanup(now)?
+            .map_or(Vec::with_capacity(0), |m| {
+                m.iter()
+                    // Sanity check. Verify that the store agrees that this key is expired.
+                    .filter_map(|(k, v)| {
+                        self.expiration(k)
+                            .and_then(|t| {
+                                if t.is_expired() {
+                                    let cost = policy.cost(k);
+                                    policy.remove(k);
+                                    self.try_remove(k, *v)
+                                        .map(|maybe_sitem| {
+                                            maybe_sitem.map(|sitem| CrateItem {
+                                                val: Some(sitem.value.into_inner()),
+                                                index: sitem.key,
+                                                conflict: sitem.conflict,
+                                                cost,
+                                                exp: t,
+                                            })
+                                        })
+                                        .ok()
+                                } else {
+                                    None
+                                }
                             })
-                        } else {
-                            None
-                        }
+                            .flatten()
                     })
-                })
-                .collect()
-        })
+                    .collect()
+            }))
     }
 
     #[cfg(feature = "tokio")]
@@ -287,29 +307,40 @@ impl<
         &self,
         policy: Arc<AsyncLFUPolicy<PS>>,
     ) -> Vec<CrateItem<V>> {
+        self.try_cleanup_async(policy).unwrap()
+    }
+
+    #[cfg(feature = "tokio")]
+    pub fn try_cleanup_async<PS: BuildHasher + Clone + 'static>(
+        &self,
+        policy: Arc<AsyncLFUPolicy<PS>>,
+    ) -> Result<Vec<CrateItem<V>>, CacheError> {
         let now = Time::now();
-        self.em.cleanup(now).map_or(Vec::with_capacity(0), |m| {
-            m.iter()
-                // Sanity check. Verify that the store agrees that this key is expired.
-                .filter_map(|(k, v)| {
-                    self.expiration(k).and_then(|t| {
-                        if t.is_expired() {
-                            let cost = policy.cost(k);
-                            policy.remove(k);
-                            self.remove(k, *v).map(|sitem| CrateItem {
+        let items = self.em.try_cleanup(now)?;
+
+        let mut removed_items = Vec::new();
+        for item in items {
+            for (k, v) in item.iter() {
+                let expiration = self.expiration(k);
+                if let Some(t) = expiration {
+                    if t.is_expired() {
+                        let cost = policy.cost(k);
+                        policy.remove(k);
+                        let removed_item = self.try_remove(k, *v)?;
+                        if let Some(sitem) = removed_item {
+                            removed_items.push(CrateItem {
                                 val: Some(sitem.value.into_inner()),
                                 index: sitem.key,
                                 conflict: sitem.conflict,
                                 cost,
                                 exp: t,
                             })
-                        } else {
-                            None
                         }
-                    })
-                })
-                .collect()
-        })
+                    }
+                }
+            }
+        }
+        Ok(removed_items)
     }
 
     pub fn clear(&self) {
