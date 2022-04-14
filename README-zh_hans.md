@@ -5,7 +5,7 @@
 
 [`ristretto`](https://github.com/dgraph-io/ristretto) 项目的纯 Rust 实现. 
 
-高性能、线程安全、遵循内存基本法的 Rust 缓存。
+高性能、线程安全、内存绑定的 Rust 缓存。
 
 [English](README.md) | 简体中文
 
