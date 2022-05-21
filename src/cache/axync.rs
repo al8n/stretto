@@ -638,6 +638,7 @@ impl<'a, V, U, CB, S> CacheCleaner<'a, V, U, CB, S>
                     Some(item) = self.processor.insert_buf_rx.recv() => {
                         self.handle_item(item);
                     },
+                    _ = async {} => return Ok(()),
                     else => return Ok(()),
                 }
         }

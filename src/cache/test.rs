@@ -1319,4 +1319,24 @@ mod async_test {
             }
         }
     }
+
+    #[tokio::test]
+    async fn test_insert_after_clear() {
+        let ttl = Duration::from_secs(60);
+        let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(100, 10)
+            .set_key_builder(TransparentKeyBuilder::default())
+            .set_ignore_internal_cost(true)
+            .finalize()
+            .unwrap();
+
+        assert!(c.insert_with_ttl(0, 1, 1, ttl).await);
+        assert!(c.wait().await.is_ok());
+        assert_eq!(c.get(&0).unwrap().value(), &1);
+        assert!(c.clear().is_ok());
+        assert!(c.wait().await.is_ok());
+        assert!(c.get(&0).is_none());
+        assert!(c.insert_with_ttl(2, 3, 1, ttl).await);
+        assert!(c.wait().await.is_ok());
+        assert_eq!(c.get(&2).unwrap().value(), &3);
+    }
 }
