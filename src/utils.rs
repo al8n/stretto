@@ -23,13 +23,13 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::BuildHasher;
-use std::ptr::NonNull;
+use std::time::Duration;
 
 /// ValueRef is returned when invoking `get` method of the Cache.
 /// It contains a `RwLockReadGuard` and a value reference.
 pub struct ValueRef<'a, V, S = RandomState> {
     _guard: RwLockReadGuard<'a, HashMap<u64, StoreItem<V>, S>>,
-    val: &'a V,
+    val: &'a StoreItem<V>,
 }
 
 unsafe impl<'a, V: Send, S: BuildHasher> Send for ValueRef<'a, V, S> {}
@@ -40,7 +40,7 @@ impl<'a, V, S: BuildHasher> ValueRef<'a, V, S> {
     #[inline]
     pub(crate) fn new(
         guard: RwLockReadGuard<'a, HashMap<u64, StoreItem<V>, S>>,
-        val: &'a V,
+        val: &'a StoreItem<V>,
     ) -> Self {
         Self { _guard: guard, val }
     }
@@ -48,7 +48,7 @@ impl<'a, V, S: BuildHasher> ValueRef<'a, V, S> {
     /// Get the reference of the inner value.
     #[inline]
     pub fn value(&self) -> &V {
-        self.val
+        self.val.value.get()
     }
 
     /// Drop self, release the inner `RwLockReadGuard`, which is the same as `drop()`
@@ -56,13 +56,19 @@ impl<'a, V, S: BuildHasher> ValueRef<'a, V, S> {
     pub fn release(self) {
         drop(self)
     }
+
+    /// Get the expiration time.
+    #[inline]
+    pub fn ttl(&self) -> Duration {
+        self.val.expiration.get_ttl()
+    }
 }
 
 impl<'a, V: Copy, S: BuildHasher> ValueRef<'a, V, S> {
     /// Get the value and drop the inner RwLockReadGuard.
     #[inline]
     pub fn read(self) -> V {
-        let v = *self.val;
+        let v = *self.value();
         drop(self);
         v
     }
@@ -82,7 +88,7 @@ impl<'a, V: Debug, S: BuildHasher> Debug for ValueRef<'a, V, S> {
 
 impl<'a, V: Display, S: BuildHasher> Display for ValueRef<'a, V, S> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.val)
+        write!(f, "{}", self.value())
     }
 }
 
@@ -277,9 +283,11 @@ pub(crate) unsafe fn change_lifetime_const<'a, 'b, T>(x: &'a T) -> &'b T {
 mod test {
     use crate::store::StoreItem;
     use crate::ttl::Time;
-    use crate::utils::{change_lifetime_const, 
-        // SharedNonNull, 
-        SharedValue};
+    use crate::utils::{
+        change_lifetime_const,
+        // SharedNonNull,
+        SharedValue,
+    };
     use crate::{ValueRef, ValueRefMut};
     use parking_lot::RwLock;
     use std::collections::HashMap;
@@ -308,7 +316,8 @@ mod test {
         let lm = RwLock::new(m);
 
         let l = lm.read();
-        let v = unsafe { change_lifetime_const(l.get(&1).unwrap().value.get()) };
+        let item = l.get(&1).unwrap();
+        let v = unsafe { change_lifetime_const(item) };
         let vr = ValueRef::new(l, v);
         assert_eq!(vr.as_ref(), &3);
         eprintln!("{}", vr);
