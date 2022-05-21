@@ -691,6 +691,21 @@ mod sync_test {
         }
         eprintln!("process: {} cleanup: {}", process_win, clean_win);
     }
+
+    #[test]
+    fn test_valueref_ttl() {
+        let ttl = Duration::from_secs(1);
+        let c = Cache::builder(100, 1000)
+        .set_key_builder(TransparentKeyBuilder::default())
+        .set_metrics(true)
+        .finalize()
+        .unwrap();
+        c.try_insert_with_ttl(1, 1, 1, ttl).unwrap();
+        c.wait().unwrap();
+        let val = c.get(&1).unwrap();
+        assert!(val.ttl()>Duration::from_millis(900));
+
+    }
 }
 
 #[cfg(feature = "async")]

@@ -113,7 +113,7 @@ impl<
             }
 
             unsafe {
-                let vptr = change_lifetime_const(item.value.get());
+                let vptr = change_lifetime_const(item);
                 Some(ValueRef::new(data, vptr))
             }
         } else {
