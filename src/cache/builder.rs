@@ -9,8 +9,8 @@ use std::marker::PhantomData;
 use std::time::Duration;
 
 pub struct CacheBuilderCore<
-    K: Hash + Eq,
-    V: Send + Sync + 'static,
+    K,
+    V,
     KH = DefaultKeyBuilder,
     C = DefaultCoster<V>,
     U = DefaultUpdateValidator<V>,
