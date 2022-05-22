@@ -129,10 +129,6 @@ impl<S: BuildHasher + Clone + 'static> ExpirationMap<S> {
         }
     }
 
-    pub fn insert(&self, key: u64, conflict: u64, expiration: Time) {
-        self.try_insert(key, conflict, expiration).unwrap();
-    }
-
     pub fn try_insert(&self, key: u64, conflict: u64, expiration: Time) -> Result<(), CacheError> {
         // Items that don't expire don't need to be in the expiration map.
         if expiration.is_zero() {
@@ -198,10 +194,6 @@ impl<S: BuildHasher + Clone + 'static> ExpirationMap<S> {
         Ok(())
     }
 
-    pub fn remove(&self, key: &u64, expiration: Time) {
-        self.try_remove(key, expiration).unwrap()
-    }
-
     pub fn try_remove(&self, key: &u64, expiration: Time) -> Result<(), CacheError> {
         let bucket_num = storage_bucket(expiration);
         let m = self.buckets.read();
@@ -214,10 +206,6 @@ impl<S: BuildHasher + Clone + 'static> ExpirationMap<S> {
         };
 
         Ok(())
-    }
-
-    pub fn cleanup(&self, now: Time) -> Option<HashMap<u64, u64, S>> {
-        self.try_cleanup(now).unwrap()
     }
 
     pub fn try_cleanup(&self, now: Time) -> Result<Option<HashMap<u64, u64, S>>, CacheError> {

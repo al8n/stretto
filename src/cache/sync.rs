@@ -116,8 +116,8 @@ use std::time::Duration;
 /// [`CacheCallback`]: trait.CacheCallback.html
 /// [`Coster`]: trait.Coster.html
 pub struct CacheBuilder<
-    K: Hash + Eq,
-    V: Send + Sync + 'static,
+    K,
+    V,
     KH = DefaultKeyBuilder,
     C = DefaultCoster<V>,
     U = DefaultUpdateValidator<V>,
@@ -286,13 +286,7 @@ impl<V> Item<V> {
     }
 }
 
-pub(crate) struct CacheProcessor<V, U, CB, S>
-where
-    V: Send + Sync + 'static,
-    U: UpdateValidator<V>,
-    CB: CacheCallback<V>,
-    S: BuildHasher + Clone + 'static + Send,
-{
+pub(crate) struct CacheProcessor<V, U, CB, S>{
     pub(crate) insert_buf_rx: Receiver<Item<V>>,
     pub(crate) stop_rx: Receiver<()>,
     pub(crate) clear_rx: UnboundedReceiver<()>,
@@ -307,13 +301,7 @@ where
     pub(crate) cleanup_duration: Duration,
 }
 
-pub(crate) struct CacheCleaner<'a, V, U, CB, S>
-where
-    V: Send + Sync + 'static,
-    U: UpdateValidator<V>,
-    CB: CacheCallback<V>,
-    S: BuildHasher + Clone + 'static + Send,
-{
+pub(crate) struct CacheCleaner<'a, V, U, CB, S>{
     pub(crate) processor: &'a mut CacheProcessor<V, U, CB, S>,
 }
 
@@ -346,10 +334,7 @@ pub struct Cache<
     U = DefaultUpdateValidator<V>,
     CB = DefaultCacheCallback<V>,
     S = RandomState,
-> where
-    K: Hash + Eq,
-    V: Send + Sync + 'static,
-{
+>{
     /// store is the central concurrent hashmap where key-value items are stored.
     pub(crate) store: Arc<ShardedMap<V, U, S, S>>,
 
@@ -477,7 +462,7 @@ where
             .map_err(|e| {
                 CacheError::ChannelError(format!(
                     "failed to send message to the insert buffer: {}",
-                    e.to_string()
+                    &e
                 ))
             })?;
 
@@ -625,7 +610,7 @@ where
         &mut self,
         res: Result<Instant, RecvError>,
     ) -> Result<(), CacheError> {
-        Ok(res
+        res
             .map_err(|e| CacheError::RecvError(format!("fail to receive msg from ticker: {}", e)))
             .and_then(|_| {
                 self.store.try_cleanup(self.policy.clone()).map(|items| {
@@ -634,7 +619,7 @@ where
                         self.callback.on_evict(victim);
                     });
                 })
-            })?)
+            })
     }
 }
 

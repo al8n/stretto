@@ -116,8 +116,8 @@ use std::time::Duration;
 /// [`Coster`]: trait.Coster.html
 #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 pub struct AsyncCacheBuilder<
-    K: Hash + Eq,
-    V: Send + Sync + 'static,
+    K,
+    V,
     KH = DefaultKeyBuilder,
     C = DefaultCoster<V>,
     U = DefaultUpdateValidator<V>,
@@ -235,11 +235,6 @@ where
 }
 
 pub(crate) struct CacheProcessor<V, U, CB, S>
-where
-    V: Send + Sync + 'static,
-    U: UpdateValidator<V>,
-    CB: CacheCallback<V>,
-    S: BuildHasher + Clone + 'static,
 {
     insert_buf_rx: Receiver<Item<V>>,
     stop_rx: Receiver<()>,
@@ -255,13 +250,7 @@ where
     cleanup_duration: Duration,
 }
 
-pub(crate) struct CacheCleaner<'a, V, U, CB, S>
-where
-    V: Send + Sync + 'static,
-    U: UpdateValidator<V>,
-    CB: CacheCallback<V>,
-    S: BuildHasher + Clone + 'static,
-{
+pub(crate) struct CacheCleaner<'a, V, U, CB, S>{
     pub(crate) processor: &'a mut CacheProcessor<V, U, CB, S>,
 }
 

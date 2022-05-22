@@ -81,7 +81,7 @@ impl<S: BuildHasher + Clone + 'static> AsyncLFUPolicy<S> {
     }
 }
 
-pub(crate) struct PolicyProcessor<S: BuildHasher + Clone + 'static> {
+pub(crate) struct PolicyProcessor<S> {
     inner: Arc<Mutex<PolicyInner<S>>>,
     items_rx: UnboundedReceiver<Vec<u64>>,
     stop_rx: Receiver<()>,
