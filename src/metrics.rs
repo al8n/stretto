@@ -419,23 +419,45 @@ impl MetricsInner {
     }
 }
 
-cfg_serde! {
-    use serde::{Serialize, Serializer};
-    use serde::ser::{SerializeStruct, Error};
+#[cfg(feature = "serde")]
+#[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
+use serde::ser::{Error, SerializeStruct};
+#[cfg(feature = "serde")]
+#[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
+use serde::{Serialize, Serializer};
 
-    impl Serialize for MetricsInner {
-        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
-            let mut s = serializer.serialize_struct("MetricsInner", 13)?;
+#[cfg(feature = "serde")]
+#[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
+impl Serialize for MetricsInner {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut s = serializer.serialize_struct("MetricsInner", 13)?;
 
-            let types: [&'static str; 11] = ["hit", "miss", "keys-added", "keys-updated", "keys-evicted", "cost-added", "cost-evicted", "sets-dropped", "sets-rejected", "gets-dropped", "gets-kept"];
+        let types: [&'static str; 11] = [
+            "hit",
+            "miss",
+            "keys-added",
+            "keys-updated",
+            "keys-evicted",
+            "cost-added",
+            "cost-evicted",
+            "sets-dropped",
+            "sets-rejected",
+            "gets-dropped",
+            "gets-kept",
+        ];
 
-            for (idx, typ) in METRIC_TYPES_ARRAY.iter().enumerate() {
-                s.serialize_field(types[idx], &self.get(typ))?;
-            }
-            s.serialize_field("gets-total", &(self.get(&MetricType::Hit) + self.get(&MetricType::Miss)))?;
-            s.serialize_field("hit-ratio", &self.ratio())?;
-            s.end()
+        for (idx, typ) in METRIC_TYPES_ARRAY.iter().enumerate() {
+            s.serialize_field(types[idx], &self.get(typ))?;
         }
+        s.serialize_field(
+            "gets-total",
+            &(self.get(&MetricType::Hit) + self.get(&MetricType::Miss)),
+        )?;
+        s.serialize_field("hit-ratio", &self.ratio())?;
+        s.end()
     }
 }
 

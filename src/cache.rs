@@ -583,15 +583,19 @@ mod test;
 use crate::Item as CrateItem;
 use std::time::Duration;
 
-cfg_sync!(
-    mod sync;
-    pub use sync::{Cache, CacheBuilder};
-);
+#[cfg(feature = "sync")]
+#[cfg_attr(docsrs, doc(cfg(feature = "sync")))]
+mod sync;
+#[cfg(feature = "sync")]
+#[cfg_attr(docsrs, doc(cfg(feature = "sync")))]
+pub use sync::{Cache, CacheBuilder};
 
-cfg_async!(
-    mod axync;
-    pub use axync::{AsyncCacheBuilder, AsyncCache};
-);
+#[cfg(feature = "async")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+mod axync;
+#[cfg(feature = "async")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+pub use axync::{AsyncCache, AsyncCacheBuilder};
 
 // TODO: find the optimal value for this
 const DEFAULT_INSERT_BUF_SIZE: usize = 32 * 1024;

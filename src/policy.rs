@@ -23,8 +23,8 @@ const DEFAULT_SAMPLES: usize = 5;
 
 macro_rules! impl_policy {
     ($policy: ident) => {
-        use crate::policy::DEFAULT_SAMPLES;
         use crate::policy::PolicyPair;
+        use crate::policy::DEFAULT_SAMPLES;
 
         impl $policy {
             #[inline]
@@ -183,15 +183,19 @@ macro_rules! impl_policy {
     };
 }
 
-cfg_sync!(
-    mod sync;
-    pub(crate) use sync::LFUPolicy;
-);
+#[cfg(feature = "sync")]
+#[cfg_attr(docsrs, doc(cfg(feature = "sync")))]
+mod sync;
+#[cfg(feature = "sync")]
+#[cfg_attr(docsrs, doc(cfg(feature = "sync")))]
+pub(crate) use sync::LFUPolicy;
 
-cfg_async!(
-    mod axync;
-    pub(crate) use axync::AsyncLFUPolicy;
-);
+#[cfg(feature = "async")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+mod axync;
+#[cfg(feature = "async")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+pub(crate) use axync::AsyncLFUPolicy;
 
 pub(crate) struct PolicyInner<S = RandomState> {
     admit: TinyLFU,
