@@ -324,7 +324,7 @@ pub trait UpdateValidator<V>: Send + Sync + 'static {
 
 /// DefaultUpdateValidator is a noop update validator.
 #[doc(hidden)]
-pub struct DefaultUpdateValidator<V: Send + Sync> {
+pub struct DefaultUpdateValidator<V> {
     _marker: PhantomData<fn(V)>,
 }
 
@@ -501,7 +501,7 @@ pub trait TransparentKey: Hash + Eq {
 /// [`DefaultKeyBuilder`]: struct.DefaultKeyBuilder.html
 /// [`TransparentKey`]: trait.TransparentKey.html
 #[derive(Default, Copy, Clone, Eq, PartialEq, Debug)]
-pub struct TransparentKeyBuilder<K: TransparentKey> {
+pub struct TransparentKeyBuilder<K> {
     _marker: PhantomData<K>,
 }
 
