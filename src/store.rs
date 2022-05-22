@@ -182,10 +182,6 @@ impl<
         Ok(())
     }
 
-    pub fn insert(&self, key: u64, val: V, conflict: u64, expiration: Time) {
-        self.try_insert(key, val, conflict, expiration).unwrap();
-    }
-
     pub fn try_update(
         &self,
         key: u64,
@@ -214,16 +210,8 @@ impl<
         }
     }
 
-    pub fn update(&self, key: u64, val: V, conflict: u64, expiration: Time) -> UpdateResult<V> {
-        self.try_update(key, val, conflict, expiration).unwrap()
-    }
-
     pub fn len(&self) -> usize {
         self.shards.iter().map(|l| l.read().len()).sum()
-    }
-
-    pub fn remove(&self, key: &u64, conflict: u64) -> Option<StoreItem<V>> {
-        self.try_remove(key, conflict).unwrap()
     }
 
     pub fn try_remove(&self, key: &u64, conflict: u64) -> Result<Option<StoreItem<V>>, CacheError> {
@@ -250,13 +238,6 @@ impl<
             .read()
             .get(key)
             .map(|val| val.expiration)
-    }
-
-    pub fn cleanup<PS: BuildHasher + Clone + 'static>(
-        &self,
-        policy: Arc<LFUPolicy<PS>>,
-    ) -> Vec<CrateItem<V>> {
-        self.try_cleanup(policy).unwrap()
     }
 
     pub fn try_cleanup<PS: BuildHasher + Clone + 'static>(
@@ -409,7 +390,7 @@ mod test {
     fn test_store_set_get() {
         let s: ShardedMap<u64> = ShardedMap::new();
 
-        s.insert(1, 2, 0, Time::now());
+        s.try_insert(1, 2, 0, Time::now()).unwrap();
         let val = s.get(&1, 0).unwrap();
         assert_eq!(&2, val.value());
         val.release();
@@ -428,7 +409,7 @@ mod test {
         let s1 = s.clone();
 
         std::thread::spawn(move || {
-            s.insert(1, 2, 0, Time::now());
+            s.try_insert(1, 2, 0, Time::now()).unwrap();
         });
 
         loop {
@@ -448,7 +429,7 @@ mod test {
         let s1 = s.clone();
 
         std::thread::spawn(move || {
-            s.insert(1, 2, 0, Time::now());
+            s.try_insert(1, 2, 0, Time::now()).unwrap();
             loop {
                 match s.get(&1, 0) {
                     None => continue,
@@ -483,28 +464,28 @@ mod test {
     fn test_store_remove() {
         let s: ShardedMap<u64> = ShardedMap::new();
 
-        s.insert(1, 2, 0, Time::now());
-        assert_eq!(s.remove(&1, 0).unwrap().value.into_inner(), 2);
+        s.try_insert(1, 2, 0, Time::now()).unwrap();
+        assert_eq!(s.try_remove(&1, 0).unwrap().unwrap().value.into_inner(), 2);
         let v = s.get(&1, 0);
         assert!(v.is_none());
-        assert!(s.remove(&2, 0).is_none());
+        assert!(s.try_remove(&2, 0).unwrap().is_none());
     }
 
     #[test]
     fn test_store_update() {
         let s = ShardedMap::new();
-        s.insert(1, 1, 0, Time::now());
-        let v = s.update(1, 2, 0, Time::now());
+        s.try_insert(1, 1, 0, Time::now()).unwrap();
+        let v = s.try_update(1, 2, 0, Time::now()).unwrap();
         assert_eq!(v.into_inner(), 1);
 
         assert_eq!(s.get(&1, 0).unwrap().read(), 2);
 
-        let v = s.update(1, 3, 0, Time::now());
+        let v = s.try_update(1, 3, 0, Time::now()).unwrap();
         assert_eq!(v.into_inner(), 2);
 
         assert_eq!(s.get(&1, 0).unwrap().read(), 3);
 
-        let v = s.update(2, 2, 0, Time::now());
+        let v = s.try_update(2, 2, 0, Time::now()).unwrap();
         assert_eq!(v.into_inner(), 2);
         let v = s.get(&2, 0);
         assert!(v.is_none());
@@ -514,14 +495,14 @@ mod test {
     fn test_store_expiration() {
         let exp = Time::now_with_expiration(Duration::from_secs(1));
         let s = ShardedMap::new();
-        s.insert(1, 1, 0, exp);
+        s.try_insert(1, 1, 0, exp).unwrap();
 
         assert_eq!(s.get(&1, 0).unwrap().read(), 1);
 
         let ttl = s.expiration(&1);
         assert_eq!(exp, ttl.unwrap());
 
-        s.remove(&1, 0);
+        s.try_remove(&1, 0).unwrap();
         assert!(s.get(&1, 0).is_none());
         let ttl = s.expiration(&1);
         assert!(ttl.is_none());
@@ -545,14 +526,14 @@ mod test {
         drop(data1);
         assert!(s.get(&1, 1).is_none());
 
-        s.insert(1, 2, 1, Time::now());
+        s.try_insert(1, 2, 1, Time::now()).unwrap();
         assert_ne!(s.get(&1, 0).unwrap().read(), 2);
 
-        let v = s.update(1, 2, 1, Time::now());
+        let v = s.try_update(1, 2, 1, Time::now()).unwrap();
         assert_eq!(v.into_inner(), 2);
         assert_ne!(s.get(&1, 0).unwrap().read(), 2);
 
-        assert!(s.remove(&1, 1).is_none());
+        assert!(s.try_remove(&1, 1).unwrap().is_none());
         assert_eq!(s.get(&1, 0).unwrap().read(), 1);
     }
 }

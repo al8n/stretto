@@ -462,7 +462,7 @@ where
             .map_err(|e| {
                 CacheError::ChannelError(format!(
                     "failed to send message to the insert buffer: {}",
-                    e.to_string()
+                    &e
                 ))
             })?;
 
@@ -610,7 +610,7 @@ where
         &mut self,
         res: Result<Instant, RecvError>,
     ) -> Result<(), CacheError> {
-        Ok(res
+        res
             .map_err(|e| CacheError::RecvError(format!("fail to receive msg from ticker: {}", e)))
             .and_then(|_| {
                 self.store.try_cleanup(self.policy.clone()).map(|items| {
@@ -619,7 +619,7 @@ where
                         self.callback.on_evict(victim);
                     });
                 })
-            })?)
+            })
     }
 }
 
