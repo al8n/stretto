@@ -390,7 +390,7 @@ impl<K, V, KH, C, U, CB, S> AsyncCache<K, V, KH, C, U, CB, S>
         C: Coster<V>,
         U: UpdateValidator<V>,
         CB: CacheCallback<V>,
-        S: BuildHasher + Clone + 'static,
+        S: BuildHasher + Clone + 'static + Send,
 {
     /// `insert` attempts to add the key-value item to the cache. If it returns false,
     /// then the `insert` was dropped and the key-value item isn't added to the cache. If

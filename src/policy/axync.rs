@@ -15,7 +15,7 @@ pub(crate) struct AsyncLFUPolicy<S = RandomState> {
     pub(crate) metrics: Arc<Metrics>,
 }
 
-impl<S: BuildHasher + Clone + 'static> AsyncLFUPolicy<S> {
+impl<S: BuildHasher + Clone + 'static + Send> AsyncLFUPolicy<S> {
     #[inline]
     pub fn with_hasher(ctrs: usize, max_cost: i64, hasher: S) -> Result<Self, CacheError> {
         let inner = PolicyInner::with_hasher(ctrs, max_cost, hasher)?;
@@ -84,7 +84,7 @@ pub(crate) struct PolicyProcessor<S: BuildHasher + Clone + 'static> {
     stop_rx: Receiver<()>,
 }
 
-impl<S: BuildHasher + Clone + 'static> PolicyProcessor<S> {
+impl<S: BuildHasher + Clone + 'static + Send> PolicyProcessor<S> {
     #[inline]
     fn new(
         inner: Arc<Mutex<PolicyInner<S>>>,
@@ -130,8 +130,8 @@ impl<S: BuildHasher + Clone + 'static> PolicyProcessor<S> {
 
 }
 
-unsafe impl<S: BuildHasher + Clone + 'static> Send for PolicyProcessor<S> {}
-unsafe impl<S: BuildHasher + Clone + 'static> Sync for PolicyProcessor<S> {}
+unsafe impl<S: BuildHasher + Clone + 'static + Send> Send for PolicyProcessor<S> {}
+unsafe impl<S: BuildHasher + Clone + 'static + Send + Sync> Sync for PolicyProcessor<S> {}
 
 
 impl_policy!(AsyncLFUPolicy);

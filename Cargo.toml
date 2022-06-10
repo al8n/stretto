@@ -1,6 +1,6 @@
 [package]
 name = "stretto"
-version = "0.4.4"
+version = "0.4.6"
 authors = ["Al Liu <scygliu1@gmail.com>"]
 description = "Stretto is a high performance thread-safe memory-bound Rust cache."
 homepage = "https://github.com/al8n/stretto"
@@ -47,14 +47,14 @@ parking_lot = "0.12"
 rand = "0.8"
 serde = {version = "1", optional = true}
 serde_json = {version = "1", optional = true}
-tokio = { version = "1.17", optional = true }
+tokio = { version = "1.19", optional = true }
 twox-hash = "1.6"
 wg = "0.2"
 
 [dev-dependencies]
 serde = {version = "1", features = ["serde_derive"]}
 serde_json = "1"
-tokio = {version = "1.17", features = ["rt-multi-thread", "test-util"]}
+tokio = {version = "1.19", features = ["rt-multi-thread", "test-util"]}
 
 [package.metadata.docs.rs]
 all-features = true

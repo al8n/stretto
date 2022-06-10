@@ -23,8 +23,8 @@ const DEFAULT_SAMPLES: usize = 5;
 
 macro_rules! impl_policy {
     ($policy: ident) => {
-        use crate::policy::DEFAULT_SAMPLES;
         use crate::policy::PolicyPair;
+        use crate::policy::DEFAULT_SAMPLES;
 
         impl $policy {
             #[inline]
