@@ -163,169 +163,168 @@ fn test_policy_add_after_close() {
     p.add(1, 1);
 }
 
-cfg_async! {
-    mod async_test {
-        use super::*;
-        use std::sync::Arc;
-        use tokio::time::sleep;
-        use crate::policy::AsyncLFUPolicy;
+#[cfg(feature = "async")]
+mod async_test {
+    use super::*;
+    use crate::policy::AsyncLFUPolicy;
+    use std::sync::Arc;
+    use tokio::time::sleep;
 
-        #[tokio::test]
-        async fn test_policy() {
-            let _ = AsyncLFUPolicy::new(100, 10);
-        }
+    #[tokio::test]
+    async fn test_policy() {
+        let _ = AsyncLFUPolicy::new(100, 10);
+    }
 
-        #[tokio::test]
-        async fn test_policy_metrics() {
-            let mut p = AsyncLFUPolicy::new(100, 10).unwrap();
-            p.collect_metrics(Arc::new(Metrics::new_op()));
-            assert!(p.metrics.is_op());
-            assert!(p.inner.lock().costs.metrics.is_op());
-        }
+    #[tokio::test]
+    async fn test_policy_metrics() {
+        let mut p = AsyncLFUPolicy::new(100, 10).unwrap();
+        p.collect_metrics(Arc::new(Metrics::new_op()));
+        assert!(p.metrics.is_op());
+        assert!(p.inner.lock().costs.metrics.is_op());
+    }
 
-        #[tokio::test]
-        async fn test_policy_process_items() {
-            let p = AsyncLFUPolicy::new(100, 10).unwrap();
+    #[tokio::test]
+    async fn test_policy_process_items() {
+        let p = AsyncLFUPolicy::new(100, 10).unwrap();
 
-            p.push(vec![1, 2, 2]).await.unwrap();
-            sleep(WAIT).await;
+        p.push(vec![1, 2, 2]).await.unwrap();
+        sleep(WAIT).await;
 
-            let inner = p.inner.lock();
-            assert_eq!(inner.admit.estimate(2), 2);
-            assert_eq!(inner.admit.estimate(1), 1);
-            drop(inner);
+        let inner = p.inner.lock();
+        assert_eq!(inner.admit.estimate(2), 2);
+        assert_eq!(inner.admit.estimate(1), 1);
+        drop(inner);
 
-            p.stop_tx.send(()).await.unwrap();
-            sleep(WAIT).await;
-            assert!(p.push(vec![3, 3, 3]).await.is_err());
-            let inner = p.inner.lock();
-            assert_eq!(inner.admit.estimate(3), 0);
-        }
+        p.stop_tx.send(()).await.unwrap();
+        sleep(WAIT).await;
+        assert!(p.push(vec![3, 3, 3]).await.is_err());
+        let inner = p.inner.lock();
+        assert_eq!(inner.admit.estimate(3), 0);
+    }
 
-        #[tokio::test]
-        async fn test_policy_push() {
-            let p = AsyncLFUPolicy::new(100, 10).unwrap();
-            assert!(p.push(vec![]).await.unwrap());
+    #[tokio::test]
+    async fn test_policy_push() {
+        let p = AsyncLFUPolicy::new(100, 10).unwrap();
+        assert!(p.push(vec![]).await.unwrap());
 
-            let mut keep_count = 0;
-            for _ in 0..10 {
-                if p.push(vec![1, 2, 3, 4, 5]).await.unwrap() {
-                    keep_count += 1;
-                }
+        let mut keep_count = 0;
+        for _ in 0..10 {
+            if p.push(vec![1, 2, 3, 4, 5]).await.unwrap() {
+                keep_count += 1;
             }
-
-            assert_ne!(0, keep_count);
         }
 
-        #[tokio::test]
-        async fn test_policy_add() {
-            let p = AsyncLFUPolicy::new(1000, 100).unwrap();
-            let (victims, added) = p.add(1, 101);
-            assert!(victims.is_none());
-            assert!(!added);
+        assert_ne!(0, keep_count);
+    }
 
-            let mut inner = p.inner.lock();
-            inner.costs.increment(1, 1);
-            inner.admit.increment(1);
-            inner.admit.increment(2);
-            inner.admit.increment(3);
-            drop(inner);
+    #[tokio::test]
+    async fn test_policy_add() {
+        let p = AsyncLFUPolicy::new(1000, 100).unwrap();
+        let (victims, added) = p.add(1, 101);
+        assert!(victims.is_none());
+        assert!(!added);
 
-            let (victims, added) = p.add(1, 1);
-            assert!(victims.is_none());
-            assert!(!added);
+        let mut inner = p.inner.lock();
+        inner.costs.increment(1, 1);
+        inner.admit.increment(1);
+        inner.admit.increment(2);
+        inner.admit.increment(3);
+        drop(inner);
 
-            let (victims, added) = p.add(2, 20);
-            assert!(victims.is_none());
-            assert!(added);
+        let (victims, added) = p.add(1, 1);
+        assert!(victims.is_none());
+        assert!(!added);
 
-            let (victims, added) = p.add(3, 90);
-            assert!(victims.is_some());
-            assert!(added);
+        let (victims, added) = p.add(2, 20);
+        assert!(victims.is_none());
+        assert!(added);
 
-            let (victims, added) = p.add(4, 20);
-            assert!(victims.is_some());
-            assert!(!added);
-        }
+        let (victims, added) = p.add(3, 90);
+        assert!(victims.is_some());
+        assert!(added);
 
-        #[tokio::test]
-        async fn test_policy_has() {
-            let p = AsyncLFUPolicy::new(100, 10).unwrap();
-            p.add(1, 1);
-            assert!(p.contains(&1));
-            assert!(!p.contains(&2));
-        }
+        let (victims, added) = p.add(4, 20);
+        assert!(victims.is_some());
+        assert!(!added);
+    }
 
-        #[tokio::test]
-        async fn test_policy_del() {
-            let p = AsyncLFUPolicy::new(100, 10).unwrap();
-            p.add(1, 1);
-            p.remove(&1);
-            p.remove(&2);
-            assert!(!p.contains(&1));
-            assert!(!p.contains(&2));
-        }
+    #[tokio::test]
+    async fn test_policy_has() {
+        let p = AsyncLFUPolicy::new(100, 10).unwrap();
+        p.add(1, 1);
+        assert!(p.contains(&1));
+        assert!(!p.contains(&2));
+    }
 
-        #[tokio::test]
-        async fn test_policy_cap() {
-            let p = AsyncLFUPolicy::new(100, 10).unwrap();
-            p.add(1, 1);
-            assert_eq!(p.cap(), 9);
-        }
+    #[tokio::test]
+    async fn test_policy_del() {
+        let p = AsyncLFUPolicy::new(100, 10).unwrap();
+        p.add(1, 1);
+        p.remove(&1);
+        p.remove(&2);
+        assert!(!p.contains(&1));
+        assert!(!p.contains(&2));
+    }
 
-        #[tokio::test]
-        async fn test_policy_update() {
-            let p = AsyncLFUPolicy::new(100, 10).unwrap();
-            p.add(1, 1);
-            p.update(&1, 2);
-            let inner = p.inner.lock();
-            assert_eq!(inner.costs.key_costs.get(&1).unwrap(), &2);
-        }
+    #[tokio::test]
+    async fn test_policy_cap() {
+        let p = AsyncLFUPolicy::new(100, 10).unwrap();
+        p.add(1, 1);
+        assert_eq!(p.cap(), 9);
+    }
 
-        #[tokio::test]
-        async fn test_policy_cost() {
-            let p = AsyncLFUPolicy::new(100, 10).unwrap();
-            p.add(1, 2);
-            assert_eq!(p.cost(&1), 2);
-            assert_eq!(p.cost(&2), -1);
-        }
+    #[tokio::test]
+    async fn test_policy_update() {
+        let p = AsyncLFUPolicy::new(100, 10).unwrap();
+        p.add(1, 1);
+        p.update(&1, 2);
+        let inner = p.inner.lock();
+        assert_eq!(inner.costs.key_costs.get(&1).unwrap(), &2);
+    }
 
-        #[tokio::test]
-        async fn test_policy_clear() {
-            let p = AsyncLFUPolicy::new(100, 10).unwrap();
-            p.add(1, 1);
-            p.add(2, 2);
-            p.add(3, 3);
-            p.clear();
+    #[tokio::test]
+    async fn test_policy_cost() {
+        let p = AsyncLFUPolicy::new(100, 10).unwrap();
+        p.add(1, 2);
+        assert_eq!(p.cost(&1), 2);
+        assert_eq!(p.cost(&2), -1);
+    }
 
-            assert_eq!(p.cap(), 10);
-            assert!(!p.contains(&2));
-            assert!(!p.contains(&2));
-            assert!(!p.contains(&3));
-        }
+    #[tokio::test]
+    async fn test_policy_clear() {
+        let p = AsyncLFUPolicy::new(100, 10).unwrap();
+        p.add(1, 1);
+        p.add(2, 2);
+        p.add(3, 3);
+        p.clear();
 
-        #[tokio::test]
-        async fn test_policy_close() {
-            let p = AsyncLFUPolicy::new(100, 10).unwrap();
-            p.add(1, 1);
-            p.close().await.unwrap();
-            sleep(WAIT).await;
-            assert!(p.items_tx.send(vec![1]).is_err())
-        }
+        assert_eq!(p.cap(), 10);
+        assert!(!p.contains(&2));
+        assert!(!p.contains(&2));
+        assert!(!p.contains(&3));
+    }
 
-        #[tokio::test]
-        async fn test_policy_push_after_close() {
-            let p = AsyncLFUPolicy::new(100, 10).unwrap();
-            p.close().await.unwrap();
-            assert!(!p.push(vec![1, 2]).await.unwrap());
-        }
+    #[tokio::test]
+    async fn test_policy_close() {
+        let p = AsyncLFUPolicy::new(100, 10).unwrap();
+        p.add(1, 1);
+        p.close().await.unwrap();
+        sleep(WAIT).await;
+        assert!(p.items_tx.send(vec![1]).is_err())
+    }
 
-        #[tokio::test]
-        async fn test_policy_add_after_close() {
-            let p = AsyncLFUPolicy::new(100, 10).unwrap();
-            p.close().await.unwrap();
-            p.add(1, 1);
-        }
+    #[tokio::test]
+    async fn test_policy_push_after_close() {
+        let p = AsyncLFUPolicy::new(100, 10).unwrap();
+        p.close().await.unwrap();
+        assert!(!p.push(vec![1, 2]).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_policy_add_after_close() {
+        let p = AsyncLFUPolicy::new(100, 10).unwrap();
+        p.close().await.unwrap();
+        p.add(1, 1);
     }
 }
 

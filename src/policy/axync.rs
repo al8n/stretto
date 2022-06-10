@@ -1,11 +1,14 @@
+use crate::axync::{
+    select, spawn, stop_channel, unbounded, JoinHandle, Receiver, Sender, UnboundedReceiver,
+    UnboundedSender,
+};
+use crate::policy::PolicyInner;
+use crate::{CacheError, MetricType, Metrics};
+use parking_lot::Mutex;
 use std::collections::hash_map::RandomState;
 use std::hash::BuildHasher;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use parking_lot::Mutex;
-use crate::axync::{Sender, stop_channel, unbounded, UnboundedSender, select, UnboundedReceiver, Receiver, JoinHandle, spawn};
-use crate::{CacheError, Metrics, MetricType};
-use crate::policy::PolicyInner;
+use std::sync::Arc;
 
 pub(crate) struct AsyncLFUPolicy<S = RandomState> {
     pub(crate) inner: Arc<Mutex<PolicyInner<S>>>,
@@ -47,19 +50,19 @@ impl<S: BuildHasher + Clone + 'static + Send> AsyncLFUPolicy<S> {
         let first = keys[0];
 
         select! {
-                rst = async { self.items_tx.send(keys) } => rst.map(|_| {
-                    self.metrics.add(MetricType::KeepGets, first, num_of_keys);
-                    true
-                })
-                .map_err(|e| {
-                    self.metrics.add(MetricType::DropGets, first, num_of_keys);
-                    CacheError::SendError(format!("sending on a disconnected channel, msg: {:?}", e))
-                }),
-                else => {
-                    self.metrics.add(MetricType::DropGets, first, num_of_keys);
-                    return Ok(false);
-                }
+            rst = async { self.items_tx.send(keys) } => rst.map(|_| {
+                self.metrics.add(MetricType::KeepGets, first, num_of_keys);
+                true
+            })
+            .map_err(|e| {
+                self.metrics.add(MetricType::DropGets, first, num_of_keys);
+                CacheError::SendError(format!("sending on a disconnected channel, msg: {:?}", e))
+            }),
+            else => {
+                self.metrics.add(MetricType::DropGets, first, num_of_keys);
+                return Ok(false);
             }
+        }
     }
 
     #[inline]
@@ -78,7 +81,7 @@ impl<S: BuildHasher + Clone + 'static + Send> AsyncLFUPolicy<S> {
     }
 }
 
-pub(crate) struct PolicyProcessor<S: BuildHasher + Clone + 'static> {
+pub(crate) struct PolicyProcessor<S> {
     inner: Arc<Mutex<PolicyInner<S>>>,
     items_rx: UnboundedReceiver<Vec<u64>>,
     stop_rx: Receiver<()>,
@@ -98,40 +101,37 @@ impl<S: BuildHasher + Clone + 'static + Send> PolicyProcessor<S> {
         }
     }
 
-
-        #[inline]
-        fn spawn(mut self) -> JoinHandle<()> {
-            spawn(async {
-                loop {
-                    select! {
-                        items = self.items_rx.recv() => self.handle_items(items),
-                        _ = self.stop_rx.recv() => {
-                            drop(self);
-                            return;
-                        },
-                    }
-                }
-            })
-        }
-
-        // TODO: None handle
-        #[inline]
-        fn handle_items(&self, items: Option<Vec<u64>>) {
-            match items {
-                Some(items) => {
-                    let mut inner = self.inner.lock();
-                    inner.admit.increments(items);
-                }
-                None => {
-                    // error!("policy processor error")
+    #[inline]
+    fn spawn(mut self) -> JoinHandle<()> {
+        spawn(async {
+            loop {
+                select! {
+                    items = self.items_rx.recv() => self.handle_items(items),
+                    _ = self.stop_rx.recv() => {
+                        drop(self);
+                        return;
+                    },
                 }
             }
-        }
+        })
+    }
 
+    // TODO: None handle
+    #[inline]
+    fn handle_items(&self, items: Option<Vec<u64>>) {
+        match items {
+            Some(items) => {
+                let mut inner = self.inner.lock();
+                inner.admit.increments(items);
+            }
+            None => {
+                // error!("policy processor error")
+            }
+        }
+    }
 }
 
 unsafe impl<S: BuildHasher + Clone + 'static + Send> Send for PolicyProcessor<S> {}
 unsafe impl<S: BuildHasher + Clone + 'static + Send + Sync> Sync for PolicyProcessor<S> {}
-
 
 impl_policy!(AsyncLFUPolicy);

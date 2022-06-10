@@ -174,11 +174,9 @@
 #![allow(clippy::too_many_arguments, clippy::type_complexity)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(docsrs, allow(unused_attributes))]
-mod error;
-#[macro_use]
-mod macros;
 mod bbloom;
 mod cache;
+mod error;
 mod histogram;
 mod metrics;
 /// This package includes multiple probabalistic data structures needed for
@@ -204,46 +202,49 @@ extern crate log;
 #[cfg(feature = "serde")]
 extern crate serde;
 
-cfg_async!(
-    pub(crate) mod axync {
-        pub(crate) use tokio::select;
-        pub(crate) use tokio::sync::mpsc::{
-            channel as bounded, Receiver, Sender, UnboundedReceiver, UnboundedSender,
-        };
-        pub(crate) use tokio::task::{spawn, JoinHandle};
-        pub(crate) use tokio::time::{sleep, Instant};
-        pub(crate) type WaitGroup = wg::AsyncWaitGroup;
-        use tokio::sync::mpsc::unbounded_channel;
+#[cfg(feature = "async")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+pub(crate) mod axync {
+    pub(crate) use tokio::select;
+    pub(crate) use tokio::sync::mpsc::{
+        channel as bounded, Receiver, Sender, UnboundedReceiver, UnboundedSender,
+    };
+    pub(crate) use tokio::task::{spawn, JoinHandle};
+    pub(crate) use tokio::time::{sleep, Instant};
+    pub(crate) type WaitGroup = wg::AsyncWaitGroup;
+    use tokio::sync::mpsc::unbounded_channel;
 
-        pub(crate) fn stop_channel() -> (Sender<()>, Receiver<()>) {
-            bounded(1)
-        }
-
-        pub(crate) fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
-            unbounded_channel::<T>()
-        }
+    pub(crate) fn stop_channel() -> (Sender<()>, Receiver<()>) {
+        bounded(1)
     }
 
-    pub use cache::{AsyncCache, AsyncCacheBuilder};
-);
-
-cfg_sync!(
-    pub(crate) mod sync {
-        pub(crate) use crossbeam_channel::{bounded, select, unbounded, Receiver, Sender};
-        pub(crate) use std::thread::{spawn, JoinHandle};
-        pub(crate) use std::time::Instant;
-
-        pub(crate) type UnboundedSender<T> = Sender<T>;
-        pub(crate) type UnboundedReceiver<T> = Receiver<T>;
-        pub(crate) type WaitGroup = wg::WaitGroup;
-
-        pub(crate) fn stop_channel() -> (Sender<()>, Receiver<()>) {
-            bounded(0)
-        }
+    pub(crate) fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
+        unbounded_channel::<T>()
     }
+}
+#[cfg(feature = "async")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+pub use cache::{AsyncCache, AsyncCacheBuilder};
 
-    pub use cache::{Cache, CacheBuilder};
-);
+#[cfg(feature = "sync")]
+#[cfg_attr(docsrs, doc(cfg(feature = "sync")))]
+pub(crate) mod sync {
+    pub(crate) use crossbeam_channel::{bounded, select, unbounded, Receiver, Sender};
+    pub(crate) use std::thread::{spawn, JoinHandle};
+    pub(crate) use std::time::Instant;
+
+    pub(crate) type UnboundedSender<T> = Sender<T>;
+    pub(crate) type UnboundedReceiver<T> = Receiver<T>;
+    pub(crate) type WaitGroup = wg::WaitGroup;
+
+    pub(crate) fn stop_channel() -> (Sender<()>, Receiver<()>) {
+        bounded(0)
+    }
+}
+
+#[cfg(feature = "sync")]
+#[cfg_attr(docsrs, doc(cfg(feature = "sync")))]
+pub use cache::{Cache, CacheBuilder};
 
 pub use error::CacheError;
 pub use histogram::Histogram;
@@ -324,7 +325,7 @@ pub trait UpdateValidator<V>: Send + Sync + 'static {
 
 /// DefaultUpdateValidator is a noop update validator.
 #[doc(hidden)]
-pub struct DefaultUpdateValidator<V: Send + Sync> {
+pub struct DefaultUpdateValidator<V> {
     _marker: PhantomData<fn(V)>,
 }
 
@@ -501,7 +502,7 @@ pub trait TransparentKey: Hash + Eq {
 /// [`DefaultKeyBuilder`]: struct.DefaultKeyBuilder.html
 /// [`TransparentKey`]: trait.TransparentKey.html
 #[derive(Default, Copy, Clone, Eq, PartialEq, Debug)]
-pub struct TransparentKeyBuilder<K: TransparentKey> {
+pub struct TransparentKeyBuilder<K> {
     _marker: PhantomData<K>,
 }
 

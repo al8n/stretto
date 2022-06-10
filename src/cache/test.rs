@@ -622,6 +622,7 @@ mod sync_test {
     }
 
     // Regression test for bug https://github.com/dgraph-io/ristretto/issues/167
+    // TODO: still fail sometimes
     #[test]
     fn test_cache_drop_updates() {
         fn test() {
