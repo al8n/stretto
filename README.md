@@ -141,7 +141,7 @@ fn main() {
 ```
 
 #### Async
-Stretto support runtime agnostic `AsyncCache`, the only thing you need to do is parse a spawner when building the `AsyncCache`.
+Stretto support runtime agnostic `AsyncCache`, the only thing you need to do is passing a `spawner` when building the `AsyncCache`.
 
 ```rust
 use std::time::Duration;
