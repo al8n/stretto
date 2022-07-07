@@ -26,13 +26,6 @@ macro_rules! impl_policy {
         use crate::policy::PolicyPair;
         use crate::policy::DEFAULT_SAMPLES;
 
-        impl $policy {
-            #[inline]
-            pub(crate) fn new(ctrs: usize, max_cost: i64) -> Result<Self, CacheError> {
-                Self::with_hasher(ctrs, max_cost, RandomState::new())
-            }
-        }
-
         impl<S: BuildHasher + Clone + 'static> $policy<S> {
             #[inline]
             pub fn collect_metrics(&mut self, metrics: Arc<Metrics>) {
@@ -178,8 +171,8 @@ macro_rules! impl_policy {
             }
         }
 
-        unsafe impl<S: BuildHasher + Clone + 'static> Send for $policy<S> {}
-        unsafe impl<S: BuildHasher + Clone + 'static> Sync for $policy<S> {}
+        unsafe impl<S: BuildHasher + Clone + 'static + Send> Send for $policy<S> {}
+        unsafe impl<S: BuildHasher + Clone + 'static + Send + Sync> Sync for $policy<S> {}
     };
 }
 

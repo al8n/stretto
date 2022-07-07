@@ -172,12 +172,12 @@ mod async_test {
 
     #[tokio::test]
     async fn test_policy() {
-        let _ = AsyncLFUPolicy::new(100, 10);
+        let _ = AsyncLFUPolicy::new(100, 10, tokio::spawn);
     }
 
     #[tokio::test]
     async fn test_policy_metrics() {
-        let mut p = AsyncLFUPolicy::new(100, 10).unwrap();
+        let mut p = AsyncLFUPolicy::new(100, 10, tokio::spawn).unwrap();
         p.collect_metrics(Arc::new(Metrics::new_op()));
         assert!(p.metrics.is_op());
         assert!(p.inner.lock().costs.metrics.is_op());
@@ -185,7 +185,7 @@ mod async_test {
 
     #[tokio::test]
     async fn test_policy_process_items() {
-        let p = AsyncLFUPolicy::new(100, 10).unwrap();
+        let p = AsyncLFUPolicy::new(100, 10, tokio::spawn).unwrap();
 
         p.push(vec![1, 2, 2]).await.unwrap();
         sleep(WAIT).await;
@@ -204,7 +204,7 @@ mod async_test {
 
     #[tokio::test]
     async fn test_policy_push() {
-        let p = AsyncLFUPolicy::new(100, 10).unwrap();
+        let p = AsyncLFUPolicy::new(100, 10, tokio::spawn).unwrap();
         assert!(p.push(vec![]).await.unwrap());
 
         let mut keep_count = 0;
@@ -219,7 +219,7 @@ mod async_test {
 
     #[tokio::test]
     async fn test_policy_add() {
-        let p = AsyncLFUPolicy::new(1000, 100).unwrap();
+        let p = AsyncLFUPolicy::new(1000, 100, tokio::spawn).unwrap();
         let (victims, added) = p.add(1, 101);
         assert!(victims.is_none());
         assert!(!added);
@@ -250,7 +250,7 @@ mod async_test {
 
     #[tokio::test]
     async fn test_policy_has() {
-        let p = AsyncLFUPolicy::new(100, 10).unwrap();
+        let p = AsyncLFUPolicy::new(100, 10, tokio::spawn).unwrap();
         p.add(1, 1);
         assert!(p.contains(&1));
         assert!(!p.contains(&2));
@@ -258,7 +258,7 @@ mod async_test {
 
     #[tokio::test]
     async fn test_policy_del() {
-        let p = AsyncLFUPolicy::new(100, 10).unwrap();
+        let p = AsyncLFUPolicy::new(100, 10, tokio::spawn).unwrap();
         p.add(1, 1);
         p.remove(&1);
         p.remove(&2);
@@ -268,14 +268,14 @@ mod async_test {
 
     #[tokio::test]
     async fn test_policy_cap() {
-        let p = AsyncLFUPolicy::new(100, 10).unwrap();
+        let p = AsyncLFUPolicy::new(100, 10, tokio::spawn).unwrap();
         p.add(1, 1);
         assert_eq!(p.cap(), 9);
     }
 
     #[tokio::test]
     async fn test_policy_update() {
-        let p = AsyncLFUPolicy::new(100, 10).unwrap();
+        let p = AsyncLFUPolicy::new(100, 10, tokio::spawn).unwrap();
         p.add(1, 1);
         p.update(&1, 2);
         let inner = p.inner.lock();
@@ -284,7 +284,7 @@ mod async_test {
 
     #[tokio::test]
     async fn test_policy_cost() {
-        let p = AsyncLFUPolicy::new(100, 10).unwrap();
+        let p = AsyncLFUPolicy::new(100, 10, tokio::spawn).unwrap();
         p.add(1, 2);
         assert_eq!(p.cost(&1), 2);
         assert_eq!(p.cost(&2), -1);
@@ -292,7 +292,7 @@ mod async_test {
 
     #[tokio::test]
     async fn test_policy_clear() {
-        let p = AsyncLFUPolicy::new(100, 10).unwrap();
+        let p = AsyncLFUPolicy::new(100, 10, tokio::spawn).unwrap();
         p.add(1, 1);
         p.add(2, 2);
         p.add(3, 3);
@@ -306,23 +306,23 @@ mod async_test {
 
     #[tokio::test]
     async fn test_policy_close() {
-        let p = AsyncLFUPolicy::new(100, 10).unwrap();
+        let p = AsyncLFUPolicy::new(100, 10, tokio::spawn).unwrap();
         p.add(1, 1);
         p.close().await.unwrap();
         sleep(WAIT).await;
-        assert!(p.items_tx.send(vec![1]).is_err())
+        assert!(p.items_tx.send(vec![1]).await.is_err())
     }
 
     #[tokio::test]
     async fn test_policy_push_after_close() {
-        let p = AsyncLFUPolicy::new(100, 10).unwrap();
+        let p = AsyncLFUPolicy::new(100, 10, tokio::spawn).unwrap();
         p.close().await.unwrap();
         assert!(!p.push(vec![1, 2]).await.unwrap());
     }
 
     #[tokio::test]
     async fn test_policy_add_after_close() {
-        let p = AsyncLFUPolicy::new(100, 10).unwrap();
+        let p = AsyncLFUPolicy::new(100, 10, tokio::spawn).unwrap();
         p.close().await.unwrap();
         p.add(1, 1);
     }

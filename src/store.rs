@@ -1,5 +1,3 @@
-#[cfg(feature = "tokio")]
-use crate::policy::AsyncLFUPolicy;
 use crate::policy::LFUPolicy;
 use crate::ttl::{ExpirationMap, Time};
 use crate::utils::{change_lifetime_const, SharedValue, ValueRef, ValueRefMut};
@@ -278,25 +276,25 @@ impl<
             }))
     }
 
-    #[cfg(feature = "tokio")]
+    #[cfg(feature = "async")]
     pub fn cleanup_async<PS: BuildHasher + Clone + 'static>(
         &self,
-        policy: Arc<AsyncLFUPolicy<PS>>,
+        policy: Arc<crate::policy::AsyncLFUPolicy<PS>>,
     ) -> Vec<CrateItem<V>> {
         self.try_cleanup_async(policy).unwrap()
     }
 
-    #[cfg(feature = "tokio")]
+    #[cfg(feature = "async")]
     pub fn try_cleanup_async<PS: BuildHasher + Clone + 'static>(
         &self,
-        policy: Arc<AsyncLFUPolicy<PS>>,
+        policy: Arc<crate::policy::AsyncLFUPolicy<PS>>,
     ) -> Result<Vec<CrateItem<V>>, CacheError> {
         let now = Time::now();
         let items = self.em.try_cleanup(now)?;
 
         let mut removed_items = Vec::new();
-        for item in items {
-            for (k, v) in item.iter() {
+        if let Some(items) = items {
+            for (k, v) in items.iter() {
                 let expiration = self.expiration(k);
                 if let Some(t) = expiration {
                     if t.is_expired() {
@@ -316,6 +314,7 @@ impl<
                 }
             }
         }
+
         Ok(removed_items)
     }
 

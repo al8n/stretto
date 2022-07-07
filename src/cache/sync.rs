@@ -155,7 +155,7 @@ where
     C: Coster<V>,
     U: UpdateValidator<V>,
     CB: CacheCallback<V>,
-    S: BuildHasher + Send + Clone + 'static,
+    S: BuildHasher + Send + Clone + 'static + Sync,
 {
     /// Build Cache and start all threads needed by the Cache.
     #[inline]
@@ -286,7 +286,7 @@ impl<V> Item<V> {
     }
 }
 
-pub(crate) struct CacheProcessor<V, U, CB, S>{
+pub(crate) struct CacheProcessor<V, U, CB, S> {
     pub(crate) insert_buf_rx: Receiver<Item<V>>,
     pub(crate) stop_rx: Receiver<()>,
     pub(crate) clear_rx: UnboundedReceiver<()>,
@@ -301,7 +301,7 @@ pub(crate) struct CacheProcessor<V, U, CB, S>{
     pub(crate) cleanup_duration: Duration,
 }
 
-pub(crate) struct CacheCleaner<'a, V, U, CB, S>{
+pub(crate) struct CacheCleaner<'a, V, U, CB, S> {
     pub(crate) processor: &'a mut CacheProcessor<V, U, CB, S>,
 }
 
@@ -334,7 +334,7 @@ pub struct Cache<
     U = DefaultUpdateValidator<V>,
     CB = DefaultCacheCallback<V>,
     S = RandomState,
->{
+> {
     /// store is the central concurrent hashmap where key-value items are stored.
     pub(crate) store: Arc<ShardedMap<V, U, S, S>>,
 
@@ -363,6 +363,43 @@ pub struct Cache<
     pub(crate) _marker: PhantomData<fn(K)>,
 }
 
+impl<K: Hash + Eq, V: Send + Sync + 'static> Cache<K, V> {
+    /// Returns a Cache instance with default configruations.
+    #[inline]
+    pub fn new(num_counters: usize, max_cost: i64) -> Result<Self, CacheError> {
+        CacheBuilder::new(num_counters, max_cost).finalize()
+    }
+
+    /// Returns a Builder.
+    #[inline]
+    pub fn builder(
+        num_counters: usize,
+        max_cost: i64,
+    ) -> CacheBuilder<
+        K,
+        V,
+        DefaultKeyBuilder,
+        DefaultCoster<V>,
+        DefaultUpdateValidator<V>,
+        DefaultCacheCallback<V>,
+        RandomState,
+    > {
+        CacheBuilder::new(num_counters, max_cost)
+    }
+}
+
+impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>> Cache<K, V, KH> {
+    /// Returns a Cache instance with default configruations.
+    #[inline]
+    pub fn new_with_key_builder(
+        num_counters: usize,
+        max_cost: i64,
+        index: KH,
+    ) -> Result<Self, CacheError> {
+        CacheBuilder::new_with_key_builder(num_counters, max_cost, index).finalize()
+    }
+}
+
 impl<K, V, KH, C, U, CB, S> Cache<K, V, KH, C, U, CB, S>
 where
     K: Hash + Eq,
@@ -371,8 +408,27 @@ where
     C: Coster<V>,
     U: UpdateValidator<V>,
     CB: CacheCallback<V>,
-    S: BuildHasher + Clone + 'static,
+    S: BuildHasher + Clone + 'static + Send + Sync,
 {
+    /// clear the Cache.
+    #[inline]
+    pub fn clear(&self) -> Result<(), CacheError> {
+        if self.is_closed.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        // stop the process item thread.
+        self.clear_tx.send(()).map_err(|e| {
+            CacheError::SendError(format!("fail to send clear signal to working thread {}", e))
+        })?;
+
+        self.policy.clear();
+        self.store.clear();
+        self.metrics.clear();
+
+        Ok(())
+    }
+
     /// `insert` attempts to add the key-value item to the cache. If it returns false,
     /// then the `insert` was dropped and the key-value item isn't added to the cache. If
     /// it returns true, there's still a chance it could be dropped by the policy if
@@ -456,8 +512,7 @@ where
         // So we must push the same item to `setBuf` with the deletion flag.
         // This ensures that if a set is followed by a delete, it will be
         // applied in the correct order.
-        let _ = self
-            .insert_buf_tx
+        self.insert_buf_tx
             .try_send(Item::delete(index, conflict))
             .map_err(|e| {
                 CacheError::ChannelError(format!(
@@ -538,7 +593,7 @@ where
     V: Send + Sync + 'static,
     U: UpdateValidator<V>,
     CB: CacheCallback<V>,
-    S: BuildHasher + Clone + 'static + Send,
+    S: BuildHasher + Clone + 'static + Send + Sync,
 {
     pub(crate) fn new(
         num_to_keep: usize,
@@ -576,13 +631,13 @@ where
         spawn(move || loop {
             select! {
                 recv(self.insert_buf_rx) -> res => {
-                    let _ = self.handle_insert_event(res)?;
+                    self.handle_insert_event(res)?;
                 },
                 recv(self.clear_rx) -> _ => {
-                    let _ = self.handle_clear_event()?;
+                    self.handle_clear_event()?;
                 },
                 recv(ticker) -> msg => {
-                    let _ = self.handle_cleanup_event(msg)?;
+                    self.handle_cleanup_event(msg)?;
                 },
                 recv(self.stop_rx) -> _ => return Ok(()),
             }
@@ -610,8 +665,7 @@ where
         &mut self,
         res: Result<Instant, RecvError>,
     ) -> Result<(), CacheError> {
-        res
-            .map_err(|e| CacheError::RecvError(format!("fail to receive msg from ticker: {}", e)))
+        res.map_err(|e| CacheError::RecvError(format!("fail to receive msg from ticker: {}", e)))
             .and_then(|_| {
                 self.store.try_cleanup(self.policy.clone()).map(|items| {
                     items.into_iter().for_each(|victim| {

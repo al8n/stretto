@@ -19,6 +19,13 @@ pub(crate) struct LFUPolicy<S = RandomState> {
     pub(crate) metrics: Arc<Metrics>,
 }
 
+impl LFUPolicy {
+    #[inline]
+    pub(crate) fn new(ctrs: usize, max_cost: i64) -> Result<Self, CacheError> {
+        Self::with_hasher(ctrs, max_cost, RandomState::new())
+    }
+}
+
 impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
     #[inline]
     pub fn with_hasher(ctrs: usize, max_cost: i64, hasher: S) -> Result<Self, CacheError> {

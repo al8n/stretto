@@ -205,21 +205,11 @@ extern crate serde;
 #[cfg(feature = "async")]
 #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 pub(crate) mod axync {
-    pub(crate) use tokio::select;
-    pub(crate) use tokio::sync::mpsc::{
-        channel as bounded, Receiver, Sender, UnboundedReceiver, UnboundedSender,
-    };
-    pub(crate) use tokio::task::{spawn, JoinHandle};
-    pub(crate) use tokio::time::{sleep, Instant};
+    pub(crate) use async_channel::{bounded, unbounded, Receiver, RecvError, Sender};
+    pub(crate) use futures::select;
     pub(crate) type WaitGroup = wg::AsyncWaitGroup;
-    use tokio::sync::mpsc::unbounded_channel;
-
     pub(crate) fn stop_channel() -> (Sender<()>, Receiver<()>) {
         bounded(1)
-    }
-
-    pub(crate) fn unbounded<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>) {
-        unbounded_channel::<T>()
     }
 }
 #[cfg(feature = "async")]

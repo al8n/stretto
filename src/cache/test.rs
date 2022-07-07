@@ -622,7 +622,6 @@ mod sync_test {
     }
 
     // Regression test for bug https://github.com/dgraph-io/ristretto/issues/167
-    // TODO: still fail sometimes
     #[test]
     fn test_cache_drop_updates() {
         fn test() {
@@ -649,7 +648,7 @@ mod sync_test {
             }
 
             // Wait for all the items to be processed.
-            sleep(Duration::from_millis(1));
+            sleep(Duration::from_millis(5));
             // This will cause eviction from the cache.
             assert!(c.insert(1, "0".to_string(), 10));
             let _ = c.close();
@@ -733,7 +732,7 @@ mod async_test {
     async fn new_test_cache<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>>(
         kh: KH,
     ) -> AsyncCache<K, V, KH> {
-        AsyncCache::new_with_key_builder(100, 10, kh).unwrap()
+        AsyncCache::new_with_key_builder(100, 10, kh, tokio::spawn).unwrap()
     }
 
     async fn retry_set<C: Coster<u64>, U: UpdateValidator<u64>, CB: CacheCallback<u64>>(
@@ -768,7 +767,7 @@ mod async_test {
                 .set_buffer_size(1000)
                 .set_key_builder(DefaultKeyBuilder::default())
                 .set_hasher(RandomState::default())
-                .finalize()
+                .finalize(tokio::spawn)
                 .unwrap();
     }
 
@@ -777,7 +776,8 @@ mod async_test {
         let ctr = Arc::new(AtomicU64::new(0));
 
         let c: AsyncCache<u64, u64, KHTest> =
-            AsyncCache::new_with_key_builder(10, 1000, KHTest { ctr: ctr.clone() }).unwrap();
+            AsyncCache::new_with_key_builder(10, 1000, KHTest { ctr: ctr.clone() }, tokio::spawn)
+                .unwrap();
 
         assert!(c.insert(1, 1, 1).await);
         sleep(Duration::from_millis(10)).await;
@@ -799,7 +799,7 @@ mod async_test {
     async fn test_cache_update_max_cost() {
         let c = AsyncCache::builder(10, 10)
             .set_key_builder(TransparentKeyBuilder::default())
-            .finalize()
+            .finalize(tokio::spawn)
             .unwrap();
 
         assert_eq!(c.max_cost(), 10);
@@ -822,8 +822,13 @@ mod async_test {
 
     #[tokio::test]
     async fn test_cache_multiple_close() {
-        let c: AsyncCache<i64, i64, TransparentKeyBuilder<i64>> =
-            AsyncCache::new_with_key_builder(100, 10, TransparentKeyBuilder::default()).unwrap();
+        let c: AsyncCache<i64, i64, TransparentKeyBuilder<i64>> = AsyncCache::new_with_key_builder(
+            100,
+            10,
+            TransparentKeyBuilder::default(),
+            tokio::spawn,
+        )
+        .unwrap();
 
         let _ = c.close().await;
         let _ = c.close().await;
@@ -881,7 +886,7 @@ mod async_test {
             .set_coster(TestCoster::default())
             .set_callback(TestCallback::new(cb.clone()))
             .set_ignore_internal_cost(true)
-            .finalize()
+            .finalize(tokio::spawn)
             .unwrap();
 
         assert!(c.insert(1, 1, 0).await);
@@ -916,7 +921,7 @@ mod async_test {
             .set_key_builder(TransparentKeyBuilder::default())
             .set_ignore_internal_cost(true)
             .set_metrics(true)
-            .finalize()
+            .finalize(tokio::spawn)
             .unwrap();
 
         c.insert(1, 1, 0).await;
@@ -942,7 +947,7 @@ mod async_test {
             .set_key_builder(TransparentKeyBuilder::default())
             .set_ignore_internal_cost(true)
             .set_metrics(true)
-            .finalize()
+            .finalize(tokio::spawn)
             .unwrap();
 
         retry_set(c.clone(), 1, 1, 1, Duration::ZERO).await;
@@ -964,7 +969,7 @@ mod async_test {
         let c = AsyncCache::builder(100, 10)
             .set_key_builder(TransparentKeyBuilder::default())
             .set_metrics(true)
-            .finalize()
+            .finalize(tokio::spawn)
             .unwrap();
 
         // Get should return None because the cache's cost is too small to store the item
@@ -980,7 +985,7 @@ mod async_test {
             .set_key_builder(TransparentKeyBuilder::default())
             .set_ignore_internal_cost(true)
             .set_metrics(true)
-            .finalize()
+            .finalize(tokio::spawn)
             .unwrap();
 
         // Set initial value for key = 1
@@ -1012,7 +1017,7 @@ mod async_test {
             .set_key_builder(TransparentKeyBuilder::default())
             .set_callback(TestCallback::new(cb.clone()))
             .set_ignore_internal_cost(true)
-            .finalize()
+            .finalize(tokio::spawn)
             .unwrap();
 
         retry_set(c.clone(), 1, 1, 1, Duration::from_secs(1)).await;
@@ -1058,7 +1063,7 @@ mod async_test {
         let c = AsyncCache::builder(100, 10)
             .set_key_builder(TransparentKeyBuilder::default())
             .set_ignore_internal_cost(true)
-            .finalize()
+            .finalize(tokio::spawn)
             .unwrap();
 
         retry_set(c.clone(), 3, 1, 1, Duration::from_secs(10)).await;
@@ -1077,7 +1082,7 @@ mod async_test {
             .set_key_builder(TransparentKeyBuilder::default())
             .set_metrics(true)
             .set_ignore_internal_cost(true)
-            .finalize()
+            .finalize(tokio::spawn)
             .unwrap();
 
         // try expiration with valid ttl item
@@ -1122,7 +1127,7 @@ mod async_test {
             .set_key_builder(TransparentKeyBuilder::default())
             .set_metrics(true)
             .set_ignore_internal_cost(true)
-            .finalize()
+            .finalize(tokio::spawn)
             .unwrap();
 
         for i in 0..10 {
@@ -1130,7 +1135,7 @@ mod async_test {
         }
         sleep(Duration::from_millis(100)).await;
         assert_eq!(c.metrics.get_keys_added(), Some(10));
-        c.clear().unwrap();
+        c.clear().await.unwrap();
         assert_eq!(c.metrics.get_keys_added(), Some(0));
 
         (0..10).for_each(|i| {
@@ -1143,7 +1148,7 @@ mod async_test {
         let c = AsyncCache::builder(100, 10)
             .set_key_builder(TransparentKeyBuilder::default())
             .set_metrics(true)
-            .finalize()
+            .finalize(tokio::spawn)
             .unwrap();
 
         c.insert(1, 1, 1).await;
@@ -1180,7 +1185,7 @@ mod async_test {
                 // try to fill up the insert buf to it's capacity and then perform an
                 // update on a key.
                 .set_buffer_size(10)
-                .finalize()
+                .finalize(tokio::spawn)
                 .unwrap();
 
             for i in 0..50 {
@@ -1215,7 +1220,7 @@ mod async_test {
             let c = AsyncCache::builder(100, 1000)
                 .set_key_builder(TransparentKeyBuilder::default())
                 .set_metrics(true)
-                .finalize()
+                .finalize(tokio::spawn)
                 .unwrap();
 
             // Set initial value for key = 1
@@ -1244,7 +1249,7 @@ mod async_test {
     async fn test_cache_max_cost() {
         let c = AsyncCache::builder(12960, 1e6 as i64)
             .set_metrics(true)
-            .finalize()
+            .finalize(tokio::spawn)
             .unwrap();
 
         let mut txs = Vec::new();
@@ -1265,14 +1270,15 @@ mod async_test {
                     tc.metrics.get_cost_evicted().unwrap(),
                 );
                 let cost = cost_added - cost_evicted;
-                eprintln!("{}", tc.metrics);
                 assert!(cost as f64 <= (1e6 * 1.05));
             }
             tc.wait().await.unwrap();
             for tx in txs {
                 let _ = tx.send(()).await;
             }
-        });
+        })
+        .await
+        .unwrap();
 
         for mut rx in rxs {
             loop {
@@ -1280,20 +1286,16 @@ mod async_test {
                     Ok(_) => break,
                     Err(_) => {
                         let k = get_key();
-                        match c.get(&k) {
-                            None => {
-                                let mut rng = OsRng::default();
-                                let rv = rng.gen::<usize>() % 100;
-                                let val: String;
-                                if rv < 10 {
-                                    val = "test".to_string();
-                                } else {
-                                    val = vec!["a"; 1000].join("");
-                                }
-                                let cost = val.len() + 2;
-                                assert!(c.insert(get_key(), val, cost as i64).await);
-                            }
-                            Some(_) => {}
+                        if c.get(&k).is_none() {
+                            let mut rng = OsRng::default();
+                            let rv = rng.gen::<usize>() % 100;
+                            let val = if rv < 10 {
+                                "test".to_string()
+                            } else {
+                                vec!["a"; 1000].join("")
+                            };
+                            let cost = val.len() + 2;
+                            assert!(c.insert(get_key(), val, cost as i64).await);
                         }
                     }
                 }
@@ -1306,7 +1308,7 @@ mod async_test {
         let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(100, 10)
             .set_key_builder(TransparentKeyBuilder::default())
             .set_ignore_internal_cost(true)
-            .finalize()
+            .finalize(tokio::spawn)
             .unwrap();
 
         let (stop_tx, mut stop_rx) = channel(1);
@@ -1321,7 +1323,7 @@ mod async_test {
         });
 
         for _ in 0..10 {
-            c.clear().unwrap();
+            c.clear().await.unwrap();
         }
 
         let sleep = sleep(Duration::from_secs(1));
@@ -1341,13 +1343,13 @@ mod async_test {
         let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(100, 10)
             .set_key_builder(TransparentKeyBuilder::default())
             .set_ignore_internal_cost(true)
-            .finalize()
+            .finalize(tokio::spawn)
             .unwrap();
 
         assert!(c.insert_with_ttl(0, 1, 1, ttl).await);
         assert!(c.wait().await.is_ok());
         assert_eq!(c.get(&0).unwrap().value(), &1);
-        assert!(c.clear().is_ok());
+        assert!(c.clear().await.is_ok());
         assert!(c.wait().await.is_ok());
         assert!(c.get(&0).is_none());
         assert!(c.insert_with_ttl(2, 3, 1, ttl).await);

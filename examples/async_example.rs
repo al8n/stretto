@@ -3,7 +3,7 @@ use stretto::AsyncCache;
 
 #[tokio::main]
 async fn main() {
-    let c: AsyncCache<&str, &str> = AsyncCache::new(12960, 1e6 as i64).unwrap();
+    let c: AsyncCache<&str, &str> = AsyncCache::new(12960, 1e6 as i64, tokio::spawn).unwrap();
 
     // set a value with a cost of 1
     c.insert("a", "a", 1).await;
@@ -41,7 +41,7 @@ async fn main() {
     v.release();
 
     // clear the cache
-    c.clear().unwrap();
+    c.clear().await.unwrap();
     // wait all the operations are finished
     c.wait().await.unwrap();
 

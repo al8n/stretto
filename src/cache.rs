@@ -187,43 +187,6 @@ macro_rules! impl_cache {
         use crate::store::UpdateResult;
         use crate::{ValueRef, ValueRefMut};
 
-        impl<K: Hash + Eq, V: Send + Sync + 'static> $cache<K, V> {
-            /// Returns a Cache instance with default configruations.
-            #[inline]
-            pub fn new(num_counters: usize, max_cost: i64) -> Result<Self, CacheError> {
-                $builder::new(num_counters, max_cost).finalize()
-            }
-
-            /// Returns a Builder.
-            #[inline]
-            pub fn builder(
-                num_counters: usize,
-                max_cost: i64,
-            ) -> $builder<
-                K,
-                V,
-                DefaultKeyBuilder,
-                DefaultCoster<V>,
-                DefaultUpdateValidator<V>,
-                DefaultCacheCallback<V>,
-                RandomState,
-            > {
-                $builder::new(num_counters, max_cost)
-            }
-        }
-
-        impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>> $cache<K, V, KH> {
-            /// Returns a Cache instance with default configruations.
-            #[inline]
-            pub fn new_with_key_builder(
-                num_counters: usize,
-                max_cost: i64,
-                index: KH,
-            ) -> Result<Self, CacheError> {
-                $builder::new_with_key_builder(num_counters, max_cost, index).finalize()
-            }
-        }
-
         impl<K, V, KH, C, U, CB, S> $cache<K, V, KH, C, U, CB, S>
         where
             K: Hash + Eq,
@@ -282,28 +245,6 @@ macro_rules! impl_cache {
                 self.store
                     .get(&index, conflict)
                     .and_then(|_| self.store.expiration(&index).map(|time| time.get_ttl()))
-            }
-
-            /// clear the Cache.
-            #[inline]
-            pub fn clear(&self) -> Result<(), CacheError> {
-                if self.is_closed.load(Ordering::SeqCst) {
-                    return Ok(());
-                }
-
-                // stop the process item thread.
-                self.clear_tx.send(()).map_err(|e| {
-                    CacheError::SendError(format!(
-                        "fail to send clear signal to working thread {}",
-                        e.to_string()
-                    ))
-                })?;
-
-                self.policy.clear();
-                self.store.clear();
-                self.metrics.clear();
-
-                Ok(())
             }
 
             /// `max_cost` returns the max cost of the cache.

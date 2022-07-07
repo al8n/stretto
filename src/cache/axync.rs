@@ -1,6 +1,5 @@
 use crate::axync::{
-    bounded, select, sleep, spawn, stop_channel, unbounded, Instant, JoinHandle, Receiver, Sender,
-    UnboundedReceiver, UnboundedSender, WaitGroup,
+    bounded, select, stop_channel, unbounded, Receiver, RecvError, Sender, WaitGroup,
 };
 use crate::cache::builder::CacheBuilderCore;
 use crate::policy::AsyncLFUPolicy;
@@ -9,6 +8,11 @@ use crate::ttl::{ExpirationMap, Time};
 use crate::{
     metrics::MetricType, CacheCallback, CacheError, Coster, DefaultCacheCallback, DefaultCoster,
     DefaultKeyBuilder, DefaultUpdateValidator, KeyBuilder, Metrics, UpdateValidator,
+};
+use async_io::Timer;
+use futures::{
+    future::{BoxFuture, FutureExt},
+    stream::StreamExt,
 };
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
@@ -155,11 +159,17 @@ where
     C: Coster<V>,
     U: UpdateValidator<V>,
     CB: CacheCallback<V>,
-    S: BuildHasher + Clone + 'static + Send,
+    S: BuildHasher + Clone + 'static + Send + Sync,
 {
     /// Build Cache and start all threads needed by the Cache.
     #[inline]
-    pub fn finalize(self) -> Result<AsyncCache<K, V, KH, C, U, CB, S>, CacheError> {
+    pub fn finalize<SP, R>(
+        self,
+        spawner: SP,
+    ) -> Result<AsyncCache<K, V, KH, C, U, CB, S>, CacheError>
+    where
+        SP: Fn(BoxFuture<'static, ()>) -> R + Send + Sync + 'static + Copy,
+    {
         let num_counters = self.inner.num_counters;
 
         if num_counters == 0 {
@@ -189,7 +199,7 @@ where
             hasher.clone(),
         ));
 
-        let mut policy = AsyncLFUPolicy::with_hasher(num_counters, max_cost, hasher.clone())?;
+        let mut policy = AsyncLFUPolicy::with_hasher(num_counters, max_cost, hasher, spawner)?;
 
         let coster = Arc::new(self.inner.coster.unwrap());
         let callback = Arc::new(self.inner.callback.unwrap());
@@ -214,7 +224,9 @@ where
             metrics.clone(),
             callback.clone(),
         )
-        .spawn();
+        .spawn(Box::new(move |fut| {
+            spawner(fut);
+        }));
 
         let this = AsyncCache {
             store,
@@ -234,11 +246,10 @@ where
     }
 }
 
-pub(crate) struct CacheProcessor<V, U, CB, S>
-{
+pub(crate) struct CacheProcessor<V, U, CB, S> {
     insert_buf_rx: Receiver<Item<V>>,
     stop_rx: Receiver<()>,
-    clear_rx: UnboundedReceiver<()>,
+    clear_rx: Receiver<()>,
     metrics: Arc<Metrics>,
     store: Arc<ShardedMap<V, U, S, S>>,
     policy: Arc<AsyncLFUPolicy<S>>,
@@ -250,7 +261,7 @@ pub(crate) struct CacheProcessor<V, U, CB, S>
     cleanup_duration: Duration,
 }
 
-pub(crate) struct CacheCleaner<'a, V, U, CB, S>{
+pub(crate) struct CacheCleaner<'a, V, U, CB, S> {
     pub(crate) processor: &'a mut CacheProcessor<V, U, CB, S>,
 }
 
@@ -302,10 +313,7 @@ impl<V> Item<V> {
 
     #[inline]
     fn is_update(&self) -> bool {
-        match self {
-            Item::Update { .. } => true,
-            _ => false,
-        }
+        matches!(self, Item::Update { .. })
     }
 }
 
@@ -356,7 +364,7 @@ pub struct AsyncCache<
 
     pub(crate) stop_tx: Sender<()>,
 
-    pub(crate) clear_tx: UnboundedSender<()>,
+    pub(crate) clear_tx: Sender<()>,
 
     pub(crate) callback: Arc<CB>,
 
@@ -372,6 +380,50 @@ pub struct AsyncCache<
     pub(crate) _marker: PhantomData<fn(K)>,
 }
 
+impl<K: Hash + Eq, V: Send + Sync + 'static> AsyncCache<K, V> {
+    /// Returns a Cache instance with default configruations.
+    #[inline]
+    pub fn new<SP, R>(num_counters: usize, max_cost: i64, spawner: SP) -> Result<Self, CacheError>
+    where
+        SP: Fn(BoxFuture<'static, ()>) -> R + Send + Sync + 'static + Copy,
+    {
+        AsyncCacheBuilder::new(num_counters, max_cost).finalize(spawner)
+    }
+
+    /// Returns a Builder.
+    #[inline]
+    pub fn builder(
+        num_counters: usize,
+        max_cost: i64,
+    ) -> AsyncCacheBuilder<
+        K,
+        V,
+        DefaultKeyBuilder,
+        DefaultCoster<V>,
+        DefaultUpdateValidator<V>,
+        DefaultCacheCallback<V>,
+        RandomState,
+    > {
+        AsyncCacheBuilder::new(num_counters, max_cost)
+    }
+}
+
+impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>> AsyncCache<K, V, KH> {
+    /// Returns a Cache instance with default configruations.
+    #[inline]
+    pub fn new_with_key_builder<SP, R>(
+        num_counters: usize,
+        max_cost: i64,
+        index: KH,
+        spawner: SP,
+    ) -> Result<Self, CacheError>
+    where
+        SP: Fn(BoxFuture<'static, ()>) -> R + Send + Sync + 'static + Copy,
+    {
+        AsyncCacheBuilder::new_with_key_builder(num_counters, max_cost, index).finalize(spawner)
+    }
+}
+
 impl<K, V, KH, C, U, CB, S> AsyncCache<K, V, KH, C, U, CB, S>
 where
     K: Hash + Eq,
@@ -382,6 +434,25 @@ where
     CB: CacheCallback<V>,
     S: BuildHasher + Clone + 'static + Send,
 {
+    /// clear the Cache.
+    #[inline]
+    pub async fn clear(&self) -> Result<(), CacheError> {
+        if self.is_closed.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        // stop the process item thread.
+        self.clear_tx.send(()).await.map_err(|e| {
+            CacheError::SendError(format!("fail to send clear signal to working thread {}", e))
+        })?;
+
+        self.policy.clear();
+        self.store.clear();
+        self.metrics.clear();
+
+        Ok(())
+    }
+
     /// `insert` attempts to add the key-value item to the cache. If it returns false,
     /// then the `insert` was dropped and the key-value item isn't added to the cache. If
     /// it returns true, there's still a chance it could be dropped by the policy if
@@ -449,10 +520,13 @@ where
         let wg = WaitGroup::new();
         let wait_item = Item::Wait(wg.add(1));
         match self.insert_buf_tx.try_send(wait_item) {
-            Ok(_) => Ok(wg.wait().await),
+            Ok(_) => {
+                wg.wait().await;
+                Ok(())
+            }
             Err(e) => Err(CacheError::SendError(format!(
                 "cache set buf sender: {}",
-                e.to_string()
+                e
             ))),
         }
     }
@@ -468,7 +542,7 @@ where
             return Ok(());
         }
 
-        let (index, conflict) = self.key_to_hash.build_key(&k);
+        let (index, conflict) = self.key_to_hash.build_key(k);
         // delete immediately
         let prev = self.store.try_remove(&index, conflict)?;
 
@@ -491,7 +565,7 @@ where
             return Ok(());
         }
 
-        self.clear()?;
+        self.clear().await?;
         // Block until processItems thread is returned
         self.stop_tx.send(()).await.map_err(|e| {
             CacheError::SendError(format!("fail to send stop signal to working thread, {}", e))
@@ -516,9 +590,8 @@ where
 
         if let Some((index, item)) = self.try_update(key, val, cost, ttl, only_update)? {
             let is_update = item.is_update();
-            // Attempt to send item to policy.
             select! {
-                res = self.insert_buf_tx.send(item) => res.map_or_else(|_| {
+                res = self.insert_buf_tx.send(item).fuse() => res.map_or_else(|_| {
                    if is_update {
                         // Return true if this was an update operation since we've already
                         // updated the store. For all the other operations (set/delete), we
@@ -529,7 +602,7 @@ where
                         Ok(false)
                     }
                 }, |_| Ok(true)),
-                else => {
+                default => {
                     if is_update {
                         // Return true if this was an update operation since we've already
                         // updated the store. For all the other operations (set/delete), we
@@ -552,7 +625,7 @@ where
     V: Send + Sync + 'static,
     U: UpdateValidator<V>,
     CB: CacheCallback<V>,
-    S: BuildHasher + Clone + 'static + Send,
+    S: BuildHasher + Clone + 'static + Send + Sync,
 {
     pub(crate) fn new(
         num_to_keep: usize,
@@ -562,7 +635,7 @@ where
         policy: Arc<AsyncLFUPolicy<S>>,
         insert_buf_rx: Receiver<Item<V>>,
         stop_rx: Receiver<()>,
-        clear_rx: UnboundedReceiver<()>,
+        clear_rx: Receiver<()>,
         metrics: Arc<Metrics>,
         callback: Arc<CB>,
     ) -> Self {
@@ -585,27 +658,34 @@ where
     }
 
     #[inline]
-    pub(crate) fn spawn(mut self) -> JoinHandle<Result<(), CacheError>> {
-        spawn(async move {
-            let cleanup_timer = sleep(self.cleanup_duration);
-            tokio::pin!(cleanup_timer);
+    pub(crate) fn spawn(mut self, spawner: Box<dyn Fn(BoxFuture<'static, ()>) + Send + Sync>) {
+        (spawner)(Box::pin(async move {
+            let mut cleanup_timer =
+                Timer::interval_at(std::time::Instant::now(), self.cleanup_duration);
 
             loop {
                 select! {
-                    item = self.insert_buf_rx.recv() => {
-                        let _ = self.handle_insert_event(item)?;
+                    item = self.insert_buf_rx.recv().fuse() => {
+                        if let Err(_e) = self.handle_insert_event(item) {
+                            return;
+                        }
                     }
-                    _ = &mut cleanup_timer => {
-                        cleanup_timer.as_mut().reset(Instant::now() + self.cleanup_duration);
-                        let _ = self.handle_cleanup_event()?;
+                    _ = cleanup_timer.next().fuse() => {
+                        if let Err(_e) = self.handle_cleanup_event() {
+                            return;
+                        }
                     },
-                    Some(_) = self.clear_rx.recv() => {
-                        let _ = CacheCleaner::new(&mut self).clean().await?;
+                    _ = self.clear_rx.recv().fuse() => {
+                        let _ = CacheCleaner::new(&mut self).clean().await;
                     },
-                    _ = self.stop_rx.recv() => return self.handle_close_event(),
+                    _ = self.stop_rx.recv().fuse() => {
+                        if let Err(_e) = self.handle_close_event() {
+                            return;
+                        }
+                    },
                 }
             }
-        })
+        }))
     }
 
     #[inline]
@@ -617,8 +697,11 @@ where
     }
 
     #[inline]
-    pub(crate) fn handle_insert_event(&mut self, res: Option<Item<V>>) -> Result<(), CacheError> {
-        res.ok_or_else(|| CacheError::RecvError(format!("fail to receive msg from insert buffer")))
+    pub(crate) fn handle_insert_event(
+        &mut self,
+        res: Result<Item<V>, RecvError>,
+    ) -> Result<(), CacheError> {
+        res.map_err(|_| CacheError::RecvError("fail to receive msg from insert buffer".to_string()))
             .and_then(|item| self.handle_item(item))
     }
 
@@ -640,18 +723,22 @@ where
     V: Send + Sync + 'static,
     U: UpdateValidator<V>,
     CB: CacheCallback<V>,
-    S: BuildHasher + Clone + 'static + Send,
+    S: BuildHasher + Clone + 'static + Send + Sync,
 {
     #[inline]
     pub(crate) async fn clean(mut self) -> Result<(), CacheError> {
         loop {
             select! {
                 // clear out the insert buffer channel.
-                Some(item) = self.processor.insert_buf_rx.recv() => {
-                    self.handle_item(item);
+                item = self.processor.insert_buf_rx.recv().fuse() => {
+                    match item {
+                        Ok(item) => {
+                            self.handle_item(item);
+                        },
+                        Err(_) => return Ok(()),
+                    }
                 },
-                _ = async {} => return Ok(()),
-                else => return Ok(()),
+                default => return Ok(()),
             }
         }
     }

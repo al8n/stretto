@@ -1,6 +1,6 @@
 [package]
 name = "stretto"
-version = "0.4.6"
+version = "0.5.0"
 authors = ["Al Liu <scygliu1@gmail.com>"]
 description = "Stretto is a high performance thread-safe memory-bound Rust cache."
 homepage = "https://github.com/al8n/stretto"
@@ -35,26 +35,28 @@ edition = "2021"
 [features]
 default = ["sync"]
 full = ["sync", "async", "serilization"]
-async = ["tokio/time", "tokio/sync", "tokio/once_cell", "tokio/rt-multi-thread", "tokio/macros", "tokio/parking_lot"]
+async = ["async-channel", "async-io", "futures/default"]
 sync = ["crossbeam-channel"]
 serilization = ["serde", "serde/derive", "serde_json/default"]
 
 [dependencies]
 atomic = "0.5"
+async-channel = { version = "1.6", optional = true }
+async-io = { version = "1.7", optional = true }
 crossbeam-channel = { version = "0.5", optional = true }
+futures = { version = "0.3", optional = true }
 log = { version = "0.4", optional = true }
 parking_lot = "0.12"
 rand = "0.8"
 serde = {version = "1", optional = true}
 serde_json = {version = "1", optional = true}
-tokio = { version = "1.19", optional = true }
 twox-hash = "1.6"
 wg = "0.2"
 
 [dev-dependencies]
 serde = {version = "1", features = ["serde_derive"]}
 serde_json = "1"
-tokio = {version = "1.19", features = ["rt-multi-thread", "test-util"]}
+tokio = {version = "1.19", features = ["full"]}
 
 [package.metadata.docs.rs]
 all-features = true
