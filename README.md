@@ -24,7 +24,7 @@ English | [简体中文](README-zh_hans.md)
 
 ## Features
 * **Internal Mutability** - Do not need to use `Arc<RwLock<Cache<...>>` for concurrent code, you just need `Cache<...>` or `AsyncCache<...>`
-* **Sync and Async** - Stretto support async by `tokio` and sync by `crossbeam`.
+* **Sync and Async** - Stretto support sync and runtime agnostic async.
   * In sync, Cache starts two extra OS level threads. One is policy thread, the other is writing thread.
   * In async, AsyncCache starts two extra green threads. One is policy thread, the other is writing thread.
 * **Store policy** Stretto only store the value, which means the cache does not store the key. 
