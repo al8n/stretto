@@ -693,7 +693,7 @@ where
     pub(crate) fn spawn(mut self, spawner: Box<dyn Fn(BoxFuture<'static, ()>) + Send + Sync>) {
         (spawner)(Box::pin(async move {
             let mut cleanup_timer =
-                Timer::interval_at(std::time::Instant::now(), self.cleanup_duration);
+                Timer::interval(self.cleanup_duration);
 
             loop {
                 select! {
