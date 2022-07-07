@@ -149,6 +149,7 @@ use stretto::AsyncCache;
 
 #[tokio::main]
 async fn main() {
+    // In this example, we use tokio runtime, so we pass tokio::spawn when constructing AsyncCache
     let c: AsyncCache<&str, &str> = AsyncCache::new(12960, 1e6 as i64, tokio::spawn).unwrap();
 
     // set a value with a cost of 1

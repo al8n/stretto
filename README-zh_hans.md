@@ -146,7 +146,8 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
-    let c = AsyncCache::new(12960, 1e6 as i64, DefaultKeyBuilder::default()).unwrap();
+    // 在这个例子中, 我们使用tokio运行时, 所以需要将tokio::spawn作为spawner在构建缓存的时候
+    let c = AsyncCache::new(12960, 1e6 as i64, DefaultKeyBuilder::default(), tokio::spawn).unwrap();
 
     // 设定一个键为 "a" 权为 1 的值
     c.insert("a", "a", 1).await;
@@ -186,7 +187,7 @@ async fn main() {
     v.release();
 
     // 缓存清空
-    c.clear().unwrap();
+    c.clear().await.unwrap();
     // 等待操作完成
     c.wait().await.unwrap();
 

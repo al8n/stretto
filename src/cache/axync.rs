@@ -162,6 +162,15 @@ where
     S: BuildHasher + Clone + 'static + Send + Sync,
 {
     /// Build Cache and start all threads needed by the Cache.
+    /// 
+    /// `spawner` is the spawn function for your async runtime.
+    /// For example, if you use `tokio`, then pass `tokio::spawn` as spawner parameter.
+    /// 
+    /// ```no_run
+    /// AsyncCacheBuilder::new_with_key_builder(100, 10, TransparentKeyBuilder::default())
+    ///     .finalize(tokio::spawn)
+    ///     .unwrap();
+    /// ```
     #[inline]
     pub fn finalize<SP, R>(
         self,
@@ -382,6 +391,15 @@ pub struct AsyncCache<
 
 impl<K: Hash + Eq, V: Send + Sync + 'static> AsyncCache<K, V> {
     /// Returns a Cache instance with default configruations.
+    /// 
+    /// 
+    /// # Example
+    /// `spawner` is the spawn function for your async runtime.
+    /// For example, if you use `tokio`, then pass `tokio::spawn` as spawner parameter.
+    /// 
+    /// ```no_run
+    /// AsyncCache::new(100, 10, tokio::spawn).unwrap();
+    /// ``` 
     #[inline]
     pub fn new<SP, R>(num_counters: usize, max_cost: i64, spawner: SP) -> Result<Self, CacheError>
     where
@@ -410,6 +428,14 @@ impl<K: Hash + Eq, V: Send + Sync + 'static> AsyncCache<K, V> {
 
 impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>> AsyncCache<K, V, KH> {
     /// Returns a Cache instance with default configruations.
+    /// 
+    /// # Example
+    /// `spawner` is the spawn function for your async runtime.
+    /// For example, if you use `tokio`, then pass `tokio::spawn` as spawner parameter.
+    /// 
+    /// ```no_run
+    /// AsyncCache::new_with_key_builder(100, 10, TransparentKeyBuilder::default(), tokio::spawn).unwrap();
+    /// ```
     #[inline]
     pub fn new_with_key_builder<SP, R>(
         num_counters: usize,
