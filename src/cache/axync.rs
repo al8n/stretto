@@ -167,7 +167,9 @@ where
     /// For example, if you use `tokio`, then pass `tokio::spawn` as spawner parameter.
     /// 
     /// ```no_run
-    /// AsyncCacheBuilder::new_with_key_builder(100, 10, TransparentKeyBuilder::default())
+    /// use stretto::{AsyncCacheBuilder, TransparentKeyBuilder};
+    /// 
+    /// AsyncCacheBuilder::<u64, u64>::new(100, 10)
     ///     .finalize(tokio::spawn)
     ///     .unwrap();
     /// ```
@@ -398,7 +400,9 @@ impl<K: Hash + Eq, V: Send + Sync + 'static> AsyncCache<K, V> {
     /// For example, if you use `tokio`, then pass `tokio::spawn` as spawner parameter.
     /// 
     /// ```no_run
-    /// AsyncCache::new(100, 10, tokio::spawn).unwrap();
+    /// use stretto::AsyncCache;
+    /// 
+    /// AsyncCache::<u64, u64>::new(100, 10, tokio::spawn).unwrap();
     /// ``` 
     #[inline]
     pub fn new<SP, R>(num_counters: usize, max_cost: i64, spawner: SP) -> Result<Self, CacheError>
@@ -434,7 +438,9 @@ impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>> AsyncCache<K, V,
     /// For example, if you use `tokio`, then pass `tokio::spawn` as spawner parameter.
     /// 
     /// ```no_run
-    /// AsyncCache::new_with_key_builder(100, 10, TransparentKeyBuilder::default(), tokio::spawn).unwrap();
+    /// use stretto::{AsyncCache, TransparentKeyBuilder};
+    /// 
+    /// AsyncCache::<u64, u64, TransparentKeyBuilder<_>>::new_with_key_builder(100, 10, TransparentKeyBuilder::<u64>::default(), tokio::spawn).unwrap();
     /// ```
     #[inline]
     pub fn new_with_key_builder<SP, R>(

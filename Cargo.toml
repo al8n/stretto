@@ -52,6 +52,7 @@ serde = {version = "1", optional = true}
 serde_json = {version = "1", optional = true}
 twox-hash = "1.6"
 wg = "0.2"
+thiserror = "1"
 
 [dev-dependencies]
 serde = {version = "1", features = ["serde_derive"]}

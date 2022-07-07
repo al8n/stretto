@@ -274,15 +274,7 @@ impl<
                     })
                     .collect()
             }))
-    }
-
-    #[cfg(feature = "async")]
-    pub fn cleanup_async<PS: BuildHasher + Clone + 'static>(
-        &self,
-        policy: Arc<crate::policy::AsyncLFUPolicy<PS>>,
-    ) -> Vec<CrateItem<V>> {
-        self.try_cleanup_async(policy).unwrap()
-    }
+    } 
 
     #[cfg(feature = "async")]
     pub fn try_cleanup_async<PS: BuildHasher + Clone + 'static>(
