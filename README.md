@@ -23,6 +23,8 @@ English | [简体中文](README-zh_hans.md)
 </div>
 
 ## Features
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fal8n%2Fstretto.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fal8n%2Fstretto?ref=badge_shield)
+
 * **Internal Mutability** - Do not need to use `Arc<RwLock<Cache<...>>` for concurrent code, you just need `Cache<...>` or `AsyncCache<...>`
 * **Sync and Async** - Stretto support sync and runtime agnostic async.
   * In sync, Cache starts two extra OS level threads. One is policy thread, the other is writing thread.
@@ -348,3 +350,6 @@ shall be dual licensed as above, without any additional terms or conditions.
 [license-apache-url]: https://opensource.org/licenses/Apache-2.0
 [license-mit-url]: https://opensource.org/licenses/MIT
 [rustc-image]: https://img.shields.io/badge/rustc-1.52.0--nightly%2B-orange.svg?style=for-the-badge&logo=Rust
+
+
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fal8n%2Fstretto.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fal8n%2Fstretto?ref=badge_large)
