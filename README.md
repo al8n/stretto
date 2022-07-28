@@ -23,7 +23,6 @@ English | [简体中文](README-zh_hans.md)
 </div>
 
 ## Features
-[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fal8n%2Fstretto.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fal8n%2Fstretto?ref=badge_shield)
 
 * **Internal Mutability** - Do not need to use `Arc<RwLock<Cache<...>>` for concurrent code, you just need `Cache<...>` or `AsyncCache<...>`
 * **Sync and Async** - Stretto support sync and runtime agnostic async.
