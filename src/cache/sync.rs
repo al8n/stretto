@@ -118,7 +118,7 @@ use std::time::Duration;
 pub struct CacheBuilder<
     K,
     V,
-    KH = DefaultKeyBuilder,
+    KH = DefaultKeyBuilder<K>,
     C = DefaultCoster<V>,
     U = DefaultUpdateValidator<V>,
     CB = DefaultCacheCallback<V>,
@@ -137,7 +137,7 @@ impl<K: Hash + Eq, V: Send + Sync + 'static> CacheBuilder<K, V> {
     }
 }
 
-impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>> CacheBuilder<K, V, KH> {
+impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<Key = K>> CacheBuilder<K, V, KH> {
     /// Create a new AsyncCacheBuilder
     #[inline]
     pub fn new_with_key_builder(num_counters: usize, max_cost: i64, kh: KH) -> Self {
@@ -151,10 +151,10 @@ impl<K, V, KH, C, U, CB, S> CacheBuilder<K, V, KH, C, U, CB, S>
 where
     K: Hash + Eq,
     V: Send + Sync + 'static,
-    KH: KeyBuilder<K>,
-    C: Coster<V>,
-    U: UpdateValidator<V>,
-    CB: CacheCallback<V>,
+    KH: KeyBuilder<Key = K>,
+    C: Coster<Value = V>,
+    U: UpdateValidator<Value = V>,
+    CB: CacheCallback<Value = V>,
     S: BuildHasher + Send + Clone + 'static + Sync,
 {
     /// Build Cache and start all threads needed by the Cache.
@@ -329,7 +329,7 @@ pub(crate) struct CacheCleaner<'a, V, U, CB, S> {
 pub struct Cache<
     K,
     V,
-    KH = DefaultKeyBuilder,
+    KH = DefaultKeyBuilder<K>,
     C = DefaultCoster<V>,
     U = DefaultUpdateValidator<V>,
     CB = DefaultCacheCallback<V>,
@@ -378,7 +378,7 @@ impl<K: Hash + Eq, V: Send + Sync + 'static> Cache<K, V> {
     ) -> CacheBuilder<
         K,
         V,
-        DefaultKeyBuilder,
+        DefaultKeyBuilder<K>,
         DefaultCoster<V>,
         DefaultUpdateValidator<V>,
         DefaultCacheCallback<V>,
@@ -388,7 +388,7 @@ impl<K: Hash + Eq, V: Send + Sync + 'static> Cache<K, V> {
     }
 }
 
-impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>> Cache<K, V, KH> {
+impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<Key = K>> Cache<K, V, KH> {
     /// Returns a Cache instance with default configruations.
     #[inline]
     pub fn new_with_key_builder(
@@ -404,10 +404,10 @@ impl<K, V, KH, C, U, CB, S> Cache<K, V, KH, C, U, CB, S>
 where
     K: Hash + Eq,
     V: Send + Sync + 'static,
-    KH: KeyBuilder<K>,
-    C: Coster<V>,
-    U: UpdateValidator<V>,
-    CB: CacheCallback<V>,
+    KH: KeyBuilder<Key = K>,
+    C: Coster<Value = V>,
+    U: UpdateValidator<Value = V>,
+    CB: CacheCallback<Value = V>,
     S: BuildHasher + Clone + 'static + Send + Sync,
 {
     /// clear the Cache.
@@ -591,8 +591,8 @@ where
 impl<V, U, CB, S> CacheProcessor<V, U, CB, S>
 where
     V: Send + Sync + 'static,
-    U: UpdateValidator<V>,
-    CB: CacheCallback<V>,
+    U: UpdateValidator<Value = V>,
+    CB: CacheCallback<Value = V>,
     S: BuildHasher + Clone + 'static + Send + Sync,
 {
     pub(crate) fn new(
@@ -680,8 +680,8 @@ where
 impl<'a, V, U, CB, S> CacheCleaner<'a, V, U, CB, S>
 where
     V: Send + Sync + 'static,
-    U: UpdateValidator<V>,
-    CB: CacheCallback<V>,
+    U: UpdateValidator<Value = V>,
+    CB: CacheCallback<Value = V>,
     S: BuildHasher + Clone + 'static + Send,
 {
     #[inline]

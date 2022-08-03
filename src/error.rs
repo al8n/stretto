@@ -6,7 +6,7 @@ pub enum CacheError {
     InvalidCountMinWidth(u64),
 
     /// Invalid Samples value for TinyLFU.
-    #[error("invalid count main sketch width: {0}")] 
+    #[error("invalid count main sketch width: {0}")]
     InvalidSamples(usize),
 
     /// Invalid false positive ratio for TinyLFU.

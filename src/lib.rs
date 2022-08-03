@@ -308,9 +308,12 @@ impl<V: Debug> Debug for Item<V> {
 
 /// By default, the Cache will always update the value if the value already exists in the cache,
 /// this trait is for you to check if the value should be updated.
-pub trait UpdateValidator<V>: Send + Sync + 'static {
+pub trait UpdateValidator: Send + Sync + 'static {
+    /// Value
+    type Value: Send + Sync + 'static;
+
     /// should_update is called when a value already exists in cache and is being updated.
-    fn should_update(&self, prev: &V, curr: &V) -> bool;
+    fn should_update(&self, prev: &Self::Value, curr: &Self::Value) -> bool;
 }
 
 /// DefaultUpdateValidator is a noop update validator.
@@ -327,28 +330,33 @@ impl<V: Send + Sync> Default for DefaultUpdateValidator<V> {
     }
 }
 
-impl<V: Send + Sync + 'static> UpdateValidator<V> for DefaultUpdateValidator<V> {
+impl<V: Send + Sync + 'static> UpdateValidator for DefaultUpdateValidator<V> {
+    type Value = V;
+
     #[inline]
-    fn should_update(&self, _prev: &V, _curr: &V) -> bool {
+    fn should_update(&self, _prev: &Self::Value, _curr: &Self::Value) -> bool {
         true
     }
 }
 
 /// CacheCallback is for customize some extra operations on values when related event happens.
-pub trait CacheCallback<V: Send + Sync>: Send + Sync + 'static {
+pub trait CacheCallback: Send + Sync + 'static {
+    /// Value
+    type Value: Send + Sync + 'static;
+
     /// on_exit is called whenever a value is removed from cache. This can be
     /// used to do manual memory deallocation. Would also be called on eviction
     /// and rejection of the value.
-    fn on_exit(&self, val: Option<V>);
+    fn on_exit(&self, val: Option<Self::Value>);
 
     /// on_evict is called for every eviction and passes the hashed key, value,
     /// and cost to the function.
-    fn on_evict(&self, item: Item<V>) {
+    fn on_evict(&self, item: Item<Self::Value>) {
         self.on_exit(item.val)
     }
 
     /// on_reject is called for every rejection done via the policy.
-    fn on_reject(&self, item: Item<V>) {
+    fn on_reject(&self, item: Item<Self::Value>) {
         self.on_exit(item.val)
     }
 }
@@ -368,8 +376,10 @@ impl<V> Default for DefaultCacheCallback<V> {
     }
 }
 
-impl<V: Send + Sync + 'static> CacheCallback<V> for DefaultCacheCallback<V> {
-    fn on_exit(&self, _val: Option<V>) {}
+impl<V: Send + Sync + 'static> CacheCallback for DefaultCacheCallback<V> {
+    type Value = V;
+
+    fn on_exit(&self, _val: Option<Self::Value>) {}
 }
 
 /// Cost is a trait you can pass to the CacheBuilder in order to evaluate
@@ -381,11 +391,14 @@ impl<V: Send + Sync + 'static> CacheCallback<V> for DefaultCacheCallback<V> {
 ///
 /// 1. Set the Coster field to your own Coster implementation.
 /// 2. When calling `insert` for new items or item updates, use a `cost` of 0.
-pub trait Coster<V>: Send + Sync + 'static {
+pub trait Coster: Send + Sync + 'static {
+    /// Value
+    type Value: Send + Sync + 'static;
+
     /// cost evaluates a value and outputs a corresponding cost. This function
     /// is ran after insert is called for a new item or an item update with a cost
     /// param of 0.
-    fn cost(&self, val: &V) -> i64;
+    fn cost(&self, val: &Self::Value) -> i64;
 }
 
 /// DefaultCoster is a noop Coster implementation.
@@ -402,7 +415,9 @@ impl<V> Default for DefaultCoster<V> {
     }
 }
 
-impl<V: 'static> Coster<V> for DefaultCoster<V> {
+impl<V: Send + Sync + 'static> Coster for DefaultCoster<V> {
+    type Value = V;
+
     #[inline]
     fn cost(&self, _val: &V) -> i64 {
         0
@@ -423,19 +438,22 @@ impl<V: 'static> Coster<V> for DefaultCoster<V> {
 /// [`TransparentKey`]: trait.TransparentKey.html
 /// [`TransparentKeyBuilder`]: struct.TransparentKeyBuilder.html
 /// [`DefaultKeyBuilder`]: struct.DefaultKeyBuilder.html
-pub trait KeyBuilder<K: Hash + Eq + ?Sized> {
+pub trait KeyBuilder {
+    /// Key
+    type Key: Hash + Eq + ?Sized;
+
     /// `hash_index` is used to hash the key to u64
-    fn hash_index(&self, key: &K) -> u64;
+    fn hash_index(&self, key: &Self::Key) -> u64;
 
     /// if you want a 128bit hashes, you should implement this method,
     /// or leave this method return 0
-    fn hash_conflict(&self, key: &K) -> u64 {
+    fn hash_conflict(&self, key: &Self::Key) -> u64 {
         let _ = key;
         0
     }
 
     /// build the key to 128bit hashes.
-    fn build_key(&self, k: &K) -> (u64, u64) {
+    fn build_key(&self, k: &Self::Key) -> (u64, u64) {
         (self.hash_index(k), self.hash_conflict(k))
     }
 }
@@ -450,13 +468,26 @@ pub trait KeyBuilder<K: Hash + Eq + ?Sized> {
 /// [`KeyBuilder`]: trait.KeyBuilder.html
 /// [`TransparentKey`]: trait.TransparentKey.html
 /// [`TransparentKeyBuilder`]: struct.TransparentKeyBuilder.html
-#[derive(Debug, Default)]
-pub struct DefaultKeyBuilder {
+#[derive(Debug)]
+pub struct DefaultKeyBuilder<K> {
     s: RandomState,
     xx: BuildHasherDefault<XxHash64>,
+    _marker: PhantomData<K>,
 }
 
-impl<K: Hash + Eq + ?Sized> KeyBuilder<K> for DefaultKeyBuilder {
+impl<K> Default for DefaultKeyBuilder<K> {
+    fn default() -> Self {
+        Self {
+            s: Default::default(),
+            xx: Default::default(),
+            _marker: Default::default(),
+        }
+    }
+}
+
+impl<K: Hash + Eq> KeyBuilder for DefaultKeyBuilder<K> {
+    type Key = K;
+
     #[inline]
     fn hash_index(&self, key: &K) -> u64 {
         let mut s = self.s.build_hasher();
@@ -496,7 +527,9 @@ pub struct TransparentKeyBuilder<K> {
     _marker: PhantomData<K>,
 }
 
-impl<K: TransparentKey> KeyBuilder<K> for TransparentKeyBuilder<K> {
+impl<K: TransparentKey> KeyBuilder for TransparentKeyBuilder<K> {
+    type Key = K;
+
     #[inline]
     fn hash_index(&self, key: &K) -> u64 {
         key.to_u64()

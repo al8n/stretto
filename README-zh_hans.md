@@ -214,7 +214,9 @@ async fn main() {
 #### key_builder
 
 ```rust
-pub trait KeyBuilder<K: Hash + Eq + ?Sized> {
+pub trait KeyBuilder {
+    type Key: Hash + Eq + ?Sized;
+
     /// hash_index 用于将键哈希运算成一个 u64 值
     fn hash_index(&self, key: &K) -> u64;
 
@@ -259,7 +261,9 @@ Metrics（度量）应当在需要实时日志记录多种状态信息的时候�
 #### update_validator
 
 ```rust
-pub trait UpdateValidator<V>: Send + Sync + 'static {
+pub trait UpdateValidator: Send + Sync + 'static {
+    type Value: Send + Sync + 'static;
+
     /// should_update 在一个已经存在于缓存中的值被更新时调用
     fn should_update(&self, prev: &V, curr: &V) -> bool;
 }
@@ -270,7 +274,9 @@ pub trait UpdateValidator<V>: Send + Sync + 'static {
 #### callback
 
 ```rust
-pub trait CacheCallback<V: Send + Sync>: Send + Sync + 'static {
+pub trait CacheCallback: Send + Sync + 'static {
+    type Value: Send + Sync + 'static;
+
     /// on_exit 在一个值被移除 (remove) 出缓存的时候调用。
     /// 可以用于实现手动内存释放。
     /// 在撤除 (evict) 或者拒绝 (reject) 值的时候亦会被调用
@@ -293,7 +299,9 @@ CacheCallBack（缓存回调）被用于定制在事件发生时对值的额外�
 #### coster
 
 ```rust
-pub trait Coster<V>: Send + Sync + 'static {
+pub trait Coster: Send + Sync + 'static {
+    type Value: Send + Sync + 'static;
+
     /// cost 函数对值进行求值并返回对应的权重，该函数
     /// 会在一个新值插入或一个值更新为 0 权值时被调用
     fn cost(&self, val: &V) -> i64;

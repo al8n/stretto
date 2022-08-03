@@ -122,7 +122,7 @@ use std::time::Duration;
 pub struct AsyncCacheBuilder<
     K,
     V,
-    KH = DefaultKeyBuilder,
+    KH = DefaultKeyBuilder<K>,
     C = DefaultCoster<V>,
     U = DefaultUpdateValidator<V>,
     CB = DefaultCacheCallback<V>,
@@ -141,7 +141,7 @@ impl<K: Hash + Eq, V: Send + Sync + 'static> AsyncCacheBuilder<K, V> {
     }
 }
 
-impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>> AsyncCacheBuilder<K, V, KH> {
+impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<Key = K>> AsyncCacheBuilder<K, V, KH> {
     /// Create a new AsyncCacheBuilder
     #[inline]
     pub fn new_with_key_builder(num_counters: usize, max_cost: i64, kh: KH) -> Self {
@@ -155,20 +155,20 @@ impl<K, V, KH, C, U, CB, S> AsyncCacheBuilder<K, V, KH, C, U, CB, S>
 where
     K: Hash + Eq,
     V: Send + Sync + 'static,
-    KH: KeyBuilder<K>,
-    C: Coster<V>,
-    U: UpdateValidator<V>,
-    CB: CacheCallback<V>,
+    KH: KeyBuilder<Key = K>,
+    C: Coster<Value = V>,
+    U: UpdateValidator<Value = V>,
+    CB: CacheCallback<Value = V>,
     S: BuildHasher + Clone + 'static + Send + Sync,
 {
     /// Build Cache and start all threads needed by the Cache.
-    /// 
+    ///
     /// `spawner` is the spawn function for your async runtime.
     /// For example, if you use `tokio`, then pass `tokio::spawn` as spawner parameter.
-    /// 
+    ///
     /// ```no_run
     /// use stretto::{AsyncCacheBuilder, TransparentKeyBuilder};
-    /// 
+    ///
     /// AsyncCacheBuilder::<u64, u64>::new(100, 10)
     ///     .finalize(tokio::spawn)
     ///     .unwrap();
@@ -353,7 +353,7 @@ impl<V> Item<V> {
 pub struct AsyncCache<
     K,
     V,
-    KH = DefaultKeyBuilder,
+    KH = DefaultKeyBuilder<K>,
     C = DefaultCoster<V>,
     U = DefaultUpdateValidator<V>,
     CB = DefaultCacheCallback<V>,
@@ -361,7 +361,7 @@ pub struct AsyncCache<
 > where
     K: Hash + Eq,
     V: Send + Sync + 'static,
-    KH: KeyBuilder<K>,
+    KH: KeyBuilder<Key = K>,
 {
     /// store is the central concurrent hashmap where key-value items are stored.
     pub(crate) store: Arc<ShardedMap<V, U, S, S>>,
@@ -393,17 +393,17 @@ pub struct AsyncCache<
 
 impl<K: Hash + Eq, V: Send + Sync + 'static> AsyncCache<K, V> {
     /// Returns a Cache instance with default configruations.
-    /// 
-    /// 
+    ///
+    ///
     /// # Example
     /// `spawner` is the spawn function for your async runtime.
     /// For example, if you use `tokio`, then pass `tokio::spawn` as spawner parameter.
-    /// 
+    ///
     /// ```no_run
     /// use stretto::AsyncCache;
-    /// 
+    ///
     /// AsyncCache::<u64, u64>::new(100, 10, tokio::spawn).unwrap();
-    /// ``` 
+    /// ```
     #[inline]
     pub fn new<SP, R>(num_counters: usize, max_cost: i64, spawner: SP) -> Result<Self, CacheError>
     where
@@ -420,7 +420,7 @@ impl<K: Hash + Eq, V: Send + Sync + 'static> AsyncCache<K, V> {
     ) -> AsyncCacheBuilder<
         K,
         V,
-        DefaultKeyBuilder,
+        DefaultKeyBuilder<K>,
         DefaultCoster<V>,
         DefaultUpdateValidator<V>,
         DefaultCacheCallback<V>,
@@ -430,16 +430,16 @@ impl<K: Hash + Eq, V: Send + Sync + 'static> AsyncCache<K, V> {
     }
 }
 
-impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>> AsyncCache<K, V, KH> {
+impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<Key = K>> AsyncCache<K, V, KH> {
     /// Returns a Cache instance with default configruations.
-    /// 
+    ///
     /// # Example
     /// `spawner` is the spawn function for your async runtime.
     /// For example, if you use `tokio`, then pass `tokio::spawn` as spawner parameter.
-    /// 
+    ///
     /// ```no_run
     /// use stretto::{AsyncCache, TransparentKeyBuilder};
-    /// 
+    ///
     /// AsyncCache::<u64, u64, TransparentKeyBuilder<_>>::new_with_key_builder(100, 10, TransparentKeyBuilder::<u64>::default(), tokio::spawn).unwrap();
     /// ```
     #[inline]
@@ -460,10 +460,10 @@ impl<K, V, KH, C, U, CB, S> AsyncCache<K, V, KH, C, U, CB, S>
 where
     K: Hash + Eq,
     V: Send + Sync + 'static,
-    KH: KeyBuilder<K>,
-    C: Coster<V>,
-    U: UpdateValidator<V>,
-    CB: CacheCallback<V>,
+    KH: KeyBuilder<Key = K>,
+    C: Coster<Value = V>,
+    U: UpdateValidator<Value = V>,
+    CB: CacheCallback<Value = V>,
     S: BuildHasher + Clone + 'static + Send,
 {
     /// clear the Cache.
@@ -655,8 +655,8 @@ where
 impl<V, U, CB, S> CacheProcessor<V, U, CB, S>
 where
     V: Send + Sync + 'static,
-    U: UpdateValidator<V>,
-    CB: CacheCallback<V>,
+    U: UpdateValidator<Value = V>,
+    CB: CacheCallback<Value = V>,
     S: BuildHasher + Clone + 'static + Send + Sync,
 {
     pub(crate) fn new(
@@ -692,8 +692,7 @@ where
     #[inline]
     pub(crate) fn spawn(mut self, spawner: Box<dyn Fn(BoxFuture<'static, ()>) + Send + Sync>) {
         (spawner)(Box::pin(async move {
-            let mut cleanup_timer =
-                Timer::interval(self.cleanup_duration);
+            let mut cleanup_timer = Timer::interval(self.cleanup_duration);
 
             loop {
                 select! {
@@ -753,8 +752,8 @@ where
 impl<'a, V, U, CB, S> CacheCleaner<'a, V, U, CB, S>
 where
     V: Send + Sync + 'static,
-    U: UpdateValidator<V>,
-    CB: CacheCallback<V>,
+    U: UpdateValidator<Value = V>,
+    CB: CacheCallback<Value = V>,
     S: BuildHasher + Clone + 'static + Send + Sync,
 {
     #[inline]

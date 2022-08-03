@@ -29,7 +29,9 @@ struct KHTest {
     ctr: Arc<AtomicU64>,
 }
 
-impl KeyBuilder<u64> for KHTest {
+impl KeyBuilder for KHTest {
+    type Key = u64;
+
     fn hash_index(&self, key: &u64) -> u64 {
         *key
     }
@@ -47,13 +49,15 @@ impl KeyBuilder<u64> for KHTest {
 #[derive(Default)]
 struct TestCoster {}
 
-impl Coster<u64> for TestCoster {
+impl Coster for TestCoster {
     fn cost(&self, val: &u64) -> i64 {
         *val as i64
     }
+
+    type Value = u64;
 }
 
-impl CacheCallback<u64> for TestCallback {
+impl CacheCallback for TestCallback {
     fn on_exit(&self, _val: Option<u64>) {}
 
     fn on_evict(&self, item: CrateItem<u64>) {
@@ -61,13 +65,15 @@ impl CacheCallback<u64> for TestCallback {
         evicted.insert(item.index);
         self.on_exit(item.val)
     }
+
+    type Value = u64;
 }
 
 struct TestCallbackDropUpdates {
     set: Arc<Mutex<HashSet<u64>>>,
 }
 
-impl CacheCallback<String> for TestCallbackDropUpdates {
+impl CacheCallback for TestCallbackDropUpdates {
     fn on_exit(&self, _val: Option<String>) {}
 
     fn on_evict(&self, item: CrateItem<String>) {
@@ -83,6 +89,8 @@ impl CacheCallback<String> for TestCallbackDropUpdates {
             self.set.lock().iter().copied().collect::<Vec<u64>>()
         );
     }
+
+    type Value = String;
 }
 
 #[cfg(feature = "sync")]
@@ -105,13 +113,17 @@ mod sync_test {
     use std::thread::{sleep, spawn};
     use std::time::Duration;
 
-    fn new_test_cache<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>>(
+    fn new_test_cache<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<Key = K>>(
         kh: KH,
     ) -> Cache<K, V, KH> {
         Cache::new_with_key_builder(100, 10, kh).unwrap()
     }
 
-    fn retry_set<C: Coster<u64>, U: UpdateValidator<u64>, CB: CacheCallback<u64>>(
+    fn retry_set<
+        C: Coster<Value = u64>,
+        U: UpdateValidator<Value = u64>,
+        CB: CacheCallback<Value = u64>,
+    >(
         c: Cache<u64, u64, TransparentKeyBuilder<u64>, C, U, CB>,
         key: u64,
         val: u64,
@@ -132,7 +144,7 @@ mod sync_test {
 
     #[test]
     fn test_cache_builder() {
-        let _: Cache<u64, u64, DefaultKeyBuilder> =
+        let _: Cache<u64, u64, DefaultKeyBuilder<u64>> =
             CacheBuilder::new_with_key_builder(100, 10, TransparentKeyBuilder::default())
                 .set_coster(DefaultCoster::default())
                 .set_update_validator(DefaultUpdateValidator::default())
@@ -729,13 +741,17 @@ mod async_test {
     use tokio::task::spawn;
     use tokio::time::sleep;
 
-    async fn new_test_cache<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>>(
+    async fn new_test_cache<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<Key = K>>(
         kh: KH,
     ) -> AsyncCache<K, V, KH> {
         AsyncCache::new_with_key_builder(100, 10, kh, tokio::spawn).unwrap()
     }
 
-    async fn retry_set<C: Coster<u64>, U: UpdateValidator<u64>, CB: CacheCallback<u64>>(
+    async fn retry_set<
+        C: Coster<Value = u64>,
+        U: UpdateValidator<Value = u64>,
+        CB: CacheCallback<Value = u64>,
+    >(
         c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>, C, U, CB>,
         key: u64,
         val: u64,
@@ -756,7 +772,7 @@ mod async_test {
 
     #[tokio::test]
     async fn test_cache_builder() {
-        let _: AsyncCache<u64, u64, DefaultKeyBuilder> =
+        let _: AsyncCache<u64, u64, DefaultKeyBuilder<u64>> =
             AsyncCacheBuilder::new_with_key_builder(100, 10, TransparentKeyBuilder::default())
                 .set_coster(DefaultCoster::default())
                 .set_update_validator(DefaultUpdateValidator::default())

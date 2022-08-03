@@ -11,7 +11,7 @@ use std::time::Duration;
 pub struct CacheBuilderCore<
     K,
     V,
-    KH = DefaultKeyBuilder,
+    KH = DefaultKeyBuilder<K>,
     C = DefaultCoster<V>,
     U = DefaultUpdateValidator<V>,
     CB = DefaultCacheCallback<V>,
@@ -80,7 +80,7 @@ impl<K: Hash + Eq, V: Send + Sync + 'static> CacheBuilderCore<K, V> {
             insert_buffer_size: DEFAULT_INSERT_BUF_SIZE,
             metrics: false,
             callback: Some(DefaultCacheCallback::default()),
-            key_to_hash: DefaultKeyBuilder::default(),
+            key_to_hash: DefaultKeyBuilder::<K>::default(),
             update_validator: Some(DefaultUpdateValidator::default()),
             coster: Some(DefaultCoster::default()),
             ignore_internal_cost: false,
@@ -92,7 +92,7 @@ impl<K: Hash + Eq, V: Send + Sync + 'static> CacheBuilderCore<K, V> {
     }
 }
 
-impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<K>> CacheBuilderCore<K, V, KH> {
+impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<Key = K>> CacheBuilderCore<K, V, KH> {
     /// Create a new CacheBuilderCore
     #[inline]
     pub fn new_with_key_builder(num_counters: usize, max_cost: i64, index: KH) -> Self {
@@ -119,10 +119,10 @@ impl<K, V, KH, C, U, CB, S> CacheBuilderCore<K, V, KH, C, U, CB, S>
 where
     K: Hash + Eq,
     V: Send + Sync + 'static,
-    KH: KeyBuilder<K>,
-    C: Coster<V>,
-    U: UpdateValidator<V>,
-    CB: CacheCallback<V>,
+    KH: KeyBuilder<Key = K>,
+    C: Coster<Value = V>,
+    U: UpdateValidator<Value = V>,
+    CB: CacheCallback<Value = V>,
     S: BuildHasher + Clone + 'static,
 {
     /// Set the number of counters for the Cache.
@@ -293,7 +293,7 @@ where
     /// [`TransparentKeyBuilder`]: struct.TransparentKeyBuilder.html
     /// [`DefaultKeyBuilder`]: struct.DefaultKeyBuilder.html
     #[inline]
-    pub fn set_key_builder<NKH: KeyBuilder<K>>(
+    pub fn set_key_builder<NKH: KeyBuilder<Key = K>>(
         self,
         index: NKH,
     ) -> CacheBuilderCore<K, V, NKH, C, U, CB, S> {
@@ -326,7 +326,10 @@ where
     /// 1. Set the [`Coster`] field to your own [`Coster`] implementation.
     /// 2. When calling [`insert`] for new items or item updates, use a cost of 0.
     #[inline]
-    pub fn set_coster<NC: Coster<V>>(self, coster: NC) -> CacheBuilderCore<K, V, KH, NC, U, CB, S> {
+    pub fn set_coster<NC: Coster<Value = V>>(
+        self,
+        coster: NC,
+    ) -> CacheBuilderCore<K, V, KH, NC, U, CB, S> {
         CacheBuilderCore {
             num_counters: self.num_counters,
             max_cost: self.max_cost,
@@ -350,7 +353,7 @@ where
     /// [`UpdateValidator`] is a trait to support customized update policy (check if the value should be updated
     /// if the value already exists in the cache).
     #[inline]
-    pub fn set_update_validator<NU: UpdateValidator<V>>(
+    pub fn set_update_validator<NU: UpdateValidator<Value = V>>(
         self,
         uv: NU,
     ) -> CacheBuilderCore<K, V, KH, C, NU, CB, S> {
@@ -375,7 +378,7 @@ where
     ///
     /// [`CacheCallback`] is for customize some extra operations on values when related event happens.
     #[inline]
-    pub fn set_callback<NCB: CacheCallback<V>>(
+    pub fn set_callback<NCB: CacheCallback<Value = V>>(
         self,
         cb: NCB,
     ) -> CacheBuilderCore<K, V, KH, C, U, NCB, S> {

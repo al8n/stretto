@@ -30,7 +30,9 @@ struct KC {
 #[derive(Default)]
 struct KH;
 
-impl KeyBuilder<KC> for KH {
+impl KeyBuilder for KH {
+    type Key = KC;
+
     fn hash_index(&self, key: &KC) -> u64 {
         key.hash
     }
@@ -86,7 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let c = AsyncCache::builder(12960, 1e6 as i64)
         .set_key_builder(KH::default())
         .set_metrics(true)
-        .finalize()
+        .finalize(tokio::spawn)
         .unwrap();
 
     let time = Instant::now();

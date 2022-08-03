@@ -216,7 +216,9 @@ For example, if you expect each item to have a cost of 1 and `max_cost` is 100, 
 #### key_builder
 
 ```rust
-pub trait KeyBuilder<K: Hash + Eq + ?Sized> {
+pub trait KeyBuilder {
+    type Key: Hash + Eq + ?Sized;
+
     /// hash_index is used to hash the key to u64
     fn hash_index(&self, key: &K) -> u64;
 
@@ -263,7 +265,9 @@ The Cache will cleanup the expired values every 500ms by default.
 #### update_validator
 
 ```rust
-pub trait UpdateValidator<V>: Send + Sync + 'static {
+pub trait UpdateValidator: Send + Sync + 'static {
+    type Value: Send + Sync + 'static;
+
     /// should_update is called when a value already exists in cache and is being updated.
     fn should_update(&self, prev: &V, curr: &V) -> bool;
 }
@@ -275,7 +279,9 @@ this trait is for you to check if the value should be updated.
 #### callback
 
 ```rust
-pub trait CacheCallback<V: Send + Sync>: Send + Sync + 'static {
+pub trait CacheCallback: Send + Sync + 'static {
+    type Value: Send + Sync + 'static;
+
     /// on_exit is called whenever a value is removed from cache. This can be
     /// used to do manual memory deallocation. Would also be called on eviction
     /// and rejection of the value.
@@ -299,7 +305,9 @@ CacheCallback is for customize some extra operations on values when related even
 #### coster
 
 ```rust
-pub trait Coster<V>: Send + Sync + 'static {
+pub trait Coster: Send + Sync + 'static {
+    type Value: Send + Sync + 'static;
+
     /// cost evaluates a value and outputs a corresponding cost. This function
     /// is ran after insert is called for a new item or an item update with a cost
     /// param of 0.

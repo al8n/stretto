@@ -46,7 +46,7 @@ impl<V: Send + Sync + 'static> ShardedMap<V> {
     }
 }
 
-impl<V: Send + Sync + 'static, U: UpdateValidator<V>> ShardedMap<V, U> {
+impl<V: Send + Sync + 'static, U: UpdateValidator<Value = V>> ShardedMap<V, U> {
     #[allow(dead_code)]
     pub fn with_validator(em: ExpirationMap<RandomState>, validator: U) -> Self {
         let shards = Box::new(
@@ -69,7 +69,7 @@ impl<V: Send + Sync + 'static, U: UpdateValidator<V>> ShardedMap<V, U> {
 
 impl<
         V: Send + Sync + 'static,
-        U: UpdateValidator<V>,
+        U: UpdateValidator<Value = V>,
         SS: BuildHasher + Clone + 'static,
         ES: BuildHasher + Clone + 'static,
     > ShardedMap<V, U, SS, ES>
@@ -274,7 +274,7 @@ impl<
                     })
                     .collect()
             }))
-    } 
+    }
 
     #[cfg(feature = "async")]
     pub fn try_cleanup_async<PS: BuildHasher + Clone + 'static>(
@@ -324,12 +324,12 @@ impl<
     }
 }
 
-unsafe impl<V: Send + Sync + 'static, U: UpdateValidator<V>, SS: BuildHasher, ES: BuildHasher> Send
-    for ShardedMap<V, U, SS, ES>
+unsafe impl<V: Send + Sync + 'static, U: UpdateValidator<Value = V>, SS: BuildHasher, ES: BuildHasher>
+    Send for ShardedMap<V, U, SS, ES>
 {
 }
-unsafe impl<V: Send + Sync + 'static, U: UpdateValidator<V>, SS: BuildHasher, ES: BuildHasher> Sync
-    for ShardedMap<V, U, SS, ES>
+unsafe impl<V: Send + Sync + 'static, U: UpdateValidator<Value = V>, SS: BuildHasher, ES: BuildHasher>
+    Sync for ShardedMap<V, U, SS, ES>
 {
 }
 

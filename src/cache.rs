@@ -4,10 +4,10 @@ macro_rules! impl_builder {
         where
             K: Hash + Eq,
             V: Send + Sync + 'static,
-            KH: KeyBuilder<K>,
-            C: Coster<V>,
-            U: UpdateValidator<V>,
-            CB: CacheCallback<V>,
+            KH: KeyBuilder<Key = K>,
+            C: Coster<Value = V>,
+            U: UpdateValidator<Value = V>,
+            CB: CacheCallback<Value = V>,
             S: BuildHasher + Clone + 'static,
         {
             /// Set the number of counters for the Cache.
@@ -106,7 +106,7 @@ macro_rules! impl_builder {
             /// [`TransparentKeyBuilder`]: struct.TransparentKeyBuilder.html
             /// [`DefaultKeyBuilder`]: struct.DefaultKeyBuilder.html
             #[inline]
-            pub fn set_key_builder<NKH: KeyBuilder<K>>(
+            pub fn set_key_builder<NKH: KeyBuilder<Key = K>>(
                 self,
                 kh: NKH,
             ) -> $ty<K, V, NKH, C, U, CB, S> {
@@ -129,7 +129,10 @@ macro_rules! impl_builder {
             ///
             /// [`Coster`]: trait.Coster.html
             #[inline]
-            pub fn set_coster<NC: Coster<V>>(self, coster: NC) -> $ty<K, V, KH, NC, U, CB, S> {
+            pub fn set_coster<NC: Coster<Value = V>>(
+                self,
+                coster: NC,
+            ) -> $ty<K, V, KH, NC, U, CB, S> {
                 $ty {
                     inner: self.inner.set_coster(coster),
                 }
@@ -143,7 +146,7 @@ macro_rules! impl_builder {
             ///
             /// [`UpdateValidator`]: trait.UpdateValidator.html
             #[inline]
-            pub fn set_update_validator<NU: UpdateValidator<V>>(
+            pub fn set_update_validator<NU: UpdateValidator<Value = V>>(
                 self,
                 uv: NU,
             ) -> $ty<K, V, KH, C, NU, CB, S> {
@@ -158,7 +161,7 @@ macro_rules! impl_builder {
             ///
             /// [`CacheCallback`]: trait.CacheCallback.html
             #[inline]
-            pub fn set_callback<NCB: CacheCallback<V>>(
+            pub fn set_callback<NCB: CacheCallback<Value = V>>(
                 self,
                 cb: NCB,
             ) -> $ty<K, V, KH, C, U, NCB, S> {
@@ -191,10 +194,10 @@ macro_rules! impl_cache {
         where
             K: Hash + Eq,
             V: Send + Sync + 'static,
-            KH: KeyBuilder<K>,
-            C: Coster<V>,
-            U: UpdateValidator<V>,
-            CB: CacheCallback<V>,
+            KH: KeyBuilder<Key = K>,
+            C: Coster<Value = V>,
+            U: UpdateValidator<Value = V>,
+            CB: CacheCallback<Value = V>,
             S: BuildHasher + Clone + 'static,
         {
             /// `get` returns a `Option<ValueRef<V, SS>>` (if any) representing whether the
@@ -317,10 +320,10 @@ macro_rules! impl_cache {
         where
             K: Hash + Eq,
             V: Send + Sync + 'static,
-            KH: KeyBuilder<K>,
-            C: Coster<V>,
-            U: UpdateValidator<V>,
-            CB: CacheCallback<V>,
+            KH: KeyBuilder<Key = K>,
+            C: Coster<Value = V>,
+            U: UpdateValidator<Value = V>,
+            CB: CacheCallback<Value = V>,
             S: BuildHasher + Clone + 'static,
         {
             fn as_ref(&self) -> &$cache<K, V, KH, C, U, CB, S> {
@@ -332,10 +335,10 @@ macro_rules! impl_cache {
         where
             K: Hash + Eq,
             V: Send + Sync + 'static,
-            KH: KeyBuilder<K>,
-            C: Coster<V>,
-            U: UpdateValidator<V>,
-            CB: CacheCallback<V>,
+            KH: KeyBuilder<Key = K>,
+            C: Coster<Value = V>,
+            U: UpdateValidator<Value = V>,
+            CB: CacheCallback<Value = V>,
             S: BuildHasher + Clone + 'static,
         {
             fn clone(&self) -> Self {
@@ -364,8 +367,8 @@ macro_rules! impl_cache_processor {
         impl<V, U, CB, S> $processor<V, U, CB, S>
         where
             V: Send + Sync + 'static,
-            U: UpdateValidator<V>,
-            CB: CacheCallback<V>,
+            U: UpdateValidator<Value = V>,
+            CB: CacheCallback<Value = V>,
             S: BuildHasher + Clone + 'static + Send,
         {
             #[inline]
@@ -484,8 +487,8 @@ macro_rules! impl_cache_cleaner {
         impl<'a, V, U, CB, S> $cleaner<'a, V, U, CB, S>
         where
             V: Send + Sync + 'static,
-            U: UpdateValidator<V>,
-            CB: CacheCallback<V>,
+            U: UpdateValidator<Value = V>,
+            CB: CacheCallback<Value = V>,
             S: BuildHasher + Clone + 'static + Send,
         {
             #[inline]
