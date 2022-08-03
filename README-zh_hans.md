@@ -65,25 +65,25 @@
 - 使用同步缓存
 ```toml
 [dependencies]
-stretto = "0.5"
+stretto = "0.6"
 ```
 或
 ```toml 
 [dependencies]
-stretto = { version = "0.5", features = ["sync"] }
+stretto = { version = "0.6", features = ["sync"] }
 ```
 
 
 - 使用异步缓存
 ```toml 
 [dependencies]
-stretto = { version = "0.5", features = ["async"] }
+stretto = { version = "0.6", features = ["async"] }
 ```
 
 - 同步异步同时使用
 ```toml 
 [dependencies]
-stretto = { version = "0.5", features = ["full"] }
+stretto = { version = "0.6", features = ["full"] }
 ```
 
 ## 操作方法

@@ -67,25 +67,25 @@ English | [简体中文](README-zh_hans.md)
 - Use Cache.
 ```toml
 [dependencies]
-stretto = "0.5"
+stretto = "0.6"
 ```
 or
 ```toml 
 [dependencies]
-stretto = { version = "0.5", features = ["sync"] }
+stretto = { version = "0.6", features = ["sync"] }
 ```
 
 
 - Use AsyncCache
 ```toml 
 [dependencies]
-stretto = { version = "0.5", features = ["async"] }
+stretto = { version = "0.6", features = ["async"] }
 ```
 
 - Use both Cache and AsyncCache
 ```toml 
 [dependencies]
-stretto = { version = "0.5", features = ["full"] }
+stretto = { version = "0.6", features = ["full"] }
 ```
 
 ## Related
@@ -357,6 +357,3 @@ shall be dual licensed as above, without any additional terms or conditions.
 [license-apache-url]: https://opensource.org/licenses/Apache-2.0
 [license-mit-url]: https://opensource.org/licenses/MIT
 [rustc-image]: https://img.shields.io/badge/rustc-1.52.0--nightly%2B-orange.svg?style=for-the-badge&logo=Rust
-
-
-[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fal8n%2Fstretto.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fal8n%2Fstretto?ref=badge_large)
