@@ -220,14 +220,14 @@ pub trait KeyBuilder {
     type Key: Hash + Eq + ?Sized;
 
     /// hash_index is used to hash the key to u64
-    fn hash_index(&self, key: &K) -> u64;
+    fn hash_index(&self, key: &Self::Key) -> u64;
 
     /// if you want a 128bit hashes, you should implement this method,
     /// or leave this method return 0
-    fn hash_conflict(&self, key: &K) -> u64 { 0 }
+    fn hash_conflict(&self, key: &Self::Key) -> u64 { 0 }
 
     /// build the key to 128bit hashes.
-    fn build_key(&self, k: &K) -> (u64, u64) {
+    fn build_key(&self, k: &Self::Key) -> (u64, u64) {
         (self.hash_index(k), self.hash_conflict(k))
     }
 }
@@ -269,7 +269,7 @@ pub trait UpdateValidator: Send + Sync + 'static {
     type Value: Send + Sync + 'static;
 
     /// should_update is called when a value already exists in cache and is being updated.
-    fn should_update(&self, prev: &V, curr: &V) -> bool;
+    fn should_update(&self, prev: &Self::Value, curr: &Self::Value) -> bool;
 }
 ```
 
@@ -285,16 +285,16 @@ pub trait CacheCallback: Send + Sync + 'static {
     /// on_exit is called whenever a value is removed from cache. This can be
     /// used to do manual memory deallocation. Would also be called on eviction
     /// and rejection of the value.
-    fn on_exit(&self, val: Option<V>);
+    fn on_exit(&self, val: Option<Self::Value>);
 
     /// on_evict is called for every eviction and passes the hashed key, value,
     /// and cost to the function.
-    fn on_evict(&self, item: Item<V>) {
+    fn on_evict(&self, item: Item<Self::Value>) {
         self.on_exit(item.val)
     }
 
     /// on_reject is called for every rejection done via the policy.
-    fn on_reject(&self, item: Item<V>) {
+    fn on_reject(&self, item: Item<Self::Value>) {
         self.on_exit(item.val)
     }
 }
@@ -311,7 +311,7 @@ pub trait Coster: Send + Sync + 'static {
     /// cost evaluates a value and outputs a corresponding cost. This function
     /// is ran after insert is called for a new item or an item update with a cost
     /// param of 0.
-    fn cost(&self, val: &V) -> i64;
+    fn cost(&self, val: &Self::Value) -> i64;
 }
 ```
 

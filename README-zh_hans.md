@@ -218,14 +218,14 @@ pub trait KeyBuilder {
     type Key: Hash + Eq + ?Sized;
 
     /// hash_index 用于将键哈希运算成一个 u64 值
-    fn hash_index(&self, key: &K) -> u64;
+    fn hash_index(&self, key: &Self::Key) -> u64;
 
     /// 如果希望使用一个 128 位哈希，需要实现此方法。
     /// 默认返回 0
-    fn hash_conflict(&self, key: &K) -> u64 { 0 }
+    fn hash_conflict(&self, key: &Self::Key) -> u64 { 0 }
 
     /// 将键进行哈希运算，返回 128 位哈希结果。
-    fn build_key(&self, k: &K) -> (u64, u64) {
+    fn build_key(&self, k: &Self::Key) -> (u64, u64) {
         (self.hash_index(k), self.hash_conflict(k))
     }
 }
@@ -265,7 +265,7 @@ pub trait UpdateValidator: Send + Sync + 'static {
     type Value: Send + Sync + 'static;
 
     /// should_update 在一个已经存在于缓存中的值被更新时调用
-    fn should_update(&self, prev: &V, curr: &V) -> bool;
+    fn should_update(&self, prev: &Self::Value, curr: &Self::Value) -> bool;
 }
 ```
 
@@ -280,15 +280,15 @@ pub trait CacheCallback: Send + Sync + 'static {
     /// on_exit 在一个值被移除 (remove) 出缓存的时候调用。
     /// 可以用于实现手动内存释放。
     /// 在撤除 (evict) 或者拒绝 (reject) 值的时候亦会被调用
-    fn on_exit(&self, val: Option<V>);
+    fn on_exit(&self, val: Option<Self::Value>);
 
     /// on_evict 在撤除值的时候会被调用，同时会将哈希键、值和权传给函数。
-    fn on_evict(&self, item: Item<V>) {
+    fn on_evict(&self, item: Item<Self::Value>) {
         self.on_exit(item.val)
     }
 
     /// on_reject 会被 policy 为每个所拒绝的值调用
-    fn on_reject(&self, item: Item<V>) {
+    fn on_reject(&self, item: Item<Self::Value>) {
         self.on_exit(item.val)
     }
 }
@@ -304,7 +304,7 @@ pub trait Coster: Send + Sync + 'static {
 
     /// cost 函数对值进行求值并返回对应的权重，该函数
     /// 会在一个新值插入或一个值更新为 0 权值时被调用
-    fn cost(&self, val: &V) -> i64;
+    fn cost(&self, val: &Self::Value) -> i64;
 }
 ```
 
