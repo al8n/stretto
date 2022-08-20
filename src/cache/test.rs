@@ -788,6 +788,24 @@ mod async_test {
     }
 
     #[tokio::test]
+    async fn test_wait() {
+        let max_cost = 10_000;
+        let lru = AsyncCacheBuilder::new(max_cost * 10, max_cost as i64)
+            .set_ignore_internal_cost(true)
+            .finalize(tokio::spawn)
+            .expect("failed to create cache");
+
+        for i in 0..10_000 {
+            println!("i = {i}, len before insert = {}", lru.len());
+
+            let value = 123;
+            let cost = 1;
+            lru.insert(i, value, cost).await;
+            lru.wait().await.unwrap(); // <-- freezes here
+        }
+    }
+
+    #[tokio::test]
     async fn test_cache_key_to_hash() {
         let ctr = Arc::new(AtomicU64::new(0));
 

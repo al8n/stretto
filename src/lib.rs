@@ -242,11 +242,10 @@ pub use metrics::{MetricType, Metrics};
 pub use utils::{ValueRef, ValueRefMut};
 
 use crate::ttl::Time;
-use std::collections::hash_map::RandomState;
+use seahash::SeaHasher;
 use std::fmt::{Debug, Formatter};
 use std::hash::{BuildHasher, BuildHasherDefault, Hash, Hasher};
 use std::marker::PhantomData;
-use twox_hash::XxHash64;
 
 /// Item is the parameter when Cache reject, evict value,
 pub struct Item<V> {
@@ -468,18 +467,26 @@ pub trait KeyBuilder {
 /// [`KeyBuilder`]: trait.KeyBuilder.html
 /// [`TransparentKey`]: trait.TransparentKey.html
 /// [`TransparentKeyBuilder`]: struct.TransparentKeyBuilder.html
-#[derive(Debug)]
 pub struct DefaultKeyBuilder<K> {
-    s: RandomState,
-    xx: BuildHasherDefault<XxHash64>,
+    xx: xxhash_rust::xxh64::Xxh64Builder,
+    sea: BuildHasherDefault<SeaHasher>,
     _marker: PhantomData<K>,
+}
+
+impl<K> Debug for DefaultKeyBuilder<K> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DefaultKeyBuilder").finish()
+    }
 }
 
 impl<K> Default for DefaultKeyBuilder<K> {
     fn default() -> Self {
+        use rand::{thread_rng, Rng};
+        let mut rng = thread_rng();
+        let seed = rng.gen::<u64>();
         Self {
-            s: Default::default(),
-            xx: Default::default(),
+            xx: xxhash_rust::xxh64::Xxh64Builder::new(seed),
+            sea: Default::default(),
             _marker: Default::default(),
         }
     }
@@ -490,7 +497,7 @@ impl<K: Hash + Eq> KeyBuilder for DefaultKeyBuilder<K> {
 
     #[inline]
     fn hash_index(&self, key: &K) -> u64 {
-        let mut s = self.s.build_hasher();
+        let mut s = self.sea.build_hasher();
         key.hash(&mut s);
         s.finish()
     }

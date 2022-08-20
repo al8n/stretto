@@ -327,7 +327,7 @@ To signal to Stretto that you'd like to use this Coster trait:
 
 #### hasher
 
-The hasher for the Cache, default is SipHasher.
+The hasher for the Cache, default is SeaHasher.
 
 ## Acknowledgements
 - Thanks Dgraph's developers for providing amazing Go version [Ristretto](https://github.com/dgraph-io/ristretto) implementation.
