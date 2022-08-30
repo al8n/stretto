@@ -442,17 +442,28 @@ pub trait KeyBuilder {
     type Key: Hash + Eq + ?Sized;
 
     /// `hash_index` is used to hash the key to u64
-    fn hash_index(&self, key: &Self::Key) -> u64;
+    fn hash_index<Q>(&self, key: &Q) -> u64
+    where
+        Self::Key: core::borrow::Borrow<Q>,
+        Q: core::hash::Hash + Eq + ?Sized;
 
     /// if you want a 128bit hashes, you should implement this method,
     /// or leave this method return 0
-    fn hash_conflict(&self, key: &Self::Key) -> u64 {
+    fn hash_conflict<Q>(&self, key: &Q) -> u64
+    where
+        Self::Key: core::borrow::Borrow<Q>,
+        Q: core::hash::Hash + Eq + ?Sized,
+    {
         let _ = key;
         0
     }
 
     /// build the key to 128bit hashes.
-    fn build_key(&self, k: &Self::Key) -> (u64, u64) {
+    fn build_key<Q>(&self, k: &Q) -> (u64, u64)
+    where
+        Self::Key: core::borrow::Borrow<Q>,
+        Q: core::hash::Hash + Eq + ?Sized,
+    {
         (self.hash_index(k), self.hash_conflict(k))
     }
 }
@@ -496,17 +507,97 @@ impl<K: Hash + Eq> KeyBuilder for DefaultKeyBuilder<K> {
     type Key = K;
 
     #[inline]
-    fn hash_index(&self, key: &K) -> u64 {
+    fn hash_index<Q>(&self, key: &Q) -> u64
+    where
+        Self::Key: core::borrow::Borrow<Q>,
+        Q: core::hash::Hash + Eq + ?Sized,
+    {
         let mut s = self.sea.build_hasher();
         key.hash(&mut s);
         s.finish()
     }
 
     #[inline]
-    fn hash_conflict(&self, key: &K) -> u64 {
+    fn hash_conflict<Q>(&self, key: &Q) -> u64
+    where
+        Self::Key: core::borrow::Borrow<Q>,
+        Q: core::hash::Hash + Eq + ?Sized,
+    {
         let mut x = self.xx.build_hasher();
         key.hash(&mut x);
         x.finish()
+    }
+}
+
+#[derive(Default, Copy, Clone, Eq, PartialEq, Debug)]
+#[repr(transparent)]
+struct TransparentHasher {
+    data: u64,
+}
+
+impl Hasher for TransparentHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.data
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let mut data = [0u8; core::mem::size_of::<u64>()];
+        if bytes.len() > core::mem::size_of::<u64>() {
+            data.copy_from_slice(&bytes[..core::mem::size_of::<u64>()]);
+        } else {
+            data[..bytes.len()].copy_from_slice(bytes);
+        }
+        self.data = u64::from_ne_bytes(data);
+    }
+
+    fn write_u8(&mut self, i: u8) {
+        self.data = i as u64;
+    }
+
+    fn write_u16(&mut self, i: u16) {
+        self.data = i as u64;
+    }
+
+    fn write_u32(&mut self, i: u32) {
+        self.data = i as u64;
+    }
+
+    fn write_u64(&mut self, i: u64) {
+        self.data = i;
+    }
+
+    fn write_u128(&mut self, i: u128) {
+        self.data = i as u64;
+    }
+
+    fn write_usize(&mut self, i: usize) {
+        self.data = i as u64;
+    }
+
+    fn write_i8(&mut self, i: i8) {
+        self.data = i as u64;
+    }
+
+    fn write_i16(&mut self, i: i16) {
+        self.data = i as u64;
+    }
+
+    fn write_i32(&mut self, i: i32) {
+        self.data = i as u64;
+    }
+
+    fn write_i64(&mut self, i: i64) {
+        self.data = i as u64;
+    }
+
+    fn write_i128(&mut self, i: i128) {
+        self.data = i as u64;
+    }
+
+    fn write_isize(&mut self, i: isize) {
+        self.data = i as u64;
     }
 }
 
@@ -529,8 +620,9 @@ pub trait TransparentKey: Hash + Eq {
 ///
 /// [`DefaultKeyBuilder`]: struct.DefaultKeyBuilder.html
 /// [`TransparentKey`]: trait.TransparentKey.html
-#[derive(Default, Copy, Clone, Eq, PartialEq, Debug)]
-pub struct TransparentKeyBuilder<K> {
+#[derive(Default, Clone, Eq, PartialEq, Debug)]
+pub struct TransparentKeyBuilder<K: TransparentKey> {
+    // hasher: TransparentHasher<K>,
     _marker: PhantomData<K>,
 }
 
@@ -538,12 +630,22 @@ impl<K: TransparentKey> KeyBuilder for TransparentKeyBuilder<K> {
     type Key = K;
 
     #[inline]
-    fn hash_index(&self, key: &K) -> u64 {
-        key.to_u64()
+    fn hash_index<Q>(&self, key: &Q) -> u64
+    where
+        Self::Key: core::borrow::Borrow<Q>,
+        Q: core::hash::Hash + Eq + ?Sized,
+    {
+        let mut hasher = TransparentHasher { data: 0 };
+        key.hash(&mut hasher);
+        hasher.finish()
     }
 
     #[inline]
-    fn hash_conflict(&self, _key: &K) -> u64 {
+    fn hash_conflict<Q>(&self, _key: &Q) -> u64
+    where
+        Self::Key: core::borrow::Borrow<Q>,
+        Q: core::hash::Hash + Eq + ?Sized,
+    {
         0
     }
 }

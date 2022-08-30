@@ -20,6 +20,7 @@
 [<img alt="license-apache" src="https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=for-the-badge&logo=Apache" height="22">][license-apache-url]
 [<img alt="license-mit" src="https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge&fontColor=white&logoColor=f5c076&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIGhlaWdodD0iMzZweCIgdmlld0JveD0iMCAwIDI0IDI0IiB3aWR0aD0iMzZweCIgZmlsbD0iI2Y1YzA3NiI+PHBhdGggZD0iTTAgMGgyNHYyNEgwVjB6IiBmaWxsPSJub25lIi8+PHBhdGggZD0iTTEwLjA4IDEwLjg2Yy4wNS0uMzMuMTYtLjYyLjMtLjg3cy4zNC0uNDYuNTktLjYyYy4yNC0uMTUuNTQtLjIyLjkxLS4yMy4yMy4wMS40NC4wNS42My4xMy4yLjA5LjM4LjIxLjUyLjM2cy4yNS4zMy4zNC41My4xMy40Mi4xNC42NGgxLjc5Yy0uMDItLjQ3LS4xMS0uOS0uMjgtMS4yOXMtLjQtLjczLS43LTEuMDEtLjY2LS41LTEuMDgtLjY2LS44OC0uMjMtMS4zOS0uMjNjLS42NSAwLTEuMjIuMTEtMS43LjM0cy0uODguNTMtMS4yLjkyLS41Ni44NC0uNzEgMS4zNlM4IDExLjI5IDggMTEuODd2LjI3YzAgLjU4LjA4IDEuMTIuMjMgMS42NHMuMzkuOTcuNzEgMS4zNS43Mi42OSAxLjIuOTFjLjQ4LjIyIDEuMDUuMzQgMS43LjM0LjQ3IDAgLjkxLS4wOCAxLjMyLS4yM3MuNzctLjM2IDEuMDgtLjYzLjU2LS41OC43NC0uOTQuMjktLjc0LjMtMS4xNWgtMS43OWMtLjAxLjIxLS4wNi40LS4xNS41OHMtLjIxLjMzLS4zNi40Ni0uMzIuMjMtLjUyLjNjLS4xOS4wNy0uMzkuMDktLjYuMS0uMzYtLjAxLS42Ni0uMDgtLjg5LS4yMy0uMjUtLjE2LS40NS0uMzctLjU5LS42MnMtLjI1LS41NS0uMy0uODgtLjA4LS42Ny0uMDgtMXYtLjI3YzAtLjM1LjAzLS42OC4wOC0xLjAxek0xMiAyQzYuNDggMiAyIDYuNDggMiAxMnM0LjQ4IDEwIDEwIDEwIDEwLTQuNDggMTAtMTBTMTcuNTIgMiAxMiAyem0wIDE4Yy00LjQxIDAtOC0zLjU5LTgtOHMzLjU5LTggOC04IDggMy41OSA4IDgtMy41OSA4LTggOHoiLz48L3N2Zz4=" height="22">][license-mit-url]
 
+
 </div>
 
 ## 特性
@@ -65,25 +66,25 @@
 - 使用同步缓存
 ```toml
 [dependencies]
-stretto = "0.6"
+stretto = "0.7"
 ```
 或
 ```toml 
 [dependencies]
-stretto = { version = "0.6", features = ["sync"] }
+stretto = { version = "0.7", features = ["sync"] }
 ```
 
 
 - 使用异步缓存
 ```toml 
 [dependencies]
-stretto = { version = "0.6", features = ["async"] }
+stretto = { version = "0.7", features = ["async"] }
 ```
 
 - 同步异步同时使用
 ```toml 
 [dependencies]
-stretto = { version = "0.6", features = ["full"] }
+stretto = { version = "0.7", features = ["full"] }
 ```
 
 ## 操作方法
@@ -218,14 +219,25 @@ pub trait KeyBuilder {
     type Key: Hash + Eq + ?Sized;
 
     /// hash_index 用于将键哈希运算成一个 u64 值
-    fn hash_index(&self, key: &Self::Key) -> u64;
+    fn hash_index<Q>(&self, key: &Q) -> u64 
+        where 
+            Self::Key: core::borrow::Borrow<Q>,
+            Q: Hash + Eq + ?Sized;
 
     /// 如果希望使用一个 128 位哈希，需要实现此方法。
     /// 默认返回 0
-    fn hash_conflict(&self, key: &Self::Key) -> u64 { 0 }
+    fn hash_conflict<Q>(&self, key: &Q) -> u64 
+        where 
+            Self::Key: core::borrow::Borrow<Q>,
+            Q: Hash + Eq + ?Sized;
+    { 0 }
 
     /// 将键进行哈希运算，返回 128 位哈希结果。
-    fn build_key(&self, k: &Self::Key) -> (u64, u64) {
+    fn build_key<Q>(&self, k: &Q) -> (u64, u64) 
+        where 
+            Self::Key: core::borrow::Borrow<Q>,
+            Q: Hash + Eq + ?Sized;
+    {
         (self.hash_index(k), self.hash_conflict(k))
     }
 }

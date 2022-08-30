@@ -1,8 +1,9 @@
-use crate::{CacheCallback, Coster, Item as CrateItem, KeyBuilder};
+use crate::{CacheCallback, Coster, Item as CrateItem, KeyBuilder, TransparentHasher};
 use parking_lot::Mutex;
 use rand::rngs::OsRng;
 use rand::Rng;
 use std::collections::HashSet;
+use std::hash::Hasher;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -32,15 +33,29 @@ struct KHTest {
 impl KeyBuilder for KHTest {
     type Key = u64;
 
-    fn hash_index(&self, key: &u64) -> u64 {
-        *key
+    fn hash_index<Q>(&self, key: &Q) -> u64
+    where
+        Self::Key: core::borrow::Borrow<Q>,
+        Q: core::hash::Hash + Eq + ?Sized,
+    {
+        let mut hasher = TransparentHasher { data: 0 };
+        key.hash(&mut hasher);
+        hasher.finish()
     }
 
-    fn hash_conflict(&self, _key: &u64) -> u64 {
+    fn hash_conflict<Q>(&self, _key: &Q) -> u64
+    where
+        Self::Key: core::borrow::Borrow<Q>,
+        Q: core::hash::Hash + Eq + ?Sized,
+    {
         0
     }
 
-    fn build_key(&self, k: &u64) -> (u64, u64) {
+    fn build_key<Q>(&self, k: &Q) -> (u64, u64)
+    where
+        Self::Key: core::borrow::Borrow<Q>,
+        Q: core::hash::Hash + Eq + ?Sized,
+    {
         self.ctr.fetch_add(1, Ordering::SeqCst);
         (self.hash_index(k), self.hash_conflict(k))
     }

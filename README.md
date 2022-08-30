@@ -67,25 +67,25 @@ English | [简体中文](README-zh_hans.md)
 - Use Cache.
 ```toml
 [dependencies]
-stretto = "0.6"
+stretto = "0.7"
 ```
 or
 ```toml 
 [dependencies]
-stretto = { version = "0.6", features = ["sync"] }
+stretto = { version = "0.7", features = ["sync"] }
 ```
 
 
 - Use AsyncCache
 ```toml 
 [dependencies]
-stretto = { version = "0.6", features = ["async"] }
+stretto = { version = "0.7", features = ["async"] }
 ```
 
 - Use both Cache and AsyncCache
 ```toml 
 [dependencies]
-stretto = { version = "0.6", features = ["full"] }
+stretto = { version = "0.7", features = ["full"] }
 ```
 
 ## Related
@@ -220,14 +220,25 @@ pub trait KeyBuilder {
     type Key: Hash + Eq + ?Sized;
 
     /// hash_index is used to hash the key to u64
-    fn hash_index(&self, key: &Self::Key) -> u64;
+    fn hash_index<Q>(&self, key: &Q) -> u64
+        where 
+            Self::Key: core::borrow::Borrow<Q>,
+            Q: Hash + Eq + ?Sized;
 
     /// if you want a 128bit hashes, you should implement this method,
     /// or leave this method return 0
-    fn hash_conflict(&self, key: &Self::Key) -> u64 { 0 }
+    fn hash_conflict<Q>(&self, key: &Q) -> u64
+        where 
+            Self::Key: core::borrow::Borrow<Q>,
+            Q: Hash + Eq + ?Sized;
+    { 0 }
 
     /// build the key to 128bit hashes.
-    fn build_key(&self, k: &Self::Key) -> (u64, u64) {
+    fn build_key<Q>(&self, k: &Q) -> (u64, u64) 
+        where 
+            Self::Key: core::borrow::Borrow<Q>,
+            Q: Hash + Eq + ?Sized;
+    {
         (self.hash_index(k), self.hash_conflict(k))
     }
 }

@@ -202,7 +202,11 @@ macro_rules! impl_cache {
         {
             /// `get` returns a `Option<ValueRef<V, SS>>` (if any) representing whether the
             /// value was found or not.
-            pub fn get(&self, key: &K) -> Option<ValueRef<V, S>> {
+            pub fn get<Q>(&self, key: &Q) -> Option<ValueRef<V, S>>
+            where
+                K: core::borrow::Borrow<Q>,
+                Q: core::hash::Hash + Eq + ?Sized,
+            {
                 if self.is_closed.load(Ordering::SeqCst) {
                     return None;
                 }
@@ -223,7 +227,11 @@ macro_rules! impl_cache {
 
             /// `get_mut` returns a `Option<ValueRefMut<V, SS>>` (if any) representing whether the
             /// value was found or not.
-            pub fn get_mut(&self, key: &K) -> Option<ValueRefMut<V, S>> {
+            pub fn get_mut<Q>(&self, key: &Q) -> Option<ValueRefMut<V, S>>
+            where
+                K: core::borrow::Borrow<Q>,
+                Q: core::hash::Hash + Eq + ?Sized,
+            {
                 if self.is_closed.load(Ordering::SeqCst) {
                     return None;
                 }
@@ -243,7 +251,11 @@ macro_rules! impl_cache {
 
             /// Returns the TTL for the specified key if the
             /// item was found and is not expired.
-            pub fn get_ttl(&self, key: &K) -> Option<Duration> {
+            pub fn get_ttl<Q>(&self, key: &Q) -> Option<Duration>
+            where
+                K: core::borrow::Borrow<Q>,
+                Q: core::hash::Hash + Eq + ?Sized,
+            {
                 let (index, conflict) = self.key_to_hash.build_key(key);
                 self.store
                     .get(&index, conflict)
