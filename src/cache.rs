@@ -408,7 +408,7 @@ macro_rules! impl_cache_processor {
                             });
                         }
 
-                        for victims in victim_sets {
+                        if let Some(victims) =  victim_sets {
                             for victim in victims {
                                 let sitem = self.store.try_remove(&victim.key, 0)?;
                                 if let Some(sitem) = sitem {
