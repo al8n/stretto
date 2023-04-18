@@ -737,7 +737,7 @@ mod sync_test {
 #[cfg(feature = "async")]
 mod async_test {
     use super::*;
-    use crate::cache::axync::Item;
+    use crate::cache::r#async::Item;
     use crate::{
         AsyncCache, AsyncCacheBuilder, CacheCallback, Coster, DefaultCacheCallback, DefaultCoster,
         DefaultKeyBuilder, DefaultUpdateValidator, KeyBuilder, TransparentKeyBuilder,
@@ -780,7 +780,7 @@ mod async_test {
                 continue;
             }
             sleep(Duration::from_millis(100)).await;
-            assert_eq!(c.get(&key).unwrap().read(), val);
+            assert_eq!(c.get(&key).await.unwrap().read(), val);
             return;
         }
     }
@@ -832,7 +832,7 @@ mod async_test {
         sleep(Duration::from_millis(10)).await;
 
         loop {
-            match c.get(&1) {
+            match c.get(&1).await {
                 None => continue,
                 Some(val) => {
                     assert_eq!(val.read(), 1);
@@ -857,7 +857,7 @@ mod async_test {
         sleep(Duration::from_secs(1)).await;
         // Set is rejected because the cost of the entry is too high
         // when accounting for the internal cost of storing the entry.
-        assert!(c.get(&1).is_none());
+        assert!(c.get(&1).await.is_none());
 
         // Update the max cost of the cache and retry.
         c.update_max_cost(1000);
@@ -865,7 +865,7 @@ mod async_test {
         assert!(c.insert(1, 1, 1).await);
 
         sleep(Duration::from_millis(200)).await;
-        assert_eq!(c.get(&1).unwrap().read(), 1);
+        assert_eq!(c.get(&1).await.unwrap().read(), 1);
         c.remove(&1).await;
     }
 
@@ -912,7 +912,7 @@ mod async_test {
         assert!(c.insert(1, 1, 1).await);
         let _ = c.close().await;
 
-        assert!(c.get(&1).is_none());
+        assert!(c.get(&1).await.is_none());
     }
 
     #[tokio::test]
@@ -975,19 +975,19 @@ mod async_test {
 
         c.insert(1, 1, 0).await;
         sleep(Duration::from_secs(1)).await;
-        match c.get_mut(&1) {
+        match c.get_mut(&1).await {
             None => {}
             Some(mut val) => {
                 val.write(10);
             }
         }
 
-        assert!(c.get_mut(&2).is_none());
+        assert!(c.get_mut(&2).await.is_none());
 
         // 0.5 and not 1.0 because we tried Getting each item twice
         assert_eq!(c.metrics.ratio().unwrap(), 0.5);
 
-        assert_eq!(c.get_mut(&1).unwrap().read(), 10);
+        assert_eq!(c.get_mut(&1).await.unwrap().read(), 10);
     }
 
     #[tokio::test]
@@ -1002,7 +1002,7 @@ mod async_test {
         retry_set(c.clone(), 1, 1, 1, Duration::ZERO).await;
 
         c.insert(1, 2, 2).await;
-        assert_eq!(c.get(&1).unwrap().read(), 2);
+        assert_eq!(c.get(&1).await.unwrap().read(), 2);
 
         assert!(c.stop_tx.send(()).await.is_ok());
         for _ in 0..32768 {
@@ -1025,7 +1025,7 @@ mod async_test {
         // when accounting for the internal cost.
         c.insert_with_ttl(1, 1, 1, Duration::ZERO).await;
         sleep(Duration::from_millis(100)).await;
-        assert!(c.get(&1).is_none())
+        assert!(c.get(&1).await.is_none())
     }
 
     #[tokio::test]
@@ -1043,20 +1043,20 @@ mod async_test {
         sleep(Duration::from_secs(2)).await;
 
         // Get value from cache for key = 1
-        assert_eq!(c.get(&1).unwrap().read(), 1);
+        assert_eq!(c.get(&1).await.unwrap().read(), 1);
 
         // wait for expiration
         sleep(Duration::from_secs(5)).await;
 
         // The cached value for key = 1 should be gone
-        assert!(c.get(&1).is_none());
+        assert!(c.get(&1).await.is_none());
 
         // set new value for key = 1
         assert!(c.insert_with_ttl(1, 2, 1, Duration::from_secs(5)).await);
 
         sleep(Duration::from_secs(2)).await;
         // get value from cache for key = 1;
-        assert_eq!(c.get(&1).unwrap().read(), 2);
+        assert_eq!(c.get(&1).await.unwrap().read(), 2);
     }
 
     #[tokio::test]
@@ -1073,7 +1073,7 @@ mod async_test {
 
         // Sleep to make sure the item has expired after execution resumes.
         sleep(Duration::from_secs(2)).await;
-        assert!(c.get(&1).is_none());
+        assert!(c.get(&1).await.is_none());
 
         // Sleep to ensure that the bucket where the item was stored has been cleared
         // from the expiration map.
@@ -1084,13 +1084,13 @@ mod async_test {
         retry_set(c.clone(), 2, 1, 1, Duration::from_secs(1)).await;
         retry_set(c.clone(), 2, 2, 1, Duration::from_secs(100)).await;
         sleep(Duration::from_secs(3)).await;
-        assert_eq!(c.get(&2).unwrap().read(), 2);
+        assert_eq!(c.get(&2).await.unwrap().read(), 2);
 
         // Verify that entries with no expiration are overwritten.
         retry_set(c.clone(), 3, 1, 1, Duration::ZERO).await;
         retry_set(c.clone(), 3, 1, 1, Duration::from_secs(1)).await;
         sleep(Duration::from_secs(3)).await;
-        assert!(c.get(&3).is_none());
+        assert!(c.get(&3).await.is_none());
     }
 
     #[tokio::test]
@@ -1104,7 +1104,7 @@ mod async_test {
         // that the delete is not processed before the following get is called. So
         // wait for a millisecond for things to be processed.
         sleep(Duration::from_millis(1)).await;
-        assert!(c.get(&1).is_none());
+        assert!(c.get(&1).await.is_none());
     }
 
     #[tokio::test]
@@ -1122,7 +1122,7 @@ mod async_test {
         c.remove(&3).await;
 
         // ensure the key is deleted
-        assert!(c.get(&3).is_none());
+        assert!(c.get(&3).await.is_none());
     }
 
     #[tokio::test]
@@ -1139,7 +1139,7 @@ mod async_test {
             let expiration = Duration::from_secs(5);
             retry_set(c.clone(), 1, 1, 1, expiration).await;
 
-            assert_eq!(c.get(&1).unwrap().read(), 1);
+            assert_eq!(c.get(&1).await.unwrap().read(), 1);
             assert!(c.get_ttl(&1).unwrap() < expiration);
 
             c.remove(&1).await;
@@ -1150,7 +1150,7 @@ mod async_test {
         // try expiration with no ttl
         {
             retry_set(c.clone(), 2, 2, 1, Duration::ZERO).await;
-            assert_eq!(c.get(&2).unwrap().read(), 2);
+            assert_eq!(c.get(&2).await.unwrap().read(), 2);
             assert_eq!(c.get_ttl(&2).unwrap(), Duration::MAX);
         }
 
@@ -1164,7 +1164,7 @@ mod async_test {
             let expiration = Duration::from_secs(1);
             retry_set(c.clone(), 3, 3, 1, expiration).await;
 
-            assert_eq!(c.get(&3).unwrap().read(), 3);
+            assert_eq!(c.get(&3).await.unwrap().read(), 3);
             sleep(Duration::from_secs(1)).await;
             assert!(c.get_ttl(&3).is_none());
         }
@@ -1187,9 +1187,9 @@ mod async_test {
         c.clear().await.unwrap();
         assert_eq!(c.metrics.get_keys_added(), Some(0));
 
-        (0..10).for_each(|i| {
-            assert!(c.get(&i).is_none());
-        })
+        for i in 0..10 {
+            assert!(c.get(&i).await.is_none());
+        }
     }
 
     #[tokio::test]
@@ -1209,7 +1209,7 @@ mod async_test {
                 tokio::select! {
                     _ = stop_rx.recv() => return,
                     else => {
-                        tc.get(&1);
+                        _ = tc.get(&1);
                     }
                 }
             }
@@ -1278,7 +1278,7 @@ mod async_test {
             sleep(Duration::from_millis(100)).await;
 
             // Get value from cache for key = 1
-            match c.get(&1) {
+            match c.get(&1).await {
                 None => {
                     clean_win += 1;
                 }
@@ -1289,7 +1289,7 @@ mod async_test {
             // assert_eq!(c.get(&1).unwrap().read(), 1);
 
             sleep(Duration::from_millis(1200)).await;
-            assert!(c.get(&1).is_none());
+            assert!(c.get(&1).await.is_none());
         }
         eprintln!("process: {} cleanup: {}", process_win, clean_win);
     }
@@ -1335,7 +1335,7 @@ mod async_test {
                     Ok(_) => break,
                     Err(_) => {
                         let k = get_key();
-                        if c.get(&k).is_none() {
+                        if c.get(&k).await.is_none() {
                             let mut rng = OsRng::default();
                             let rv = rng.gen::<usize>() % 100;
                             let val = if rv < 10 {
@@ -1397,12 +1397,12 @@ mod async_test {
 
         assert!(c.insert_with_ttl(0, 1, 1, ttl).await);
         assert!(c.wait().await.is_ok());
-        assert_eq!(c.get(&0).unwrap().value(), &1);
+        assert_eq!(c.get(&0).await.unwrap().value(), &1);
         assert!(c.clear().await.is_ok());
         assert!(c.wait().await.is_ok());
-        assert!(c.get(&0).is_none());
+        assert!(c.get(&0).await.is_none());
         assert!(c.insert_with_ttl(2, 3, 1, ttl).await);
         assert!(c.wait().await.is_ok());
-        assert_eq!(c.get(&2).unwrap().value(), &3);
+        assert_eq!(c.get(&2).await.unwrap().value(), &3);
     }
 }
