@@ -43,11 +43,7 @@ func main() {
 		NumCounters: 12960, // 36^2 * 10
 		MaxCost:     1e6,   // 1mb
 		BufferItems: 64,
-		Metrics:     true,
-		KeyToHash: func(key interface{}) (uint64, uint64) {
-			kc := key.(KC)
-			return kc.hash, kc.conflict
-		},
+		Metrics:     true,	
 	})
 
 	if err != nil {
@@ -55,14 +51,9 @@ func main() {
 	}
 
 	t := time.Now()
-	for _, kv := range dataset.Data {
-		kc := KC{
-			hash: kv.Hash,
-			conflict: kv.Conflict,
-		}
-		if _, ok := c.Get(kc); !ok {
-
-			c.Set(kc, kv.Val, kv.Cost)
+	for _, kv := range dataset.Data {	
+		if _, ok := c.Get(kv.Key); !ok {
+			c.Set(kv.Key, kv.Val, kv.Cost)
 		}
 	}
 	c.Wait()

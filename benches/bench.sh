@@ -6,11 +6,13 @@ rm -rf bin
 mkdir -p bin
 
 cd mock
+go mod tidy 
 go build -o mock-generator main.go
 cp mock-generator ../bin/
 cd ..
 
 cd ristretto-go
+go mod tidy
 go build -o ristretto-go main.go
 cp ristretto-go ../bin/
 cd ..

@@ -530,9 +530,10 @@ impl<K: Hash + Eq> KeyBuilder for DefaultKeyBuilder<K> {
     }
 }
 
+/// Dummy hasher will do nothing. Used by [`TransparentKeyBuilder`].
 #[derive(Default, Copy, Clone, Eq, PartialEq, Debug)]
 #[repr(transparent)]
-struct TransparentHasher {
+pub struct TransparentHasher {
     data: u64,
 }
 

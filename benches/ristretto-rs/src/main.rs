@@ -2,7 +2,7 @@
 extern crate serde;
 
 use std::path::Path;
-use stretto::KeyBuilder;
+
 
 #[global_allocator]
 static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -21,26 +21,6 @@ struct KV {
     cost: i64,
 }
 
-#[derive(Hash, Eq, PartialEq)]
-struct KC {
-    hash: u64,
-    conflict: u64,
-}
-
-#[derive(Default)]
-struct KH;
-
-impl KeyBuilder for KH {
-    type Key = KC;
-
-    fn hash_index(&self, key: &KC) -> u64 {
-        key.hash
-    }
-
-    fn hash_conflict(&self, key: &KC) -> u64 {
-        key.conflict
-    }
-}
 
 #[cfg(feature = "sync")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -52,19 +32,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dataset: Dataset = serde_json::from_slice(content.as_slice())?;
 
     let c = Cache::builder(12960, 1e6 as i64)
-        .set_key_builder(KH::default())
         .set_metrics(true)
         .finalize()
         .unwrap();
 
     let time = Instant::now();
     for kv in dataset.data {
-        let kc = KC {
-            hash: kv.hash,
-            conflict: kv.conflict,
-        };
-        if c.get(&kc).is_none() {
-            c.insert(kc, kv.val, kv.cost);
+        if c.get(&kv.key).is_none() {
+            c.insert(kv.key, kv.val, kv.cost);
         }
     }
     c.wait().unwrap();
@@ -86,19 +61,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dataset: Dataset = serde_json::from_slice(content.as_slice())?;
 
     let c = AsyncCache::builder(12960, 1e6 as i64)
-        .set_key_builder(KH::default())
         .set_metrics(true)
         .finalize(tokio::spawn)
         .unwrap();
 
     let time = Instant::now();
     for kv in dataset.data {
-        let kc = KC {
-            hash: kv.hash,
-            conflict: kv.conflict,
-        };
-        if c.get(&kc).is_none() {
-            c.insert(kc, kv.val, kv.cost).await;
+        if c.get(&kv.key).await.is_none() {
+            c.insert(kv.key, kv.val, kv.cost).await;
         }
     }
     c.wait().await.unwrap();
