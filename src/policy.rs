@@ -8,6 +8,7 @@ use crate::{
     sketch::CountMinSketch,
 };
 use parking_lot::Mutex;
+use rand::seq::IteratorRandom;
 use std::{
     collections::{hash_map::RandomState, HashMap},
     hash::BuildHasher,
@@ -318,7 +319,10 @@ impl<S: BuildHasher + Clone + 'static> SampledLFU<S> {
         if pairs.len() >= self.samples {
             pairs
         } else {
-            for (k, v) in self.key_costs.iter() {
+            for (k, v) in self.key_costs.iter().choose_multiple(
+                &mut rand::thread_rng(),
+                self.key_costs.len().min(self.samples - pairs.len()),
+            ) {
                 pairs.push(PolicyPair::new(*k, *v));
                 if pairs.len() >= self.samples {
                     return pairs;
