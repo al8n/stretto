@@ -185,10 +185,10 @@ pub(crate) use sync::LFUPolicy;
 
 #[cfg(feature = "async")]
 #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
-mod axync;
+mod r#async;
 #[cfg(feature = "async")]
 #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
-pub(crate) use axync::AsyncLFUPolicy;
+pub(crate) use r#async::AsyncLFUPolicy;
 
 pub(crate) struct PolicyInner<S = RandomState> {
     admit: TinyLFU,
