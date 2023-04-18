@@ -37,7 +37,6 @@ where
 }
 
 #[cfg(feature = "async")]
-
 pub struct AsyncRingStripe<S> {
     cons: Arc<AsyncLFUPolicy<S>>,
     data: Mutex<Vec<u64>>,
@@ -45,7 +44,6 @@ pub struct AsyncRingStripe<S> {
 }
 
 #[cfg(feature = "async")]
-
 impl<S> AsyncRingStripe<S>
 where
     S: BuildHasher + Clone + 'static + Send,
@@ -59,13 +57,18 @@ where
     }
 
     pub async fn push(&self, item: u64) {
-        let mut data = self.data.lock();
-        data.push(item);
-        if data.len() >= self.capa {
-            match self.cons.push(data.clone()).await {
-                Ok(true) => *data = Vec::with_capacity(self.capa),
-                _ => data.clear(),
+        let data = {
+            let mut data = self.data.lock();
+            data.push(item);
+            if data.len() >= self.capa {
+                let ret = data.clone();
+                data.clear();
+                ret
+            } else {
+                return;
             }
-        }
+        };
+
+        _ = self.cons.push(data).await;
     }
 }
