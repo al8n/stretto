@@ -3,6 +3,7 @@ use crate::axync::{
 };
 use crate::cache::builder::CacheBuilderCore;
 use crate::policy::AsyncLFUPolicy;
+use crate::ring::AsyncRingStripe;
 use crate::store::ShardedMap;
 use crate::ttl::{ExpirationMap, Time};
 use crate::{
@@ -209,7 +210,6 @@ where
             self.inner.update_validator.unwrap(),
             hasher.clone(),
         ));
-
         let mut policy = AsyncLFUPolicy::with_hasher(num_counters, max_cost, hasher, spawner)?;
 
         let coster = Arc::new(self.inner.coster.unwrap());
@@ -239,9 +239,12 @@ where
             spawner(fut);
         }));
 
+        let buffer_items = self.inner.buffer_items;
+        let get_buf = AsyncRingStripe::new(policy.clone(), buffer_items);
         let this = AsyncCache {
             store,
             policy,
+            get_buf: Arc::new(get_buf),
             insert_buf_tx: buf_tx,
             callback,
             key_to_hash: Arc::new(self.inner.key_to_hash),
@@ -372,6 +375,8 @@ pub struct AsyncCache<
     /// insert_buf is a buffer allowing us to batch/drop Sets during times of high
     /// contention.
     pub(crate) insert_buf_tx: Sender<Item<V>>,
+
+    pub(crate) get_buf: Arc<AsyncRingStripe<S>>,
 
     pub(crate) stop_tx: Sender<()>,
 
@@ -776,6 +781,6 @@ where
 }
 
 impl_builder!(AsyncCacheBuilder);
-impl_cache!(AsyncCache, AsyncCacheBuilder, Item);
+impl_async_cache!(AsyncCache, AsyncCacheBuilder, Item);
 impl_cache_processor!(CacheProcessor, Item);
 impl_cache_cleaner!(CacheCleaner, CacheProcessor, Item);

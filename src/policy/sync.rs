@@ -1,10 +1,7 @@
 use crate::policy::PolicyInner;
-use crate::sync::{
-    select, spawn, stop_channel, unbounded, JoinHandle, Receiver, Sender, UnboundedReceiver,
-    UnboundedSender,
-};
+use crate::sync::{select, spawn, stop_channel, JoinHandle, Receiver, Sender};
 use crate::{CacheError, MetricType, Metrics};
-use crossbeam_channel::RecvError;
+use crossbeam_channel::{bounded, RecvError};
 use parking_lot::Mutex;
 use std::collections::hash_map::RandomState;
 use std::hash::BuildHasher;
@@ -13,7 +10,7 @@ use std::sync::Arc;
 
 pub(crate) struct LFUPolicy<S = RandomState> {
     pub(crate) inner: Arc<Mutex<PolicyInner<S>>>,
-    pub(crate) items_tx: UnboundedSender<Vec<u64>>,
+    pub(crate) items_tx: Sender<Vec<u64>>,
     pub(crate) stop_tx: Sender<()>,
     pub(crate) is_closed: AtomicBool,
     pub(crate) metrics: Arc<Metrics>,
@@ -31,7 +28,7 @@ impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
     pub fn with_hasher(ctrs: usize, max_cost: i64, hasher: S) -> Result<Self, CacheError> {
         let inner = PolicyInner::with_hasher(ctrs, max_cost, hasher)?;
 
-        let (items_tx, items_rx) = unbounded();
+        let (items_tx, items_rx) = bounded(3);
         let (stop_tx, stop_rx) = stop_channel();
 
         PolicyProcessor::new(inner.clone(), items_rx, stop_rx).spawn();
@@ -91,7 +88,7 @@ impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
 
 pub(crate) struct PolicyProcessor<S> {
     inner: Arc<Mutex<PolicyInner<S>>>,
-    items_rx: UnboundedReceiver<Vec<u64>>,
+    items_rx: Receiver<Vec<u64>>,
     stop_rx: Receiver<()>,
 }
 
@@ -99,7 +96,7 @@ impl<S: BuildHasher + Clone + 'static> PolicyProcessor<S> {
     #[inline]
     fn new(
         inner: Arc<Mutex<PolicyInner<S>>>,
-        items_rx: UnboundedReceiver<Vec<u64>>,
+        items_rx: Receiver<Vec<u64>>,
         stop_rx: Receiver<()>,
     ) -> Self {
         Self {

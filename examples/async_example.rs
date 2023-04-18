@@ -16,7 +16,7 @@ async fn main() {
 
     // when we get the value, we will get a ValueRef, which contains a RwLockReadGuard
     // so when we finish use this value, we must release the ValueRef
-    let v = c.get(&"a").unwrap();
+    let v = c.get(&"a").await.unwrap();
     assert_eq!(v.value(), &"a");
     // release the value
     v.release(); // or drop(v)
@@ -25,17 +25,17 @@ async fn main() {
     {
         // when we get the value, we will get a ValueRef, which contains a RwLockWriteGuard
         // so when we finish use this value, we must release the ValueRefMut
-        let mut v = c.get_mut(&"a").unwrap();
+        let mut v = c.get_mut(&"a").await.unwrap();
         v.write("aa");
         assert_eq!(v.value(), &"aa");
         // release the value
     }
 
     // if you just want to do one operation
-    let v = c.get_mut(&"a").unwrap();
+    let v = c.get_mut(&"a").await.unwrap();
     v.write_once("aaa");
 
-    let v = c.get(&"a").unwrap();
+    let v = c.get(&"a").await.unwrap();
     println!("{}", v);
     assert_eq!(v.value(), &"aaa");
     v.release();
@@ -45,5 +45,5 @@ async fn main() {
     // wait all the operations are finished
     c.wait().await.unwrap();
 
-    assert!(c.get(&"a").is_none());
+    assert!(c.get(&"a").await.is_none());
 }

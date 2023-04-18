@@ -1,5 +1,6 @@
 use crate::cache::builder::CacheBuilderCore;
 use crate::policy::LFUPolicy;
+use crate::ring::RingStripe;
 use crate::store::ShardedMap;
 use crate::sync::{
     bounded, select, spawn, stop_channel, unbounded, Instant, JoinHandle, Receiver, Sender,
@@ -189,6 +190,7 @@ where
             hasher.clone(),
         ));
 
+        let buffer_items = self.inner.buffer_items;
         let mut policy = LFUPolicy::with_hasher(num_counters, max_cost, hasher)?;
 
         let coster = Arc::new(self.inner.coster.unwrap());
@@ -216,9 +218,11 @@ where
         )
         .spawn();
 
+        let get_buf = RingStripe::new(policy.clone(), buffer_items);
         let this = Cache {
             store,
             policy,
+            get_buf: Arc::new(get_buf),
             insert_buf_tx: buf_tx,
             callback,
             key_to_hash: Arc::new(self.inner.key_to_hash),
@@ -340,6 +344,8 @@ pub struct Cache<
 
     /// policy determines what gets let in to the cache and what gets kicked out.
     pub(crate) policy: Arc<LFUPolicy<S>>,
+
+    pub(crate) get_buf: Arc<RingStripe<S>>,
 
     /// insert_buf is a buffer allowing us to batch/drop Sets during times of high
     /// contention.
