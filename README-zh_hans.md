@@ -48,14 +48,14 @@
     - [同步](#同步)
     - [异步](#异步)
   - [配置](#配置)
-    - [num_counters](#num_counters)
-    - [max_cost](#max_cost)
-    - [key_builder](#key_builder)
-    - [buffer_size](#buffer_size)
+    - [num\_counters](#num_counters)
+    - [max\_cost](#max_cost)
+    - [key\_builder](#key_builder)
+    - [buffer\_size](#buffer_size)
     - [metrics](#metrics)
-    - [ignore_internal_cost](#ignore_internal_cost)
-    - [cleanup_duration](#cleanup_duration)
-    - [update_validator](#update_validator)
+    - [ignore\_internal\_cost](#ignore_internal_cost)
+    - [cleanup\_duration](#cleanup_duration)
+    - [update\_validator](#update_validator)
     - [callback](#callback)
     - [coster](#coster)
     - [hasher](#hasher)
@@ -66,25 +66,25 @@
 - 使用同步缓存
 ```toml
 [dependencies]
-stretto = "0.7"
+stretto = "0.8"
 ```
 或
 ```toml 
 [dependencies]
-stretto = { version = "0.7", features = ["sync"] }
+stretto = { version = "0.8", features = ["sync"] }
 ```
 
 
 - 使用异步缓存
 ```toml 
 [dependencies]
-stretto = { version = "0.7", features = ["async"] }
+stretto = { version = "0.8", features = ["async"] }
 ```
 
 - 同步异步同时使用
 ```toml 
 [dependencies]
-stretto = { version = "0.7", features = ["full"] }
+stretto = { version = "0.8", features = ["full"] }
 ```
 
 ## 操作方法

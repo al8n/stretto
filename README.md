@@ -67,25 +67,25 @@ English | [简体中文](README-zh_hans.md)
 - Use Cache.
 ```toml
 [dependencies]
-stretto = "0.7"
+stretto = "0.8"
 ```
 or
 ```toml 
 [dependencies]
-stretto = { version = "0.7", features = ["sync"] }
+stretto = { version = "0.8", features = ["sync"] }
 ```
 
 
 - Use AsyncCache
 ```toml 
 [dependencies]
-stretto = { version = "0.7", features = ["async"] }
+stretto = { version = "0.8", features = ["async"] }
 ```
 
 - Use both Cache and AsyncCache
 ```toml 
 [dependencies]
-stretto = { version = "0.7", features = ["full"] }
+stretto = { version = "0.8", features = ["full"] }
 ```
 
 ## Related
