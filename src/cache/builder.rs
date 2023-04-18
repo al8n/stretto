@@ -8,6 +8,8 @@ use std::hash::{BuildHasher, Hash};
 use std::marker::PhantomData;
 use std::time::Duration;
 
+use super::DEFAULT_BUFFER_ITEMS;
+
 pub struct CacheBuilderCore<
     K,
     V,
@@ -32,6 +34,8 @@ pub struct CacheBuilderCore<
     pub(crate) num_counters: usize,
 
     pub(crate) max_cost: i64,
+
+    pub(crate) buffer_items: usize,
 
     // buffer_items determines the size of Get buffers.
     //
@@ -76,7 +80,7 @@ impl<K: Hash + Eq, V: Send + Sync + 'static> CacheBuilderCore<K, V> {
         Self {
             num_counters,
             max_cost,
-            // buffer_items: DEFAULT_BUFFER_ITEMS,
+            buffer_items: DEFAULT_BUFFER_ITEMS,
             insert_buffer_size: DEFAULT_INSERT_BUF_SIZE,
             metrics: false,
             callback: Some(DefaultCacheCallback::default()),
@@ -99,7 +103,7 @@ impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<Key = K>> CacheBuild
         Self {
             num_counters,
             max_cost,
-            // buffer_items: DEFAULT_BUFFER_ITEMS,
+            buffer_items: DEFAULT_BUFFER_ITEMS,
             insert_buffer_size: DEFAULT_INSERT_BUF_SIZE,
             metrics: false,
             callback: Some(DefaultCacheCallback::default()),
@@ -140,6 +144,7 @@ where
         Self {
             num_counters,
             max_cost: self.max_cost,
+            buffer_items: self.buffer_items,
             insert_buffer_size: self.insert_buffer_size,
             metrics: self.metrics,
             callback: self.callback,
@@ -169,6 +174,27 @@ where
         Self {
             num_counters: self.num_counters,
             max_cost,
+            buffer_items: self.buffer_items,
+            insert_buffer_size: self.insert_buffer_size,
+            metrics: self.metrics,
+            callback: self.callback,
+            key_to_hash: self.key_to_hash,
+            update_validator: self.update_validator,
+            coster: self.coster,
+            ignore_internal_cost: self.ignore_internal_cost,
+            cleanup_duration: self.cleanup_duration,
+            hasher: self.hasher,
+            marker_k: self.marker_k,
+            marker_v: self.marker_v,
+        }
+    }
+
+    #[inline]
+    pub fn set_buffer_items(self, sz: usize) -> Self {
+        Self {
+            num_counters: self.num_counters,
+            max_cost: self.max_cost,
+            buffer_items: sz,
             insert_buffer_size: self.insert_buffer_size,
             metrics: self.metrics,
             callback: self.callback,
@@ -195,6 +221,7 @@ where
         Self {
             num_counters: self.num_counters,
             max_cost: self.max_cost,
+            buffer_items: self.buffer_items,
             insert_buffer_size: sz,
             metrics: self.metrics,
             callback: self.callback,
@@ -218,6 +245,7 @@ where
         Self {
             num_counters: self.num_counters,
             max_cost: self.max_cost,
+            buffer_items: self.buffer_items,
             insert_buffer_size: self.insert_buffer_size,
             metrics: val,
             callback: self.callback,
@@ -242,6 +270,7 @@ where
         Self {
             num_counters: self.num_counters,
             max_cost: self.max_cost,
+            buffer_items: self.buffer_items,
             insert_buffer_size: self.insert_buffer_size,
             metrics: self.metrics,
             callback: self.callback,
@@ -262,6 +291,7 @@ where
         Self {
             num_counters: self.num_counters,
             max_cost: self.max_cost,
+            buffer_items: self.buffer_items,
             insert_buffer_size: self.insert_buffer_size,
             metrics: self.metrics,
             callback: self.callback,
@@ -300,6 +330,7 @@ where
         CacheBuilderCore {
             num_counters: self.num_counters,
             max_cost: self.max_cost,
+            buffer_items: self.buffer_items,
             insert_buffer_size: self.insert_buffer_size,
             metrics: self.metrics,
             callback: self.callback,
@@ -333,6 +364,7 @@ where
         CacheBuilderCore {
             num_counters: self.num_counters,
             max_cost: self.max_cost,
+            buffer_items: self.buffer_items,
             insert_buffer_size: self.insert_buffer_size,
             metrics: self.metrics,
             callback: self.callback,
@@ -360,6 +392,7 @@ where
         CacheBuilderCore {
             num_counters: self.num_counters,
             max_cost: self.max_cost,
+            buffer_items: self.buffer_items,
             insert_buffer_size: self.insert_buffer_size,
             metrics: self.metrics,
             callback: self.callback,
@@ -385,6 +418,7 @@ where
         CacheBuilderCore {
             num_counters: self.num_counters,
             max_cost: self.max_cost,
+            buffer_items: self.buffer_items,
             insert_buffer_size: self.insert_buffer_size,
             metrics: self.metrics,
             callback: Some(cb),
@@ -409,6 +443,7 @@ where
         CacheBuilderCore {
             num_counters: self.num_counters,
             max_cost: self.max_cost,
+            buffer_items: self.buffer_items,
             insert_buffer_size: self.insert_buffer_size,
             metrics: self.metrics,
             callback: self.callback,

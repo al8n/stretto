@@ -3,9 +3,6 @@
 //! This file is a mechanical translation of the reference Golang code, available at <https://github.com/dgraph-io/ristretto/blob/master/z/bbloom.go>
 //!
 //! I claim no additional copyright over the original implementation.
-use std::ptr::addr_of;
-
-const MASK: [u8; 8] = [1, 2, 4, 8, 16, 32, 64, 128];
 const LN_2: f64 = std::f64::consts::LN_2;
 
 struct Size {
@@ -45,6 +42,7 @@ fn calc_size_by_wrong_positives(num_entries: f64, wrongs: f64) -> EntriesLocs {
 }
 
 /// Bloom filter
+#[repr(C)]
 pub(crate) struct Bloom {
     bitset: Vec<u64>,
     elem_num: u64,
@@ -105,23 +103,17 @@ impl Bloom {
 
     /// `set` sets the bit[idx] of bitset
     pub fn set(&mut self, idx: usize) {
-        let raw = (addr_of!(self.bitset[idx >> 6]) as *const u64) as u64;
-        let offset = ((idx % 64) >> 3) as u64;
-        let ptr = (raw + offset) as *mut u64;
+        let ptr = (self.bitset.as_mut_ptr() as usize + ((idx % 64) >> 3) as usize) as *mut u8;
         unsafe {
-            *ptr |= MASK[idx % 8] as u64;
+            *ptr |= 1 << (idx % 8);
         }
     }
 
     /// `is_set` checks if bit[idx] of bitset is set, returns true/false.
     pub fn is_set(&self, idx: usize) -> bool {
-        let raw = (addr_of!(self.bitset[idx >> 6]) as *const u64) as u64;
-        let offset = ((idx % 64) >> 3) as u64;
-        let ptr = (raw + offset) as *mut u64;
-        unsafe {
-            let r = (*ptr >> (idx % 8)) & 1;
-            r == 1
-        }
+        let ptr = (self.bitset.as_ptr() as usize + ((idx % 64) >> 3) as usize) as *const u8;
+        let r = unsafe { *ptr >> (idx % 8) } & 1;
+        r == 1
     }
 
     /// `add` adds hash of a key to the bloom filter
