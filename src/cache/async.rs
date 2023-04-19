@@ -702,22 +702,23 @@ where
             loop {
                 select! {
                     item = self.insert_buf_rx.recv().fuse() => {
-                        if let Err(_e) = self.handle_insert_event(item) {
-                            return;
+                        if let Err(e) = self.handle_insert_event(item) {
+                            tracing::error!("fail to handle insert event, error: {}", e);
                         }
                     }
                     _ = cleanup_timer.next().fuse() => {
-                        if let Err(_e) = self.handle_cleanup_event() {
-                            return;
+                        if let Err(e) = self.handle_cleanup_event() {
+                            tracing::error!("fail to handle cleanup event, error: {}", e);
                         }
                     },
                     _ = self.clear_rx.recv().fuse() => {
-                        let _ = CacheCleaner::new(&mut self).clean().await;
+                        if let Err(e) = CacheCleaner::new(&mut self).clean().await {
+                            tracing::error!("fail to handle clear event, error: {}", e);
+                        }
                     },
                     _ = self.stop_rx.recv().fuse() => {
-                        if let Err(_e) = self.handle_close_event() {
-                            return;
-                        }
+                        _ = self.handle_close_event();
+                        return;
                     },
                 }
             }

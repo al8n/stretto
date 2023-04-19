@@ -637,13 +637,19 @@ where
         spawn(move || loop {
             select! {
                 recv(self.insert_buf_rx) -> res => {
-                    self.handle_insert_event(res)?;
+                    if let Err(e) = self.handle_insert_event(res) {
+                        tracing::error!("fail to handle insert event: {}", e);
+                    }
                 },
                 recv(self.clear_rx) -> _ => {
-                    self.handle_clear_event()?;
+                    if let Err(e) = self.handle_clear_event() {
+                        tracing::error!("fail to handle clear event: {}", e);
+                    }
                 },
                 recv(ticker) -> msg => {
-                    self.handle_cleanup_event(msg)?;
+                    if let Err(e) = self.handle_cleanup_event(msg) {
+                        tracing::error!("fail to handle cleanup event: {}", e);
+                    }
                 },
                 recv(self.stop_rx) -> _ => return Ok(()),
             }
