@@ -1,5 +1,4 @@
 use parking_lot::RwLock;
-use std::cell::RefCell;
 use std::collections::{hash_map::RandomState, HashMap};
 use std::hash::BuildHasher;
 use std::ops::{Deref, DerefMut};
@@ -101,7 +100,7 @@ impl<S: BuildHasher> DerefMut for Bucket<S> {
 
 #[derive(Debug)]
 pub(crate) struct ExpirationMap<S = RandomState> {
-    buckets: RwLock<RefCell<HashMap<i64, Bucket<S>, S>>>,
+    buckets: RwLock<HashMap<i64, Bucket<S>, S>>,
     hasher: S,
 }
 
@@ -109,7 +108,7 @@ impl Default for ExpirationMap {
     fn default() -> Self {
         let hasher = RandomState::default();
         Self {
-            buckets: RwLock::new(RefCell::new(HashMap::with_hasher(hasher.clone()))),
+            buckets: RwLock::new(HashMap::with_hasher(hasher.clone())),
             hasher,
         }
     }
@@ -124,7 +123,7 @@ impl ExpirationMap {
 impl<S: BuildHasher + Clone + 'static> ExpirationMap<S> {
     pub(crate) fn with_hasher(hasher: S) -> ExpirationMap<S> {
         ExpirationMap {
-            buckets: RwLock::new(RefCell::new(HashMap::with_hasher(hasher.clone()))),
+            buckets: RwLock::new(HashMap::with_hasher(hasher.clone())),
             hasher,
         }
     }
@@ -137,11 +136,8 @@ impl<S: BuildHasher + Clone + 'static> ExpirationMap<S> {
 
         let bucket_num = storage_bucket(expiration);
 
-        let m = self.buckets.read();
+        let mut m = self.buckets.write();
 
-        let mut m = m
-            .try_borrow_mut()
-            .map_err(|e| CacheError::InsertError(e.to_string()))?;
         match m.get_mut(&bucket_num) {
             None => {
                 let mut bucket = Bucket::with_hasher(self.hasher.clone());
@@ -167,7 +163,6 @@ impl<S: BuildHasher + Clone + 'static> ExpirationMap<S> {
             return Ok(());
         }
 
-        let m = self.buckets.read();
         let (old_bucket_num, new_bucket_num) =
             (storage_bucket(old_exp_time), storage_bucket(new_exp_time));
 
@@ -175,9 +170,8 @@ impl<S: BuildHasher + Clone + 'static> ExpirationMap<S> {
             return Ok(());
         }
 
-        let mut m = m
-            .try_borrow_mut()
-            .map_err(|e| CacheError::UpdateError(e.to_string()))?;
+        let mut m = self.buckets.write();
+
         m.remove(&old_bucket_num);
 
         match m.get_mut(&new_bucket_num) {
@@ -196,12 +190,8 @@ impl<S: BuildHasher + Clone + 'static> ExpirationMap<S> {
 
     pub fn try_remove(&self, key: &u64, expiration: Time) -> Result<(), CacheError> {
         let bucket_num = storage_bucket(expiration);
-        let m = self.buckets.read();
-        if let Some(bucket) = m
-            .try_borrow_mut()
-            .map_err(|e| CacheError::RemoveError(e.to_string()))?
-            .get_mut(&bucket_num)
-        {
+        let mut m = self.buckets.write();
+        if let Some(bucket) = m.get_mut(&bucket_num) {
             bucket.remove(key);
         };
 
@@ -212,9 +202,7 @@ impl<S: BuildHasher + Clone + 'static> ExpirationMap<S> {
         let bucket_num = cleanup_bucket(now);
         Ok(self
             .buckets
-            .read()
-            .try_borrow_mut()
-            .map_err(|e| CacheError::CleanupError(e.to_string()))?
+            .write()
             .remove(&bucket_num)
             .map(|bucket| bucket.map))
     }
