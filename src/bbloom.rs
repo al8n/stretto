@@ -31,7 +31,8 @@ struct EntriesLocs {
     locs: u64,
 }
 
-fn calc_size_by_wrong_positives(num_entries: f64, wrongs: f64) -> EntriesLocs {
+fn calc_size_by_wrong_positives(num_entries: usize, wrongs: f64) -> EntriesLocs {
+    let num_entries = (num_entries as f64);
     let size = -1f64 * num_entries * wrongs.ln() / LN_2.powf(2f64);
     let locs = (LN_2 * size / num_entries).ceil();
 
@@ -56,7 +57,7 @@ impl Bloom {
     pub fn new(cap: usize, false_positive_ratio: f64) -> Self {
         let entries_locs = {
             if false_positive_ratio < 1f64 {
-                calc_size_by_wrong_positives(cap as f64, false_positive_ratio)
+                calc_size_by_wrong_positives(cap, false_positive_ratio)
             } else {
                 EntriesLocs {
                     entries: cap as u64,
