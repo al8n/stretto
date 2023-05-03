@@ -140,23 +140,9 @@ where
     /// set num_counters to 100,000. The important thing is the *number of unique items* in the full cache,
     /// not necessarily the `max_cost` value.
     #[inline]
-    pub fn set_num_counters(self, num_counters: usize) -> Self {
-        Self {
-            num_counters,
-            max_cost: self.max_cost,
-            buffer_items: self.buffer_items,
-            insert_buffer_size: self.insert_buffer_size,
-            metrics: self.metrics,
-            callback: self.callback,
-            key_to_hash: self.key_to_hash,
-            update_validator: self.update_validator,
-            coster: self.coster,
-            ignore_internal_cost: self.ignore_internal_cost,
-            cleanup_duration: self.cleanup_duration,
-            marker_k: self.marker_k,
-            marker_v: self.marker_v,
-            hasher: self.hasher,
-        }
+    pub fn set_num_counters(mut self, num_counters: usize) -> Self {
+        self.num_counters = num_counters;
+        self
     }
 
     /// Set the max_cost for the Cache.
@@ -170,43 +156,15 @@ where
     ///
     /// `max_cost` could be anything as long as it matches how you're using the cost values when calling `insert`.
     #[inline]
-    pub fn set_max_cost(self, max_cost: i64) -> Self {
-        Self {
-            num_counters: self.num_counters,
-            max_cost,
-            buffer_items: self.buffer_items,
-            insert_buffer_size: self.insert_buffer_size,
-            metrics: self.metrics,
-            callback: self.callback,
-            key_to_hash: self.key_to_hash,
-            update_validator: self.update_validator,
-            coster: self.coster,
-            ignore_internal_cost: self.ignore_internal_cost,
-            cleanup_duration: self.cleanup_duration,
-            hasher: self.hasher,
-            marker_k: self.marker_k,
-            marker_v: self.marker_v,
-        }
+    pub fn set_max_cost(mut self, max_cost: i64) -> Self {
+        self.max_cost = max_cost;
+        self
     }
 
     #[inline]
-    pub fn set_buffer_items(self, sz: usize) -> Self {
-        Self {
-            num_counters: self.num_counters,
-            max_cost: self.max_cost,
-            buffer_items: sz,
-            insert_buffer_size: self.insert_buffer_size,
-            metrics: self.metrics,
-            callback: self.callback,
-            key_to_hash: self.key_to_hash,
-            update_validator: self.update_validator,
-            coster: self.coster,
-            ignore_internal_cost: self.ignore_internal_cost,
-            cleanup_duration: self.cleanup_duration,
-            hasher: self.hasher,
-            marker_k: self.marker_k,
-            marker_v: self.marker_v,
-        }
+    pub fn set_buffer_items(mut self, sz: usize) -> Self {
+        self.buffer_items = sz;
+        self
     }
 
     /// Set the insert buffer size for the Cache.
@@ -217,23 +175,9 @@ where
     /// try increasing this value in increments of 32 * 1024.
     /// This is a fine-tuning mechanism and you probably won't have to touch this.
     #[inline]
-    pub fn set_buffer_size(self, sz: usize) -> Self {
-        Self {
-            num_counters: self.num_counters,
-            max_cost: self.max_cost,
-            buffer_items: self.buffer_items,
-            insert_buffer_size: sz,
-            metrics: self.metrics,
-            callback: self.callback,
-            key_to_hash: self.key_to_hash,
-            update_validator: self.update_validator,
-            coster: self.coster,
-            ignore_internal_cost: self.ignore_internal_cost,
-            cleanup_duration: self.cleanup_duration,
-            hasher: self.hasher,
-            marker_k: self.marker_k,
-            marker_v: self.marker_v,
-        }
+    pub fn set_buffer_size(mut self, sz: usize) -> Self {
+            self.insert_buffer_size = sz;
+        self
     }
 
     /// Set whether record the metrics or not.
@@ -241,23 +185,9 @@ where
     /// Metrics is true when you want real-time logging of a variety of stats.
     /// The reason this is a CacheBuilderCore flag is because there's a 10% throughput performance overhead.
     #[inline]
-    pub fn set_metrics(self, val: bool) -> Self {
-        Self {
-            num_counters: self.num_counters,
-            max_cost: self.max_cost,
-            buffer_items: self.buffer_items,
-            insert_buffer_size: self.insert_buffer_size,
-            metrics: val,
-            callback: self.callback,
-            key_to_hash: self.key_to_hash,
-            update_validator: self.update_validator,
-            coster: self.coster,
-            ignore_internal_cost: self.ignore_internal_cost,
-            cleanup_duration: self.cleanup_duration,
-            hasher: self.hasher,
-            marker_k: self.marker_k,
-            marker_v: self.marker_v,
-        }
+    pub fn set_metrics(mut self, val: bool) -> Self {
+        self.metrics = val;
+        self
     }
 
     /// Set whether ignore the internal cost or not.
@@ -266,44 +196,16 @@ where
     /// because the size of stored item in Cache is 56(excluding the size of value).
     /// Set it to true to ignore the internal cost.
     #[inline]
-    pub fn set_ignore_internal_cost(self, val: bool) -> Self {
-        Self {
-            num_counters: self.num_counters,
-            max_cost: self.max_cost,
-            buffer_items: self.buffer_items,
-            insert_buffer_size: self.insert_buffer_size,
-            metrics: self.metrics,
-            callback: self.callback,
-            key_to_hash: self.key_to_hash,
-            update_validator: self.update_validator,
-            coster: self.coster,
-            ignore_internal_cost: val,
-            cleanup_duration: self.cleanup_duration,
-            hasher: self.hasher,
-            marker_k: self.marker_k,
-            marker_v: self.marker_v,
-        }
+    pub fn set_ignore_internal_cost(mut self, val: bool) -> Self {
+        self.ignore_internal_cost = val;
+        self
     }
 
     /// Set the cleanup ticker for Cache, each tick the Cache will clean the expired entries.
     #[inline]
-    pub fn set_cleanup_duration(self, d: Duration) -> Self {
-        Self {
-            num_counters: self.num_counters,
-            max_cost: self.max_cost,
-            buffer_items: self.buffer_items,
-            insert_buffer_size: self.insert_buffer_size,
-            metrics: self.metrics,
-            callback: self.callback,
-            key_to_hash: self.key_to_hash,
-            update_validator: self.update_validator,
-            coster: self.coster,
-            ignore_internal_cost: self.ignore_internal_cost,
-            cleanup_duration: d,
-            hasher: self.hasher,
-            marker_k: self.marker_k,
-            marker_v: self.marker_v,
-        }
+    pub fn set_cleanup_duration(mut self, d: Duration) -> Self {
+        self.cleanup_duration = d;
+        self
     }
 
     /// Set the [`KeyBuilder`] for the Cache
