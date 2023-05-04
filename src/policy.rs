@@ -318,11 +318,24 @@ impl<S: BuildHasher + Clone + 'static> SampledLFU<S> {
         if pairs.len() >= self.samples {
             pairs
         } else {
-            for (k, v) in self.key_costs.iter() {
+            let mut rng = rand::thread_rng();
+            let mut vec = rand::seq::index::sample(
+                &mut rng,
+                self.key_costs.len(),
+                self.key_costs.len().min(self.samples - pairs.len()),
+            )
+            .into_vec();
+            vec.sort_unstable();
+            let mut iter = self.key_costs.iter();
+            let mut pre = 0;
+            for i in vec {
+                let index = i + 1 - pre;
+                let (k, v) = iter.nth(index - 1).unwrap();
                 pairs.push(PolicyPair::new(*k, *v));
                 if pairs.len() >= self.samples {
                     return pairs;
                 }
+                pre = i + 1;
             }
             pairs
         }
