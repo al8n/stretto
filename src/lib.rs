@@ -445,14 +445,12 @@ pub trait KeyBuilder {
     /// `hash_index` is used to hash the key to u64
     fn hash_index<Q>(&self, key: &Q) -> u64
     where
-        Self::Key: core::borrow::Borrow<Q>,
         Q: core::hash::Hash + Eq + ?Sized;
 
     /// if you want a 128bit hashes, you should implement this method,
     /// or leave this method return 0
     fn hash_conflict<Q>(&self, key: &Q) -> u64
     where
-        Self::Key: core::borrow::Borrow<Q>,
         Q: core::hash::Hash + Eq + ?Sized,
     {
         let _ = key;
@@ -462,7 +460,6 @@ pub trait KeyBuilder {
     /// build the key to 128bit hashes.
     fn build_key<Q>(&self, k: &Q) -> (u64, u64)
     where
-        Self::Key: core::borrow::Borrow<Q>,
         Q: core::hash::Hash + Eq + ?Sized,
     {
         (self.hash_index(k), self.hash_conflict(k))
@@ -510,7 +507,6 @@ impl<K: Hash + Eq> KeyBuilder for DefaultKeyBuilder<K> {
     #[inline]
     fn hash_index<Q>(&self, key: &Q) -> u64
     where
-        Self::Key: core::borrow::Borrow<Q>,
         Q: core::hash::Hash + Eq + ?Sized,
     {
         let mut s = self.sea.build_hasher();
@@ -521,7 +517,6 @@ impl<K: Hash + Eq> KeyBuilder for DefaultKeyBuilder<K> {
     #[inline]
     fn hash_conflict<Q>(&self, key: &Q) -> u64
     where
-        Self::Key: core::borrow::Borrow<Q>,
         Q: core::hash::Hash + Eq + ?Sized,
     {
         let mut x = self.xx.build_hasher();
@@ -634,7 +629,6 @@ impl<K: TransparentKey> KeyBuilder for TransparentKeyBuilder<K> {
     #[inline]
     fn hash_index<Q>(&self, key: &Q) -> u64
     where
-        Self::Key: core::borrow::Borrow<Q>,
         Q: core::hash::Hash + Eq + ?Sized,
     {
         let mut hasher = TransparentHasher { data: 0 };
@@ -645,7 +639,6 @@ impl<K: TransparentKey> KeyBuilder for TransparentKeyBuilder<K> {
     #[inline]
     fn hash_conflict<Q>(&self, _key: &Q) -> u64
     where
-        Self::Key: core::borrow::Borrow<Q>,
         Q: core::hash::Hash + Eq + ?Sized,
     {
         0

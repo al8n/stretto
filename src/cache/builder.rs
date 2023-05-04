@@ -176,7 +176,7 @@ where
     /// This is a fine-tuning mechanism and you probably won't have to touch this.
     #[inline]
     pub fn set_buffer_size(mut self, sz: usize) -> Self {
-            self.insert_buffer_size = sz;
+        self.insert_buffer_size = sz;
         self
     }
 

@@ -217,7 +217,6 @@ macro_rules! impl_cache {
             /// value was found or not.
             pub fn get<Q>(&self, key: &Q) -> Option<ValueRef<V, S>>
             where
-                K: core::borrow::Borrow<Q>,
                 Q: core::hash::Hash + Eq + ?Sized,
             {
                 if self.is_closed.load(Ordering::SeqCst) {
@@ -244,7 +243,6 @@ macro_rules! impl_cache {
             /// value was found or not.
             pub fn get_mut<Q>(&self, key: &Q) -> Option<ValueRefMut<V, S>>
             where
-                K: core::borrow::Borrow<Q>,
                 Q: core::hash::Hash + Eq + ?Sized,
             {
                 if self.is_closed.load(Ordering::SeqCst) {
@@ -271,7 +269,6 @@ macro_rules! impl_cache {
             /// item was found and is not expired.
             pub fn get_ttl<Q>(&self, key: &Q) -> Option<Duration>
             where
-                K: core::borrow::Borrow<Q>,
                 Q: core::hash::Hash + Eq + ?Sized,
             {
                 let (index, conflict) = self.key_to_hash.build_key(key);
@@ -533,7 +530,6 @@ macro_rules! impl_async_cache {
             /// value was found or not.
             pub async fn get<Q>(&self, key: &Q) -> Option<ValueRef<V, S>>
             where
-                K: core::borrow::Borrow<Q>,
                 Q: core::hash::Hash + Eq + ?Sized,
             {
                 if self.is_closed.load(Ordering::SeqCst) {
@@ -560,7 +556,6 @@ macro_rules! impl_async_cache {
             /// value was found or not.
             pub async fn get_mut<Q>(&self, key: &Q) -> Option<ValueRefMut<V, S>>
             where
-                K: core::borrow::Borrow<Q>,
                 Q: core::hash::Hash + Eq + ?Sized,
             {
                 if self.is_closed.load(Ordering::SeqCst) {
@@ -587,7 +582,6 @@ macro_rules! impl_async_cache {
             /// item was found and is not expired.
             pub fn get_ttl<Q>(&self, key: &Q) -> Option<Duration>
             where
-                K: core::borrow::Borrow<Q>,
                 Q: core::hash::Hash + Eq + ?Sized,
             {
                 let (index, conflict) = self.key_to_hash.build_key(key);

@@ -1,7 +1,11 @@
 #[macro_use]
 extern crate serde;
 
-use std::{fmt, hash::{BuildHasher, Hasher}, path::Path};
+use std::{
+    fmt,
+    hash::{BuildHasher, Hasher},
+    path::Path,
+};
 
 #[global_allocator]
 static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
