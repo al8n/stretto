@@ -198,6 +198,7 @@ macro_rules! impl_builder {
     };
 }
 
+#[cfg(feature = "sync")]
 macro_rules! impl_cache {
     ($cache: ident, $builder: ident, $item: ident) => {
         use crate::store::UpdateResult;

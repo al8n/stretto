@@ -4,14 +4,17 @@ use parking_lot::Mutex;
 
 #[cfg(feature = "async")]
 use crate::policy::AsyncLFUPolicy;
+#[cfg(feature = "sync")]
 use crate::policy::LFUPolicy;
 
+#[cfg(feature = "sync")]
 pub struct RingStripe<S> {
     cons: Arc<LFUPolicy<S>>,
     data: Mutex<Vec<u64>>,
     capa: usize,
 }
 
+#[cfg(feature = "sync")]
 impl<S> RingStripe<S>
 where
     S: BuildHasher + Clone + 'static,

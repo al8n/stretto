@@ -7,5 +7,5 @@ cargo miri setup
 
 export MIRIFLAGS="-Zmiri-strict-provenance -Zmiri-disable-isolation -Zmiri-symbolic-alignment-check"
 
-cargo hack miri test --each-feature
+cargo hack miri test --each-feature --include-features sync,async --exclude-no-default-features
 
