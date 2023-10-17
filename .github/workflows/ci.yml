@@ -2,10 +2,8 @@ name: CI
 
 on:
   push:
-    # Ignore bors branches, since they are covered by `clippy_bors.yml`
     branches:
       - main
-    # Don't run Clippy tests, when only textfiles were modified
     paths-ignore:
       - 'README'
       - 'COPYRIGHT'
@@ -13,7 +11,6 @@ on:
       - '**.md'
       - '**.txt'
   pull_request:
-    # Don't run Clippy tests, when only textfiles were modified
     paths-ignore:
       - 'README'
       - 'COPYRIGHT'
@@ -23,32 +20,158 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  nightly: nightly-2023-04-18
+  RUSTFLAGS: -Dwarnings
+  RUST_BACKTRACE: 1
+  nightly: nightly
+  stable: stable
 
 jobs:
   # Check formatting
   rustfmt:
     name: rustfmt
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v3
     - name: Install Rust
-      run: rustup update stable && rustup default stable
+      # --no-self-update is necessary because the windows environment cannot self-update rustup.exe.
+      run: rustup update stable --no-self-update && rustup default stable
     - name: Check formatting
       run: cargo fmt --all -- --check
+
 
   # Apply clippy lints
   clippy:
     name: clippy
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v3
+    - name: Install Rust
+      # --no-self-update is necessary because the windows environment cannot self-update rustup.exe.
+      run: rustup update stable --no-self-update && rustup default stable
+    - name: Install cargo-hack
+      run: cargo install cargo-hack
     - name: Apply clippy lints
-      run: cargo clippy --all-features
+      run: cargo hack clippy --each-feature
 
-  # Stable
-  stable:
-    name: stable
+  # Run tests on some extra platforms
+  cross:
+    name: cross
+    strategy:
+      matrix:
+        target:
+          - aarch64-unknown-linux-gnu
+          - aarch64-linux-android
+          - aarch64-unknown-linux-musl
+          - i686-linux-android
+          - x86_64-linux-android
+          - i686-pc-windows-gnu
+          - x86_64-pc-windows-gnu
+          - i686-unknown-linux-gnu
+          - powerpc64-unknown-linux-gnu
+          - mips64-unknown-linux-gnuabi64
+          - riscv64gc-unknown-linux-gnu
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Cache cargo build and registry
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cross-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cross-
+      - name: Install Rust
+        run: rustup update stable && rustup default stable
+      - name: cross build --target ${{ matrix.target }}
+        run: |
+          cargo install cross
+          cross build --target ${{ matrix.target }}
+
+  build:
+    name: build
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v3
+    - name: Cache cargo build and registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-build-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-build-
+    - name: Install Rust
+      # --no-self-update is necessary because the windows environment cannot self-update rustup.exe.
+      run: rustup update stable --no-self-update && rustup default stable
+    - name: Install cargo-hack
+      run: cargo install cargo-hack
+    - name: Cache ~/.cargo
+      uses: actions/cache@v3
+      with:
+        path: ~/.cargo
+        key: ${{ runner.os }}-coverage-dotcargo
+    - name: Run build
+      run: cargo hack build --feature-powerset
+  
+  test:
+    name: test
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v3
+    - name: Cache cargo build and registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-test-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-test-
+    - name: Install Rust
+      # --no-self-update is necessary because the windows environment cannot self-update rustup.exe.
+      run: rustup update stable --no-self-update && rustup default stable
+    - name: Install cargo-hack
+      run: cargo install cargo-hack
+    - name: Cache ~/.cargo
+      uses: actions/cache@v3
+      with:
+        path: ~/.cargo
+        key: ${{ runner.os }}-coverage-dotcargo
+    - name: Run test
+      run: cargo hack test --feature-powerset
+  
+  sanitizer:
+    name: sanitizer
     strategy:
       matrix:
         os:
@@ -58,34 +181,130 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v3
+      - name: Cache cargo build and registry
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-sanitizer-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-sanitizer-
       - name: Install Rust
-        # --no-self-update is necessary because the windows environment cannot self-update rustup.exe.
-        run: rustup update stable --no-self-update && rustup default stable
-      - name: Test
-        run: . ci/test-stable.sh test
-  # Nightly
-  nightly:
-    name: nightly
+        run: rustup update $nightly && rustup default $nightly
+      - name: Install rust-src
+        run: rustup component add rust-src
+      - name: Install cargo-hack
+        run: cargo install cargo-hack
+      - name: ASAN / LSAN / TSAN
+        run: ci/sanitizer.sh
+
+  miri:
+    name: miri
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v3
+      - name: Cache cargo build and registry
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-miri-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-miri-
+      - name: Install cargo-hack
+        run: cargo install cargo-hack
+      - name: Miri
+        run: ci/miri.sh
+
+  # # valgrind
+  # valgrind:
+  #   name: valgrind
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v3
+  #     - name: Cache cargo build and registry
+  #       uses: actions/cache@v3
+  #       with:
+  #         path: |
+  #           ~/.cargo/registry
+  #           ~/.cargo/git
+  #           target
+  #         key: ubuntu-latest-valgrind-${{ hashFiles('**/Cargo.lock') }}
+  #         restore-keys: |
+  #           ubuntu-latest-valgrind-
+
+  #     - name: Install Rust ${{ env.stable }}
+  #       uses: actions-rs/toolchain@v1
+  #       with:
+  #           toolchain: ${{ env.stable }}
+  #           override: true
+  #     - name: Install Valgrind
+  #       run: |
+  #         sudo apt-get update -y
+  #         sudo apt-get install -y valgrind
+  #     # Compile tests
+  #     # - name: cargo build foo
+  #     #   run: cargo build --bin foo
+  #     #   working-directory: integration
+
+  #     # Run with valgrind
+  #     # - name: Run valgrind foo
+  #     #   run: valgrind --error-exitcode=1 --leak-check=full --show-leak-kinds=all ./target/debug/foo
+  #     #   working-directory: integration
+
+  docs:
+    name: docs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - name: Install Rust
-        run: rustup update $nightly && rustup default $nightly
-      - name: Test
-        run: . ci/test-stable.sh test
+      - name: Cache cargo build and registry
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ubuntu-latest-docs-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ubuntu-latest-docs-
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ env.nightly }}
+          override: true
+      - name: "doc --lib --all-features"
+        run: cargo doc --lib --no-deps --all-features
+        env:
+          RUSTFLAGS: --cfg docsrs
+          RUSTDOCFLAGS: --cfg docsrs -Dwarnings
 
   coverage:
+    name: coverage
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        rust:
-          - nightly
+    needs:
+      - rustfmt
+      - clippy
+      - build
+      - cross
+      - test
+      - sanitizer
+      - miri
+      - docs
     steps:
       - uses: actions/checkout@v3
       - name: Install latest nightly
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: ${{ matrix.rust }}
+          toolchain: nightly
           override: true
       - uses: actions-rs/install@v0.1
         with:
@@ -105,34 +324,9 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: tarpaulin
-          args: --run-types Tests,Doctests --features full --workspace --out Xml
+          args: --all-features --run-types tests --run-types doctests --workspace --out xml
       - name: Upload to codecov.io
         uses: codecov/codecov-action@v3.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: true
-  
-  publish_docs:
-    name: Publish Documentation
-    needs:
-      - rustfmt
-      - clippy
-      - stable
-      - nightly
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Install Rust
-        run: rustup update nightly && rustup default nightly
-      - name: Build documentation
-        run: cargo doc --no-deps --all-features
-        env:
-          RUSTDOCFLAGS: --cfg docsrs
-      - name: Publish documentation
-        run: |
-          cd target/doc
-          git init
-          git add .
-          git -c user.name='ci' -c user.email='ci' commit -m 'Deploy zallocator API documentation'
-          git push -f -q https://git:${{ secrets.github_token }}@github.com/${{ github.repository }} HEAD:gh-pages
-        if: github.event_name == 'push' && github.event.ref == 'refs/heads/master' && github.repository == 'al8n/zallocator'

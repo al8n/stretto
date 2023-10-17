@@ -461,7 +461,7 @@ impl Serialize for MetricsInner {
     }
 }
 
-#[cfg(not(all(feature = "serde", feature = "serde_json")))]
+#[cfg(not(feature = "serde"))]
 impl Display for MetricsInner {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let mut buf = Vec::new();
@@ -482,7 +482,7 @@ impl Display for MetricsInner {
     }
 }
 
-#[cfg(all(feature = "serde", feature = "serde_json"))]
+#[cfg(feature = "serde")]
 impl Display for MetricsInner {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let str = serde_json::to_string_pretty(self).map_err(std::fmt::Error::custom)?;

@@ -1,6 +1,6 @@
 [package]
 name = "stretto"
-version = "0.8.1"
+version = "0.8.2"
 authors = ["Al Liu <scygliu1@gmail.com>"]
 description = "Stretto is a high performance thread-safe memory-bound Rust cache."
 homepage = "https://github.com/al8n/stretto"
@@ -31,16 +31,19 @@ name = "sync_example"
 required-features = ["sync"]
 edition = "2021"
 
+[target.'cfg(target_family = "wasm")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
 default = ["sync"]
-full = ["sync", "async", "serilization"]
-async = ["async-channel", "async-io", "futures/default"]
+full = ["sync", "async", "serde"]
+async = ["async-channel", "async-io", "futures/default", "wg/async"]
 sync = ["crossbeam-channel"]
-serilization = ["serde", "serde/derive", "serde_json/default"]
+serde = ["dep:serde", "dep:serde_json"]
 
 [dependencies]
-atomic = "0.5"
+atomic = "0.6"
 async-channel = { version = "1.8", optional = true }
 async-io = { version = "1.12", optional = true }
 crossbeam-channel = { version = "0.5", optional = true }
@@ -48,18 +51,18 @@ futures = { version = "0.3", optional = true }
 log = { version = "0.4", optional = true }
 parking_lot = "0.12"
 rand = "0.8"
-serde = {version = "1", optional = true}
-serde_json = {version = "1", optional = true}
+serde = { version = "1", optional = true, features = ["derive"] }
+serde_json = { version = "1", optional = true }
 seahash = "4.1"
-wg = "0.3"
+wg = "0.4"
 thiserror = "1"
 tracing = "0.1"
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
 
 [dev-dependencies]
-serde = {version = "1", features = ["serde_derive"]}
+serde = {version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = {version = "1.21", features = ["full"]}
+tokio = {version = "1.21", features = ["full"] }
 async-std = { version = "1.12" }
 
 [package.metadata.docs.rs]

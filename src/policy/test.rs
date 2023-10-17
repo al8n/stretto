@@ -184,6 +184,7 @@ mod async_test {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn test_policy_process_items() {
         let p = AsyncLFUPolicy::new(100, 10, tokio::spawn).unwrap();
 

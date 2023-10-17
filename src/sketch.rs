@@ -21,7 +21,7 @@ impl CountMinRow {
 
     #[inline]
     pub(crate) fn get(&self, i: u64) -> u8 {
-        ((self[(i / 2) as usize] >> ((i & 1) * 4)) as u8) & 0x0f
+        (self[(i / 2) as usize] >> ((i & 1) * 4)) & 0x0f
     }
 
     #[inline]

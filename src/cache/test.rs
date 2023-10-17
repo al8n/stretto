@@ -10,7 +10,7 @@ use std::sync::Arc;
 static CHARSET: &[u8] = "abcdefghijklmnopqrstuvwxyz0123456789".as_bytes();
 
 fn get_key() -> [u8; 2] {
-    let mut rng = OsRng::default();
+    let mut rng = OsRng;
     let k1 = CHARSET[rng.gen::<usize>() % CHARSET.len()];
     let k2 = CHARSET[rng.gen::<usize>() % CHARSET.len()];
     [k1, k2]
@@ -217,14 +217,14 @@ mod sync_test {
                         let k = get_key();
                         match tc.get(&k) {
                             None => {
-                                let mut rng = OsRng::default();
+                                let mut rng = OsRng;
                                 let rv = rng.gen::<usize>() % 100;
-                                let val: String;
-                                if rv < 10 {
-                                    val = "test".to_string();
+
+                                let val = if rv < 10 {
+                                    "test".to_string()
                                 } else {
-                                    val = vec!["a"; 1000].join("");
-                                }
+                                    vec!["a"; 1000].join("")
+                                };
                                 let cost = val.len() + 2;
                                 tc.insert(get_key(), val, cost as i64);
                             },
@@ -900,7 +900,7 @@ mod async_test {
         )
         .await;
         let _ = c.close().await;
-        let _ = c.clear();
+        let _ = c.clear().await;
     }
 
     #[tokio::test]
@@ -1209,14 +1209,14 @@ mod async_test {
                 tokio::select! {
                     _ = stop_rx.recv() => return,
                     else => {
-                        _ = tc.get(&1);
+                        let _ = tc.get(&1).await;
                     }
                 }
             }
         });
 
         sleep(Duration::from_millis(100)).await;
-        let _ = c.clear();
+        let _ = c.clear().await;
         stop_tx.send(()).await.unwrap();
         c.metrics.clear();
     }
@@ -1336,7 +1336,7 @@ mod async_test {
                     Err(_) => {
                         let k = get_key();
                         if c.get(&k).await.is_none() {
-                            let mut rng = OsRng::default();
+                            let mut rng = OsRng;
                             let rv = rng.gen::<usize>() % 100;
                             let val = if rv < 10 {
                                 "test".to_string()
