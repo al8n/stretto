@@ -104,7 +104,7 @@ impl Bloom {
 
     /// `set` sets the bit[idx] of bitset
     pub fn set(&mut self, idx: usize) {
-        let ptr = (self.bitset.as_mut_ptr() as usize + ((idx % 64) >> 3) as usize) as *mut u8;
+        let ptr = (self.bitset.as_mut_ptr() as usize + ((idx % 64) >> 3)) as *mut u8;
         unsafe {
             *ptr |= 1 << (idx % 8);
         }
@@ -112,7 +112,7 @@ impl Bloom {
 
     /// `is_set` checks if bit[idx] of bitset is set, returns true/false.
     pub fn is_set(&self, idx: usize) -> bool {
-        let ptr = (self.bitset.as_ptr() as usize + ((idx % 64) >> 3) as usize) as *const u8;
+        let ptr = (self.bitset.as_ptr() as usize + ((idx % 64) >> 3)) as *const u8;
         let r = unsafe { *ptr >> (idx % 8) } & 1;
         r == 1
     }

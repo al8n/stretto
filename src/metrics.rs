@@ -421,7 +421,7 @@ impl MetricsInner {
 
 #[cfg(feature = "serde")]
 #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
-use serde::ser::{Error, SerializeStruct};
+use serde::ser::SerializeStruct;
 #[cfg(feature = "serde")]
 #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
 use serde::{Serialize, Serializer};
@@ -461,7 +461,6 @@ impl Serialize for MetricsInner {
     }
 }
 
-#[cfg(not(all(feature = "serde", feature = "serde_json")))]
 impl Display for MetricsInner {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let mut buf = Vec::new();
@@ -479,14 +478,6 @@ impl Display for MetricsInner {
         );
         buf.extend(format!("  \"hit-ratio\": {:.2}\n}}", self.ratio()).as_bytes());
         write!(f, "{}", String::from_utf8(buf).unwrap())
-    }
-}
-
-#[cfg(all(feature = "serde", feature = "serde_json"))]
-impl Display for MetricsInner {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let str = serde_json::to_string_pretty(self).map_err(std::fmt::Error::custom)?;
-        write!(f, "Metrics::Op {}", str)
     }
 }
 
@@ -541,15 +532,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(all(feature = "serde", feature = "serde_json"))]
-    fn test_display() {
-        let m = MetricsInner::new();
-        let ms = serde_json::to_string_pretty(&m).unwrap();
-        assert_eq!(format!("{}", m), format!("Metrics::Op {}", ms));
-    }
-
-    #[test]
-    #[cfg(not(all(feature = "serde", feature = "serde_json")))]
     fn test_display() {
         let m = MetricsInner::new();
         let exp = "Metrics::Op {

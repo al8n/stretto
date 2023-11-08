@@ -241,43 +241,9 @@ pub(crate) fn vec_to_array<T, const N: usize>(v: Vec<T>) -> [T; N] {
 ///
 /// Requires that you ensure the reference does not become invalid.
 /// The object has to outlive the reference.
-pub(crate) unsafe fn change_lifetime_const<'a, 'b, T>(x: &'a T) -> &'b T {
+pub(crate) unsafe fn change_lifetime_const<'b, T>(x: &T) -> &'b T {
     &*(x as *const T)
 }
-
-// // TODO: should use SharedNonNull to replace Arc?
-// #[repr(transparent)]
-// #[allow(dead_code)]
-// pub(crate) struct SharedNonNull<T: ?Sized> {
-//     ptr: NonNull<T>,
-// }
-
-// impl<T> SharedNonNull<T> {
-//     #[allow(dead_code)]
-//     pub fn new(ptr: *mut T) -> Self {
-//         unsafe {
-//             Self {
-//                 ptr: NonNull::new_unchecked(ptr),
-//             }
-//         }
-//     }
-
-//     #[allow(dead_code)]
-//     pub unsafe fn as_ref(&self) -> &T {
-//         self.ptr.as_ref()
-//     }
-// }
-
-// impl<T: ?Sized> Copy for SharedNonNull<T> {}
-
-// impl<T: ?Sized> Clone for SharedNonNull<T> {
-//     fn clone(&self) -> Self {
-//         *self
-//     }
-// }
-
-// unsafe impl<T> Send for SharedNonNull<T> {}
-// unsafe impl<T> Sync for SharedNonNull<T> {}
 
 #[cfg(test)]
 mod test {

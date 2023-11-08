@@ -1,4 +1,3 @@
-use crate::policy::LFUPolicy;
 use crate::ttl::{ExpirationMap, Time};
 use crate::utils::{change_lifetime_const, SharedValue, ValueRef, ValueRefMut};
 use crate::{CacheError, DefaultUpdateValidator, Item as CrateItem, UpdateValidator};
@@ -238,9 +237,10 @@ impl<
             .map(|val| val.expiration)
     }
 
+    #[cfg(feature = "sync")]
     pub fn try_cleanup<PS: BuildHasher + Clone + 'static>(
         &self,
-        policy: Arc<LFUPolicy<PS>>,
+        policy: Arc<crate::policy::LFUPolicy<PS>>,
     ) -> Result<Vec<CrateItem<V>>, CacheError> {
         let now = Time::now();
         Ok(self
