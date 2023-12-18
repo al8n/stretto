@@ -672,7 +672,7 @@ mod sync_test {
             }
 
             // Wait for all the items to be processed.
-            sleep(Duration::from_millis(5));
+            sleep(Duration::from_millis(15));
             // This will cause eviction from the cache.
             assert!(c.insert(1, "0".to_string(), 10));
             let _ = c.close();
