@@ -38,7 +38,7 @@ getrandom = { version = "0.2", features = ["js"] }
 [features]
 default = ["sync"]
 full = ["sync", "async", "serde"]
-async = ["async-channel", "async-io", "futures/default", "wg/async"]
+async = ["async-channel", "async-io", "futures/default", "wg/future"]
 sync = ["crossbeam-channel"]
 serde = ["dep:serde", "dep:serde_json"]
 
@@ -53,7 +53,7 @@ rand = "0.8"
 serde = { version = "1", optional = true, features = ["derive"] }
 serde_json = { version = "1", optional = true }
 seahash = "4.1"
-wg = "0.4"
+wg = "0.6"
 thiserror = "1"
 tracing = "0.1"
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
