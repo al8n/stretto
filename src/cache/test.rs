@@ -112,19 +112,13 @@ impl CacheCallback for TestCallbackDropUpdates {
 mod sync_test {
     use super::*;
     use crate::cache::sync::Item;
-    use crate::cache::test::{KHTest, TestCallback, TestCallbackDropUpdates, TestCoster};
     use crate::{
-        Cache, CacheBuilder, CacheCallback, Coster, DefaultCacheCallback, DefaultCoster,
-        DefaultKeyBuilder, DefaultUpdateValidator, KeyBuilder, TransparentKeyBuilder,
-        UpdateValidator,
+        Cache, CacheBuilder, DefaultCacheCallback, DefaultCoster, DefaultKeyBuilder,
+        DefaultUpdateValidator, TransparentKeyBuilder, UpdateValidator,
     };
     use crossbeam_channel::{bounded, select};
-    use parking_lot::Mutex;
     use std::collections::hash_map::RandomState;
-    use std::collections::HashSet;
     use std::hash::Hash;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Arc;
     use std::thread::{sleep, spawn};
     use std::time::Duration;
 
@@ -739,18 +733,11 @@ mod async_test {
     use super::*;
     use crate::cache::r#async::Item;
     use crate::{
-        AsyncCache, AsyncCacheBuilder, CacheCallback, Coster, DefaultCacheCallback, DefaultCoster,
-        DefaultKeyBuilder, DefaultUpdateValidator, KeyBuilder, TransparentKeyBuilder,
-        UpdateValidator,
+        AsyncCache, AsyncCacheBuilder, DefaultCacheCallback, DefaultCoster, DefaultKeyBuilder,
+        DefaultUpdateValidator, TransparentKeyBuilder, UpdateValidator,
     };
-    use parking_lot::Mutex;
-    use rand::rngs::OsRng;
-    use rand::Rng;
     use std::collections::hash_map::RandomState;
-    use std::collections::HashSet;
     use std::hash::Hash;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Arc;
     use std::time::Duration;
     use tokio::sync::mpsc::channel;
     use tokio::task::spawn;

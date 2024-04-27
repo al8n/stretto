@@ -345,9 +345,7 @@ impl<K: Hash + Eq> KeyBuilder for DefaultKeyBuilder<K> {
         Self::Key: core::borrow::Borrow<Q>,
         Q: core::hash::Hash + Eq + ?Sized,
     {
-        let mut s = self.sea.build_hasher();
-        key.hash(&mut s);
-        s.finish()
+        self.sea.hash_one(key)
     }
 
     #[inline]
@@ -356,9 +354,7 @@ impl<K: Hash + Eq> KeyBuilder for DefaultKeyBuilder<K> {
         Self::Key: core::borrow::Borrow<Q>,
         Q: core::hash::Hash + Eq + ?Sized,
     {
-        let mut x = self.xx.build_hasher();
-        key.hash(&mut x);
-        x.finish()
+        self.xx.hash_one(key)
     }
 }
 

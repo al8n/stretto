@@ -4,7 +4,6 @@ use crate::{CacheError, DefaultUpdateValidator, Item as CrateItem, UpdateValidat
 use parking_lot::RwLock;
 use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
-use std::convert::TryInto;
 use std::fmt::{Debug, Formatter};
 use std::hash::BuildHasher;
 use std::mem;

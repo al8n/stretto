@@ -739,7 +739,9 @@ macro_rules! impl_cache_cleaner {
                         expiration,
                     )),
                     $item::Delete { .. } | $item::Update { .. } => {}
-                    $item::Wait(wg) => wg.done(),
+                    $item::Wait(wg) => {
+                        let _ = wg.done();
+                    }
                 }
             }
         }
