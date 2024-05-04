@@ -3,7 +3,6 @@ extern crate serde;
 
 use std::path::Path;
 
-
 #[global_allocator]
 static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -20,7 +19,6 @@ struct KV {
     conflict: u64,
     cost: i64,
 }
-
 
 #[cfg(feature = "sync")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -53,9 +51,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(feature = "async")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    use stretto::AsyncCache;
     use tokio::fs;
     use tokio::time::Instant;
-    use stretto::AsyncCache;
 
     let content = fs::read(Path::new("mock.json")).await?;
     let dataset: Dataset = serde_json::from_slice(content.as_slice())?;

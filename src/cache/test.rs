@@ -35,7 +35,6 @@ impl KeyBuilder for KHTest {
 
     fn hash_index<Q>(&self, key: &Q) -> u64
     where
-        Self::Key: core::borrow::Borrow<Q>,
         Q: core::hash::Hash + Eq + ?Sized,
     {
         let mut hasher = TransparentHasher { data: 0 };
@@ -45,7 +44,6 @@ impl KeyBuilder for KHTest {
 
     fn hash_conflict<Q>(&self, _key: &Q) -> u64
     where
-        Self::Key: core::borrow::Borrow<Q>,
         Q: core::hash::Hash + Eq + ?Sized,
     {
         0
@@ -53,7 +51,6 @@ impl KeyBuilder for KHTest {
 
     fn build_key<Q>(&self, k: &Q) -> (u64, u64)
     where
-        Self::Key: core::borrow::Borrow<Q>,
         Q: core::hash::Hash + Eq + ?Sized,
     {
         self.ctr.fetch_add(1, Ordering::SeqCst);
@@ -669,7 +666,7 @@ mod sync_test {
             }
 
             // Wait for all the items to be processed.
-            sleep(Duration::from_millis(5));
+            sleep(Duration::from_millis(15));
             // This will cause eviction from the cache.
             assert!(c.insert(1, "0".to_string(), 10));
             let _ = c.close();
