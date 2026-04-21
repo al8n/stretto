@@ -30,6 +30,7 @@ Stretto is a pure Rust implementation of https://github.com/dgraph-io/ristretto.
 * **High Hit Ratios** - with Dgraph's developers unique admission/eviction policy pairing, Ristretto's performance is best in class.
     * **Eviction: SampledLFU** - on par with exact LRU and better performance on Search and Database traces.
     * **Admission: TinyLFU** - extra performance with little memory overhead (12 bits per counter).
+* **Designed for Database Workloads** - on OLTP-style traces with small working sets and strong frequency skew, Stretto keeps the hot set far better than general-purpose caches (see [Benchmarks](#benchmarks)).
 * **Fast Throughput** - use a variety of techniques for managing contention and the result is excellent throughput.
 * **Cost-Based Eviction** - any large new item deemed valuable can evict multiple smaller items (cost could be anything).
 * **Fully Concurrent** - you can use as many threads as you want with little throughput degradation.
@@ -40,6 +41,7 @@ Stretto is a pure Rust implementation of https://github.com/dgraph-io/ristretto.
 
 - [Features](#features)
 - [Table of Contents](#table-of-contents)
+- [Benchmarks](#benchmarks)
 - [Installation](#installation)
 - [Related](#related)
 - [Usage](#usage)
@@ -60,6 +62,49 @@ Stretto is a pure Rust implementation of https://github.com/dgraph-io/ristretto.
     - [hasher](#hasher)
 - [Acknowledgements](#acknowledgements)
 - [License](#license)
+
+## Benchmarks
+
+Hit ratios produced by [mokabench](https://github.com/moka-rs/mokabench) against the [ARC trace](https://github.com/moka-rs/cache-trace) suite, 16 concurrent clients. Compared against [QuickCache](https://crates.io/crates/quick_cache) 0.6, [TinyUFO](https://crates.io/crates/TinyUFO) 0.8 and [Moka](https://crates.io/crates/moka) 0.12. Higher is better; **bold** marks the leader for each row.
+
+### S3 trace
+
+| Capacity | QuickCache | Stretto | Stretto Async¹ | TinyUFO | Moka Sync | Moka Async | Moka Segmented(8) |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+|   100,000 | **12.84%** | 12.20% | 3.04% |  2.82% | 10.39% | 10.50% | 10.09% |
+|   400,000 |    42.27%  | 38.31% | 3.05% | 20.25% | 40.96% | 41.17% | **42.32%** |
+|   800,000 |    68.33%  | 67.06% | 3.04% | 62.08% | 66.21% | 67.49% | **70.10%** |
+
+### DS1 trace
+
+| Capacity | QuickCache | Stretto | Stretto Async¹ | TinyUFO | Moka Sync | Moka Async | Moka Segmented(8) |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1,000,000 | **15.11%** | 13.94% | 0.75% |  3.34% | 12.75% | 12.91% | 14.78% |
+| 4,000,000 |    44.41%  | 39.51% | 0.75% | 24.68% | 38.42% | 44.29% | **45.19%** |
+| 8,000,000 | **69.30%** | 52.11% | 0.74% | 53.25% | 63.84% | 67.58% | 67.35% |
+
+### OLTP trace
+
+Stretto is designed for database workloads. OLTP has a tight working set with strong frequency skew — exactly the access pattern admission-based LFU was built for. At small capacities where the hot set has to be actively filtered, Stretto leads every competitor by 8–27 percentage points. As capacity grows past the working set, simpler policies catch up.
+
+| Capacity | QuickCache | Stretto | Stretto Async¹ | TinyUFO | Moka Sync | Moka Async | Moka Segmented(8) |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+|    256 | 22.37% | **53.34%** | 42.48% | 16.67% | 26.25% | 25.41% | 28.73% |
+|    512 | 28.74% | **51.23%** | 42.53% | 20.59% | 32.61% | 31.94% | 33.34% |
+|  1,000 | 35.10% | **50.40%** | 42.41% | 26.53% | 37.93% | 37.39% | 37.50% |
+|  2,000 | 41.52% | **50.73%** | 42.27% | 34.80% | 42.89% | 42.34% | 42.71% |
+|  4,000 | 47.74% | **51.87%** | 42.52% | 43.42% | 48.18% | 46.53% | 48.32% |
+|  8,000 | **55.37%** | 52.18% | 42.05% | 51.71% | 53.67% | 53.49% | 54.40% |
+
+¹ `Stretto Async` is `stretto::AsyncCache` with Tokio. The measurements above use 16 concurrent tokio tasks, which starves Stretto's internal policy-processor task and inflates the insert drop rate — hit ratios collapse on heavy traces. At lower concurrency (1–4 clients) the async cache tracks the sync cache closely. See [#37](https://github.com/al8n/stretto/issues/37) follow-up for the scaling work.
+
+### Reproducing
+
+```bash
+git clone --recursive https://github.com/moka-rs/mokabench.git
+cd mokabench/cache-trace/arc && zstd -d S3.lis.zst DS1.lis.zst OLTP.lis.zst && cd ../..
+cargo run --release --features "stretto,quick_cache,tiny-ufo" -- -f s3,ds1,oltp -n 16
+```
 
 ## Installation
 
