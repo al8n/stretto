@@ -938,6 +938,44 @@ mod sync_test {
     c.wait().unwrap();
     assert_eq!(c.get(&1).unwrap().read(), 1);
   }
+
+  // Regression test for https://github.com/al8n/stretto/issues/55 — inserting
+  // many items with a TTL used to leave most of them around after expiry
+  // because the cleaner only drained one bucket per tick. With the default 2s
+  // cleanup interval and 1-second bucket granularity, buckets that never lined
+  // up with a tick were leaked forever.
+  #[test]
+  fn test_sync_ttl_cleanup_drains_all_buckets() {
+    const N: u64 = 200;
+
+    let c = Cache::builder(1000, 10_000)
+      .set_key_builder(TransparentKeyBuilder::default())
+      .set_ignore_internal_cost(true)
+      .finalize()
+      .unwrap();
+
+    // Spread inserts across ~3 seconds so keys land in multiple storage
+    // buckets, guaranteeing at least one bucket that a 2-second ticker skips.
+    for i in 0..N {
+      assert!(c.insert_with_ttl(i, i, 1, Duration::from_secs(1)));
+      if i % 60 == 0 {
+        sleep(Duration::from_millis(1000));
+      }
+    }
+    c.wait().unwrap();
+
+    // Wait well past the longest TTL plus a few cleanup ticks so every bucket
+    // has had a chance to be swept.
+    sleep(Duration::from_secs(8));
+
+    let leftover: u64 = (0..N).filter(|k| c.get(k).is_some()).count() as u64;
+    assert_eq!(
+      leftover, 0,
+      "expected all TTL entries to be cleaned up, {} remained",
+      leftover
+    );
+    assert_eq!(c.len(), 0, "store should be empty after cleanup");
+  }
 }
 
 #[cfg(feature = "async")]
@@ -1800,5 +1838,66 @@ mod async_test {
     let _ = c.insert(1u64, 2u64, 1).await;
     c.wait().await.unwrap();
     assert_eq!(c.get(&1).await.unwrap().read(), 1);
+  }
+
+  // Regression test for https://github.com/al8n/stretto/issues/55 — the async
+  // cleaner had the same single-bucket-per-tick bug as sync. See
+  // `test_sync_ttl_cleanup_drains_all_buckets` for the underlying reason.
+  #[tokio::test]
+  async fn test_async_ttl_cleanup_drains_all_buckets() {
+    const N: u64 = 200;
+
+    let c = AsyncCacheBuilder::new(1000, 10_000)
+      .set_key_builder(TransparentKeyBuilder::default())
+      .set_ignore_internal_cost(true)
+      .finalize::<TokioRuntime>()
+      .unwrap();
+
+    for i in 0..N {
+      assert!(c.insert_with_ttl(i, i, 1, Duration::from_secs(1)).await);
+      if i % 60 == 0 {
+        sleep(Duration::from_millis(1000)).await;
+      }
+    }
+    c.wait().await.unwrap();
+
+    sleep(Duration::from_secs(8)).await;
+
+    let mut leftover = 0u64;
+    for k in 0..N {
+      if c.get(&k).await.is_some() {
+        leftover += 1;
+      }
+    }
+    assert_eq!(
+      leftover, 0,
+      "expected all TTL entries to be cleaned up, {} remained",
+      leftover
+    );
+    assert_eq!(c.len(), 0, "store should be empty after cleanup");
+  }
+
+  // Regression test for https://github.com/al8n/stretto/issues/32 — inserting a
+  // `Box<dyn Any + Send + Sync>` into an AsyncCache inside an async context used
+  // to fail to compile with a higher-ranked lifetime error. The agnostic-lite
+  // migration removed the internal Box<dyn Future> that caused the HRTB, so this
+  // now type-checks and round-trips the value.
+  #[tokio::test]
+  async fn test_async_insert_box_dyn_any() {
+    use std::any::Any;
+
+    let c: AsyncCache<String, Box<dyn Any + Send + Sync>> = AsyncCacheBuilder::new(100, 10)
+      .set_ignore_internal_cost(true)
+      .finalize::<TokioRuntime>()
+      .unwrap();
+
+    let key = "session".to_string();
+    let value: Box<dyn Any + Send + Sync> = Box::new(42u64);
+    assert!(c.insert(key.clone(), value, 1).await);
+    c.wait().await.unwrap();
+
+    let got = c.get(&key).await.expect("value should be present");
+    let boxed: &Box<dyn Any + Send + Sync> = got.value();
+    assert_eq!(boxed.downcast_ref::<u64>().copied(), Some(42));
   }
 }

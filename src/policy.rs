@@ -8,6 +8,7 @@ use crate::{
   sketch::CountMinSketch,
 };
 use parking_lot::Mutex;
+use rand::seq::IteratorRandom;
 use std::{
   collections::{HashMap, hash_map::RandomState},
   hash::BuildHasher,
@@ -314,18 +315,26 @@ impl<S: BuildHasher + Clone + 'static> SampledLFU<S> {
   }
 
   /// try to fill the SampledLFU by the given pairs.
+  ///
+  /// Rust's `HashMap` iteration order is deterministic for a given instance,
+  /// unlike Go's randomized iteration. Using the raw iterator here would bias
+  /// eviction toward the same keys each call and degrade hit ratio. Use
+  /// reservoir sampling to pull a uniformly random subset instead.
   pub fn fill_sample(&mut self, mut pairs: Vec<PolicyPair>) -> Vec<PolicyPair> {
     if pairs.len() >= self.samples {
-      pairs
-    } else {
-      for (k, v) in self.key_costs.iter() {
-        pairs.push(PolicyPair::new(*k, *v));
-        if pairs.len() >= self.samples {
-          return pairs;
-        }
-      }
-      pairs
+      return pairs;
     }
+    let need = self.samples - pairs.len();
+    let mut rng = rand::rng();
+    for (k, v) in self
+      .key_costs
+      .iter()
+      .map(|(k, v)| (*k, *v))
+      .sample(&mut rng, need)
+    {
+      pairs.push(PolicyPair::new(k, v));
+    }
+    pairs
   }
 
   /// Put a hashed key and cost to SampledLFU

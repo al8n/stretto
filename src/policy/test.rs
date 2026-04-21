@@ -403,6 +403,38 @@ fn test_sampled_lfu_fill_sample() {
 }
 
 #[test]
+fn test_sampled_lfu_fill_sample_is_random() {
+  // Regression for https://github.com/al8n/stretto/issues/37:
+  // Rust's HashMap iteration is deterministic for a given instance, so
+  // the previous fill_sample always returned the same prefix of keys. With
+  // reservoir sampling, the subset should vary across calls.
+  const NUM_KEYS: u64 = 200;
+  const SAMPLES: usize = 5;
+
+  let mut l = SampledLFU::with_samples(NUM_KEYS as i64, SAMPLES);
+  for k in 0..NUM_KEYS {
+    l.increment(k, 1);
+  }
+
+  let mut seen_keys = std::collections::HashSet::new();
+  for _ in 0..64 {
+    let sample = l.fill_sample(Vec::new());
+    assert_eq!(sample.len(), SAMPLES);
+    for pair in &sample {
+      seen_keys.insert(pair.key);
+    }
+  }
+
+  // If iteration were deterministic, 64 calls would all return the same
+  // 5 keys. Reservoir sampling should hit a large fraction of the pool.
+  assert!(
+    seen_keys.len() > SAMPLES * 4,
+    "fill_sample looks biased: only saw {} distinct keys across 64 calls",
+    seen_keys.len()
+  );
+}
+
+#[test]
 fn test_tinylfu_increment() {
   let mut l = TinyLFU::new(4).unwrap();
   l.increment(1);
