@@ -66,25 +66,25 @@
 - 使用同步缓存
 ```toml
 [dependencies]
-stretto = "0.8"
+stretto = "0.9"
 ```
 或
 ```toml 
 [dependencies]
-stretto = { version = "0.8", features = ["sync"] }
+stretto = { version = "0.9", features = ["sync"] }
 ```
 
 
 - 使用异步缓存
 ```toml 
 [dependencies]
-stretto = { version = "0.8", features = ["async"] }
+stretto = { version = "0.9", features = ["async"] }
 ```
 
 - 同步异步同时使用
 ```toml 
 [dependencies]
-stretto = { version = "0.8", features = ["full"] }
+stretto = { version = "0.9", features = ["full"] }
 ```
 
 ## 操作方法
@@ -264,7 +264,9 @@ pub trait KeyBuilder {
 Metrics（度量）应当在需要实时日志记录多种状态信息的时候设置为 `true`。之所以并未设定成默认启用，是因为可能会降低 10% 的吞吐量。
 #### ignore_internal_cost
 
-设定为 `true` 时缓存将会忽略存储值的内部开销，这在开销不以比特为单位时很有用。不过谨记这会导致更高的内存占用。
+默认为 `true`：每次 insert 只计入调用方传入的 cost，此时 `max_cost` 表现为条目数预算（每次 insert 传 `1` 即可）。
+
+当 `max_cost` 以字节为单位，且需要每个条目额外计入约 56 字节的内部开销（key、conflict、version、值包装器、时间戳）时，请设为 `false`。
 
 #### cleanup_duration
 

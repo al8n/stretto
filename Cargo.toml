@@ -1,6 +1,6 @@
 [package]
 name = "stretto"
-version = "0.8.4"
+version = "0.9.0"
 authors = ["Al Liu <scygliu1@gmail.com>"]
 description = "Stretto is a high performance thread-safe memory-bound Rust cache."
 homepage = "https://github.com/al8n/stretto"
@@ -17,52 +17,63 @@ exclude = [
     "**/*.sum",
     "benches/*"
 ]
-edition = "2021"
+edition = "2024"
+rust-version = "1.85.0"
 
 [[example]]
 path = "examples/async_example.rs"
 name = "async_example"
-required-features = ["async"]
-edition = "2021"
+required-features = ["async-tokio"]
+
 
 [[example]]
 path = "examples/sync_example.rs"
 name = "sync_example"
 required-features = ["sync"]
-edition = "2021"
 
 [target.'cfg(target_family = "wasm")'.dependencies]
-getrandom = { version = "0.2", features = ["js"] }
+getrandom = { version = "0.4", features = ["wasm_js"] }
 
 [features]
 default = ["sync"]
-full = ["sync", "async", "serde"]
-async = ["async-channel", "async-io", "futures/default", "wg/future"]
+full = ["sync", "async-tokio", "serde"]
+async = ["async-channel", "agnostic-lite/time", "futures/default", "wg/future"]
+async-tokio = ["async", "agnostic-lite/tokio"]
+async-smol  = ["async", "agnostic-lite/smol"]
+async-wasm  = ["async", "agnostic-lite/wasm"]
 sync = ["crossbeam-channel"]
 serde = ["dep:serde", "dep:serde_json"]
 
 [dependencies]
 atomic = "0.6"
+agnostic-lite = { version = "0.6", optional = true }
 async-channel = { version = "2", optional = true }
-async-io = { version = "2.3", optional = true }
 crossbeam-channel = { version = "0.5", optional = true }
 futures = { version = "0.3", optional = true }
 parking_lot = "0.12"
-rand = "0.8"
+rand = "0.10"
 serde = { version = "1", optional = true, features = ["derive"] }
 serde_json = { version = "1", optional = true }
 seahash = "4.1"
-wg = "0.9"
-thiserror = "1"
+wg = "1"
+thiserror = "2"
 tracing = "0.1"
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
 
 [dev-dependencies]
-serde = {version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = {version = "1", features = ["full"] }
-async-std = { version = "1.12" }
+tokio = { version = "1", features = ["full"] }
+agnostic-lite = { version = "0.6", features = ["tokio"] }
 
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[lints.rust]
+rust_2018_idioms = "warn"
+single_use_lifetimes = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = [
+  'cfg(all_tests)',
+  'cfg(tarpaulin)',
+] }

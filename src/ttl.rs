@@ -1,5 +1,5 @@
 use parking_lot::RwLock;
-use std::collections::{hash_map::RandomState, HashMap};
+use std::collections::{HashMap, hash_map::RandomState};
 use std::hash::BuildHasher;
 use std::ops::{Deref, DerefMut};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -7,209 +7,218 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::CacheError;
 
 fn storage_bucket(t: Time) -> i64 {
-    (t.unix() + 1) as i64
+  (t.unix() + 1) as i64
 }
 
 fn cleanup_bucket(t: Time) -> i64 {
-    // The bucket to cleanup is always behind the storage bucket by one so that
-    // no elements in that bucket (which might not have expired yet) are deleted.
-    storage_bucket(t) - 1
+  // The bucket to cleanup is always behind the storage bucket by one so that
+  // no elements in that bucket (which might not have expired yet) are deleted.
+  storage_bucket(t) - 1
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 pub struct Time {
-    d: Duration,
-    created_at: SystemTime,
+  d: Duration,
+  created_at: SystemTime,
 }
 
 impl Time {
-    pub fn now() -> Self {
-        Self {
-            d: Duration::ZERO,
-            created_at: SystemTime::now(),
-        }
+  pub fn now() -> Self {
+    Self {
+      d: Duration::ZERO,
+      created_at: SystemTime::now(),
     }
+  }
 
-    pub fn now_with_expiration(duration: Duration) -> Self {
-        Self {
-            d: duration,
-            created_at: SystemTime::now(),
-        }
+  pub fn now_with_expiration(duration: Duration) -> Self {
+    Self {
+      d: duration,
+      created_at: SystemTime::now(),
     }
+  }
 
-    pub fn is_zero(&self) -> bool {
-        self.d.is_zero()
-    }
+  pub fn is_zero(&self) -> bool {
+    self.d.is_zero()
+  }
 
-    pub fn unix(&self) -> u64 {
-        self.created_at
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d + self.d)
-            .unwrap()
-            .as_secs()
-    }
+  pub fn unix(&self) -> u64 {
+    self
+      .created_at
+      .duration_since(UNIX_EPOCH)
+      .map(|d| d + self.d)
+      .unwrap()
+      .as_secs()
+  }
 
-    pub fn elapsed(&self) -> Duration {
-        self.created_at.elapsed().unwrap()
-    }
+  pub fn elapsed(&self) -> Duration {
+    self.created_at.elapsed().unwrap_or(Duration::ZERO)
+  }
 
-    pub fn is_expired(&self) -> bool {
-        self.created_at.elapsed().map_or(false, |d| d >= self.d)
-    }
+  pub fn is_expired(&self) -> bool {
+    self.created_at.elapsed().is_ok_and(|d| d >= self.d)
+  }
 
-    pub fn get_ttl(&self) -> Duration {
-        if self.d.is_zero() {
-            return Duration::MAX;
-        }
-        let elapsed = self.created_at.elapsed().unwrap();
-        if elapsed >= self.d {
-            Duration::ZERO
-        } else {
-            self.d - elapsed
-        }
+  pub fn get_ttl(&self) -> Duration {
+    if self.d.is_zero() {
+      return Duration::MAX;
     }
+    let elapsed = self.created_at.elapsed().unwrap_or(Duration::ZERO);
+    if elapsed >= self.d {
+      Duration::ZERO
+    } else {
+      self.d - elapsed
+    }
+  }
 }
 
 /// Bucket is a map of key to conflict.
 #[derive(Debug, Default)]
 struct Bucket<S = RandomState> {
-    map: HashMap<u64, u64, S>,
+  map: HashMap<u64, u64, S>,
 }
 
 impl<S: BuildHasher> Bucket<S> {
-    pub fn with_hasher(hasher: S) -> Self {
-        Self {
-            map: HashMap::with_hasher(hasher),
-        }
+  pub fn with_hasher(hasher: S) -> Self {
+    Self {
+      map: HashMap::with_hasher(hasher),
     }
+  }
 }
 
 impl<S: BuildHasher> Deref for Bucket<S> {
-    type Target = HashMap<u64, u64, S>;
+  type Target = HashMap<u64, u64, S>;
 
-    fn deref(&self) -> &Self::Target {
-        &self.map
-    }
+  fn deref(&self) -> &Self::Target {
+    &self.map
+  }
 }
 
 impl<S: BuildHasher> DerefMut for Bucket<S> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.map
-    }
+  fn deref_mut(&mut self) -> &mut Self::Target {
+    &mut self.map
+  }
 }
 
 #[derive(Debug)]
 pub(crate) struct ExpirationMap<S = RandomState> {
-    buckets: RwLock<HashMap<i64, Bucket<S>, S>>,
-    hasher: S,
+  buckets: RwLock<HashMap<i64, Bucket<S>, S>>,
+  hasher: S,
 }
 
 impl Default for ExpirationMap {
-    fn default() -> Self {
-        let hasher = RandomState::default();
-        Self {
-            buckets: RwLock::new(HashMap::with_hasher(hasher.clone())),
-            hasher,
-        }
+  fn default() -> Self {
+    let hasher = RandomState::default();
+    Self {
+      buckets: RwLock::new(HashMap::with_hasher(hasher.clone())),
+      hasher,
     }
+  }
 }
 
 impl ExpirationMap {
-    pub fn new() -> Self {
-        Self::default()
-    }
+  pub fn new() -> Self {
+    Self::default()
+  }
 }
 
 impl<S: BuildHasher + Clone + 'static> ExpirationMap<S> {
-    pub(crate) fn with_hasher(hasher: S) -> ExpirationMap<S> {
-        ExpirationMap {
-            buckets: RwLock::new(HashMap::with_hasher(hasher.clone())),
-            hasher,
-        }
+  pub(crate) fn with_hasher(hasher: S) -> ExpirationMap<S> {
+    ExpirationMap {
+      buckets: RwLock::new(HashMap::with_hasher(hasher.clone())),
+      hasher,
+    }
+  }
+
+  pub fn try_insert(&self, key: u64, conflict: u64, expiration: Time) -> Result<(), CacheError> {
+    // Items that don't expire don't need to be in the expiration map.
+    if expiration.is_zero() {
+      return Ok(());
     }
 
-    pub fn try_insert(&self, key: u64, conflict: u64, expiration: Time) -> Result<(), CacheError> {
-        // Items that don't expire don't need to be in the expiration map.
-        if expiration.is_zero() {
-            return Ok(());
-        }
+    let bucket_num = storage_bucket(expiration);
 
-        let bucket_num = storage_bucket(expiration);
+    let mut m = self.buckets.write();
 
-        let mut m = self.buckets.write();
-
-        match m.get_mut(&bucket_num) {
-            None => {
-                let mut bucket = Bucket::with_hasher(self.hasher.clone());
-                bucket.map.insert(key, conflict);
-                m.insert(bucket_num, bucket);
-            }
-            Some(bucket) => {
-                bucket.map.insert(key, conflict);
-            }
-        }
-
-        Ok(())
+    match m.get_mut(&bucket_num) {
+      None => {
+        let mut bucket = Bucket::with_hasher(self.hasher.clone());
+        bucket.map.insert(key, conflict);
+        m.insert(bucket_num, bucket);
+      }
+      Some(bucket) => {
+        bucket.map.insert(key, conflict);
+      }
     }
 
-    pub fn try_update(
-        &self,
-        key: u64,
-        conflict: u64,
-        old_exp_time: Time,
-        new_exp_time: Time,
-    ) -> Result<(), CacheError> {
-        if old_exp_time.is_zero() && new_exp_time.is_zero() {
-            return Ok(());
+    Ok(())
+  }
+
+  pub fn try_update(
+    &self,
+    key: u64,
+    conflict: u64,
+    old_exp_time: Time,
+    new_exp_time: Time,
+  ) -> Result<(), CacheError> {
+    if old_exp_time.is_zero() && new_exp_time.is_zero() {
+      return Ok(());
+    }
+
+    let old_bucket_num = (!old_exp_time.is_zero()).then(|| storage_bucket(old_exp_time));
+    let new_bucket_num = (!new_exp_time.is_zero()).then(|| storage_bucket(new_exp_time));
+
+    if old_bucket_num == new_bucket_num {
+      return Ok(());
+    }
+
+    let mut m = self.buckets.write();
+
+    if let Some(old_bn) = old_bucket_num {
+      if let Some(bucket) = m.get_mut(&old_bn) {
+        bucket.map.remove(&key);
+      }
+    }
+
+    if let Some(new_bn) = new_bucket_num {
+      match m.get_mut(&new_bn) {
+        None => {
+          let mut bucket = Bucket::with_hasher(self.hasher.clone());
+          bucket.map.insert(key, conflict);
+          m.insert(new_bn, bucket);
         }
-
-        let (old_bucket_num, new_bucket_num) =
-            (storage_bucket(old_exp_time), storage_bucket(new_exp_time));
-
-        if old_bucket_num == new_bucket_num {
-            return Ok(());
+        Some(bucket) => {
+          bucket.map.insert(key, conflict);
         }
-
-        let mut m = self.buckets.write();
-
-        m.remove(&old_bucket_num);
-
-        match m.get_mut(&new_bucket_num) {
-            None => {
-                let mut bucket = Bucket::with_hasher(self.hasher.clone());
-                bucket.map.insert(key, conflict);
-                m.insert(new_bucket_num, bucket);
-            }
-            Some(bucket) => {
-                bucket.map.insert(key, conflict);
-            }
-        }
-
-        Ok(())
+      }
     }
 
-    pub fn try_remove(&self, key: &u64, expiration: Time) -> Result<(), CacheError> {
-        let bucket_num = storage_bucket(expiration);
-        let mut m = self.buckets.write();
-        if let Some(bucket) = m.get_mut(&bucket_num) {
-            bucket.remove(key);
-        };
+    Ok(())
+  }
 
-        Ok(())
-    }
+  pub fn try_remove(&self, key: &u64, expiration: Time) -> Result<(), CacheError> {
+    let bucket_num = storage_bucket(expiration);
+    let mut m = self.buckets.write();
+    if let Some(bucket) = m.get_mut(&bucket_num) {
+      bucket.remove(key);
+    };
 
-    pub fn try_cleanup(&self, now: Time) -> Result<Option<HashMap<u64, u64, S>>, CacheError> {
-        let bucket_num = cleanup_bucket(now);
-        Ok(self
-            .buckets
-            .write()
-            .remove(&bucket_num)
-            .map(|bucket| bucket.map))
-    }
+    Ok(())
+  }
 
-    pub fn hasher(&self) -> S {
-        self.hasher.clone()
-    }
+  pub fn try_cleanup(&self, now: Time) -> Result<Option<HashMap<u64, u64, S>>, CacheError> {
+    let bucket_num = cleanup_bucket(now);
+    Ok(
+      self
+        .buckets
+        .write()
+        .remove(&bucket_num)
+        .map(|bucket| bucket.map),
+    )
+  }
+
+  pub fn hasher(&self) -> S {
+    self.hasher.clone()
+  }
 }
 
 unsafe impl<S: BuildHasher + Clone + 'static> Send for ExpirationMap<S> {}
