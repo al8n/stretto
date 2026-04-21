@@ -38,6 +38,14 @@ pub(crate) mod axync {
 #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 pub use cache::{AsyncCache, AsyncCacheBuilder};
 
+#[cfg(feature = "tokio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
+pub use agnostic_lite::tokio::TokioRuntime;
+
+#[cfg(feature = "smol")]
+#[cfg_attr(docsrs, doc(cfg(feature = "smol")))]
+pub use agnostic_lite::smol::SmolRuntime;
+
 #[cfg(feature = "sync")]
 #[cfg_attr(docsrs, doc(cfg(feature = "sync")))]
 pub(crate) mod sync {

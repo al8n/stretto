@@ -21,14 +21,18 @@ edition = "2024"
 rust-version = "1.85.0"
 
 [[example]]
-path = "examples/async_example.rs"
-name = "async_example"
-required-features = ["async-tokio"]
-
+path = "examples/tokio.rs"
+name = "tokio"
+required-features = ["tokio"]
 
 [[example]]
-path = "examples/sync_example.rs"
-name = "sync_example"
+path = "examples/smol.rs"
+name = "smol"
+required-features = ["smol"]
+
+[[example]]
+path = "examples/sync.rs"
+name = "sync"
 required-features = ["sync"]
 
 [target.'cfg(target_family = "wasm")'.dependencies]
@@ -36,11 +40,9 @@ getrandom = { version = "0.4", features = ["wasm_js"] }
 
 [features]
 default = ["sync"]
-full = ["sync", "async-tokio", "serde"]
 async = ["async-channel", "agnostic-lite/time", "futures/default", "wg/future"]
-async-tokio = ["async", "agnostic-lite/tokio"]
-async-smol  = ["async", "agnostic-lite/smol"]
-async-wasm  = ["async", "agnostic-lite/wasm"]
+tokio = ["async", "agnostic-lite/tokio"]
+smol  = ["async", "agnostic-lite/smol"]
 sync = ["crossbeam-channel"]
 serde = ["dep:serde", "dep:serde_json"]
 

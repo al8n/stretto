@@ -3,11 +3,9 @@
 </div>
 <div align="center">
 
-Stretto is a pure Rust implementation for https://github.com/dgraph-io/ristretto. 
-
 A high performance thread-safe memory-bound Rust cache.
 
-English | [简体中文](README-zh_hans.md)
+Stretto is a pure Rust implementation of https://github.com/dgraph-io/ristretto.
 
 [<img alt="github" src="https://img.shields.io/badge/github-al8n/stretto-8da0cb?style=for-the-badge&logo=Github" height="22">][Github-url]
 <img alt="LoC" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Fal8n%2F327b2a8aef9003246e45c6e47fe63937%2Fraw%2Fstretto" height="22">
@@ -64,148 +62,38 @@ English | [简体中文](README-zh_hans.md)
 - [License](#license)
 
 ## Installation
-- Use Cache.
-```toml
-[dependencies]
-stretto = "0.9"
-```
-or
-```toml 
-[dependencies]
-stretto = { version = "0.9", features = ["sync"] }
-```
 
+- Use Cache.
+
+    ```toml
+    [dependencies]
+    stretto = "0.9"
+    ```
 
 - Use AsyncCache with tokio
-```toml
-[dependencies]
-stretto = { version = "0.9", features = ["async-tokio"] }
-agnostic-lite = { version = "0.6", features = ["tokio"] }
-```
+
+    ```toml
+    [dependencies]
+    stretto = { version = "0.9", features = ["tokio"] }
+    ```
 
 - Use AsyncCache with smol
-```toml
-[dependencies]
-stretto = { version = "0.9", features = ["async-smol"] }
-agnostic-lite = { version = "0.6", features = ["smol"] }
-```
 
-- Use both Cache and AsyncCache
-```toml 
-[dependencies]
-stretto = { version = "0.9", features = ["full"] }
-agnostic-lite = { version = "0.6", features = ["tokio"] }
-```
-
-## Related
-If you want some basic caches implementation(no_std), please see https://crates.io/crates/caches.
+    ```toml
+    [dependencies]
+    stretto = { version = "0.9", features = ["smol"] }
+    ```
 
 ## Usage
+
 ### Example
-#### Sync
-```rust
-use std::time::Duration;
-use stretto::Cache;
 
-fn main() {
-    let c = Cache::new(12960, 1e6 as i64).unwrap();
+See [examples](./examples/) folder for more details:
 
-    // set a value with a cost of 1
-    c.insert("a", "a", 1);
-    // set a value with a cost of 1 and ttl
-    c.insert_with_ttl("b", "b", 1, Duration::from_secs(3));
+- [sync](./examples/sync.rs): Use stretto's cache in sync environment
+- [tokio](./examples/tokio.rs): Use stretto's cache with tokio async runtime
+- [smol](./examples/smol.rs): Use stretto's cache with smol async runtime
 
-    // wait for value to pass through buffers
-    c.wait().unwrap();
-
-    // when we get the value, we will get a ValueRef, which contains a RwLockReadGuard
-    // so when we finish use this value, we must release the ValueRef
-    let v = c.get(&"a").unwrap();
-    assert_eq!(v.value(), &"a");
-    v.release();
-
-    // lock will be auto released when out of scope
-    {
-        // when we get the value, we will get a ValueRef, which contains a RwLockWriteGuard
-        // so when we finish use this value, we must release the ValueRefMut
-        let mut v = c.get_mut(&"a").unwrap();
-        v.write("aa");
-        assert_eq!(v.value(), &"aa");
-        // release the value
-    }
-
-    // if you just want to do one operation
-    let v = c.get_mut(&"a").unwrap();
-    v.write_once("aaa");
-
-    let v = c.get(&"a").unwrap();
-    assert_eq!(v.value(), &"aaa");
-    v.release();
-
-    // clear the cache
-    c.clear().unwrap();
-    // wait all the operations are finished
-    c.wait().unwrap();
-    assert!(c.get(&"a").is_none());
-}
-```
-
-#### Async
-Stretto supports runtime agnostic `AsyncCache`. Pass the `RuntimeLite` implementor for your async runtime as a type parameter.
-
-```rust
-use std::time::Duration;
-use stretto::AsyncCache;
-use agnostic_lite::tokio::TokioRuntime;
-
-#[tokio::main]
-async fn main() {
-    // In this example, we use tokio runtime, so we pass TokioRuntime as a type parameter
-    let c: AsyncCache<&str, &str> = AsyncCache::new::<TokioRuntime>(12960, 1e6 as i64).unwrap();
-
-    // set a value with a cost of 1
-    c.insert("a", "a", 1).await;
-
-    // set a value with a cost of 1 and ttl
-    c.insert_with_ttl("b", "b", 1, Duration::from_secs(3)).await;
-
-    // wait for value to pass through buffers
-    c.wait().await.unwrap();
-
-    // when we get the value, we will get a ValueRef, which contains a RwLockReadGuard
-    // so when we finish use this value, we must release the ValueRef
-    let v = c.get(&"a").await.unwrap();
-    assert_eq!(v.value(), &"a");
-    // release the value
-    v.release(); // or drop(v)
-
-    // lock will be auto released when out of scope
-    {
-        // when we get the value, we will get a ValueRef, which contains a RwLockWriteGuard
-        // so when we finish use this value, we must release the ValueRefMut
-        let mut v = c.get_mut(&"a").await.unwrap();
-        v.write("aa");
-        assert_eq!(v.value(), &"aa");
-        // release the value
-    }
-
-    // if you just want to do one operation
-    let v = c.get_mut(&"a").await.unwrap();
-    v.write_once("aaa");
-
-    let v = c.get(&"a").await.unwrap();
-    println!("{}", v);
-    assert_eq!(v.value(), &"aaa");
-    v.release();
-
-    // clear the cache
-    c.clear().await.unwrap();
-    // wait all the operations are finished
-    c.wait().await.unwrap();
-
-    assert!(c.get(&"a").await.is_none());
-}
-```
 ### Config 
 The `CacheBuilder` struct is used when creating Cache instances if you want to customize the Cache settings.
 
