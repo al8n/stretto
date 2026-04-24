@@ -1,20 +1,17 @@
 use crate::{
   CacheCallback, CacheError, Coster, DefaultCacheCallback, DefaultCoster, DefaultKeyBuilder,
-  DefaultUpdateValidator, Item as CrateItem, KeyBuilder, Metrics, UpdateValidator,
-  axync::{
-    AsyncWaitGroup, Receiver, RecvError, Sender, TrySendError, Waiter, bounded, select,
-    stop_channel,
-  },
+  DefaultUpdateValidator, Item as CrateItem, KeyBuilder, Metrics, UpdateValidator, ValueRef,
+  ValueRefMut,
+  axync::{Receiver, RecvError, Sender, TrySendError, Waiter, bounded, select, stop_channel},
   cache::builder::CacheBuilderCore,
   metrics::MetricType,
   policy::{AddOutcome, AsyncLFUPolicy},
   ring::AsyncRingStripe,
   semaphore::AsyncSemaphore,
-  store::ShardedMap,
+  store::{ShardedMap, UpdateResult},
   ttl::{ExpirationMap, Time},
 };
 use agnostic_lite::RuntimeLite;
-use event_listener::Event;
 use futures::{future::FutureExt, stream::StreamExt};
 use std::{
   collections::{HashMap, hash_map::RandomState},
@@ -22,7 +19,7 @@ use std::{
   marker::PhantomData,
   sync::{
     Arc,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicU64, Ordering},
   },
   time::Duration,
 };
@@ -212,7 +209,8 @@ where
       self.inner.update_validator.unwrap(),
       hasher.clone(),
     ));
-    let mut policy = AsyncLFUPolicy::with_hasher::<RT>(num_counters, max_cost, hasher)?;
+    let mut policy =
+      AsyncLFUPolicy::with_hasher::<RT>(num_counters, max_cost, hasher, stop_rx.clone())?;
 
     let coster = Arc::new(self.inner.coster.unwrap());
     let callback = Arc::new(self.inner.callback.unwrap());
@@ -226,7 +224,6 @@ where
 
     let policy = Arc::new(policy);
     let clear_generation = Arc::new(AtomicU64::new(0));
-    let close_state = AsyncCloseState::new();
     CacheProcessor::new(
       100000,
       self.inner.ignore_internal_cost,
@@ -239,7 +236,6 @@ where
       callback.clone(),
       clear_generation.clone(),
       insert_sem.clone(),
-      close_state.processor_barrier(),
     )
     .spawn::<RT>();
 
@@ -254,7 +250,6 @@ where
       callback,
       key_to_hash: Arc::new(self.inner.key_to_hash),
       stop_tx: Some(stop_tx),
-      close_state,
       coster,
       metrics,
       clear_generation,
@@ -286,11 +281,6 @@ pub(crate) struct CacheProcessor<V, U, CB, S> {
   /// one permit for every item it consumes (main recv loop and close-drain)
   /// so blocked senders on the input side make progress.
   insert_sem: Arc<AsyncSemaphore>,
-  /// Shutdown barrier. Counter starts at 1; the processor future wraps its
-  /// loop in a RAII guard that calls `done()` on exit (normal return *or*
-  /// panic-unwind), which unblocks every `close().await` caller. Cloned
-  /// from `AsyncCache::close_wg`.
-  close_wg: AsyncWaitGroup,
 }
 
 pub(crate) enum Item<V> {
@@ -350,11 +340,6 @@ pub(crate) enum Item<V> {
   },
   Wait(Waiter),
   Clear(Waiter),
-  /// In-band shutdown sentinel. When the processor pops this from the MPSC it
-  /// runs the same barrier work as the legacy stop path, then returns; the
-  /// processor wrapper fires `close_wg.done()` on exit so `close()` callers
-  /// unblock. No per-caller waiter: the waitgroup is the barrier.
-  Close,
 }
 
 impl<V> Item<V> {
@@ -497,21 +482,14 @@ pub(crate) struct AsyncCacheInner<
 
   pub(crate) get_buf: Arc<AsyncRingStripe<S>>,
 
-  /// Dropping this `Sender` disconnects the processor task's `stop_rx`,
-  /// which causes its `select!` stop arm to fire and the task to run its
-  /// drain and exit. `Drop` is fire-and-forget: it does not wait for the
-  /// task to finish, since an async drop can't safely block the executor.
-  /// Callers that need a shutdown barrier call [`Self::close`].
   /// Held in `Option` so `Drop` can `take()` and drop it, disconnecting the
   /// processor task's `stop_rx`. We never `send()` on this channel —
   /// disconnection alone wakes the processor's `select!` stop arm via
-  /// `Err(RecvError)`, which is matched by `_`.
+  /// `Err(RecvError)`, which is matched by `_`. `Drop` is fire-and-forget:
+  /// it does not wait for the task to finish, since an async drop can't
+  /// safely block the executor. Callers that need a barrier on in-flight
+  /// inserts should call [`Self::wait`] before dropping.
   pub(crate) stop_tx: Option<Sender<()>>,
-
-  /// Groups every piece of state the close protocol touches: the
-  /// entry-race flag, the commit flag, the loser wakeup event, and the
-  /// processor barrier. See [`AsyncCloseState`] for the full protocol.
-  pub(crate) close_state: AsyncCloseState,
 
   pub(crate) callback: Arc<CB>,
 
@@ -737,108 +715,6 @@ where
     }
   }
 
-  /// Stop all background workers owned by this cache and wait for them to
-  /// exit.
-  ///
-  /// Closes the cache to new inserts/updates (post-close `insert*` calls
-  /// return `false`), enqueues an in-band `Item::Close` sentinel so every
-  /// item queued *before* the sentinel is drained, awaits the cache
-  /// processor's exit, then shuts down the policy's background LFU worker.
-  ///
-  /// Idempotent and concurrent-safe: the first caller to observe `closed`
-  /// transition from `false` → `true` drives shutdown; every other caller
-  /// simply awaits the same exit signal. Late callers (after the processor
-  /// has already exited) return immediately.
-  ///
-  /// # Scope of the barrier
-  ///
-  /// On successful return:
-  ///
-  /// - The main processor loop has exited (no further insert/cleanup work).
-  /// - Pending buffered items are drained. `Item::New`/`Update` eager
-  ///   writes that never reached policy admission are version-gated-removed
-  ///   to avoid ghost uncharged rows; `Wait`/`Clear` markers are signalled.
-  /// - The policy's background LFU worker is stopped; `policy.push` calls
-  ///   from post-close `get()` paths become clean no-ops.
-  ///
-  /// `close()` does **not** clear cached data. Entries admitted before the
-  /// sentinel survive: post-close `get`/`len` still observe them, because
-  /// the close contract is "stop background work" — not "wipe state."
-  /// Callers who want empty state should call [`Self::clear`] separately
-  /// (before or after close). Keeping the two operations distinct avoids a
-  /// class of races between racing writers that slipped through the close
-  /// entry gate and a would-be post-clear post-condition; see the
-  /// [`AsyncCloseState`] module docs for the protocol.
-  ///
-  /// This does **not** join the spawned runtime task — `agnostic-lite` does
-  /// not expose that handle — so the futures may still be in the process
-  /// of being reaped by their executor. Background work is quiesced.
-  ///
-  /// # Cancellation
-  ///
-  /// Cancellation-safe against dropping any `close()` future at any
-  /// `.await` point. The entry-race winner holds a [`CloseRoleGuard`];
-  /// if its future is dropped before the `Item::Close` sentinel is in
-  /// the channel, the guard resets `closed` and wakes every parked
-  /// loser, so one of them (or a later caller) can take over the
-  /// handshake. Once the sentinel is committed, processor exit is
-  /// inevitable — every caller simply awaits the processor barrier.
-  pub async fn close(&self) -> Result<(), CacheError> {
-    loop {
-      match self.0.close_state.begin_close() {
-        CloseRole::Winner(mut guard) => {
-          // Acquire a permit before enqueuing the sentinel, matching the
-          // backpressure contract every other sender observes. Permit
-          // failure means the semaphore is closed — unreachable while the
-          // cache is live. If we are cancelled *during* this await, the
-          // guard's Drop resets `closed` and wakes losers so they retry.
-          if self.0.insert_sem.acquire().await.is_err() {
-            // Channel torn down underneath us; treat as already-closed.
-            // Commit so losers see the terminal state; wait on the wg in
-            // case the processor guard hasn't fired yet.
-            guard.commit();
-            self.0.close_state.wait_complete().await;
-            return Ok(());
-          }
-          let mut permit = AsyncPermitGuard {
-            sem: &self.0.insert_sem,
-            held: true,
-          };
-
-          match self.0.insert_buf_tx.try_send(Item::Close) {
-            Ok(()) => {
-              // Sentinel is queued. The processor will drain items ahead
-              // of it, process Close, and exit — `CloseSignal` drops and
-              // releases the barrier. Commit wakes any parked losers so
-              // they fall through to the barrier wait too.
-              permit.transfer();
-              guard.commit();
-              self.0.close_state.wait_complete().await;
-              return Ok(());
-            }
-            Err(_) => {
-              // Channel closed (e.g. processor already torn down). Treat
-              // as already-closed; permit is released on drop.
-              guard.commit();
-              self.0.close_state.wait_complete().await;
-              return Ok(());
-            }
-          }
-        }
-        CloseRole::Loser => match self.0.close_state.wait_for_outcome().await {
-          LoserOutcome::Committed => {
-            self.0.close_state.wait_complete().await;
-            return Ok(());
-          }
-          LoserOutcome::Retry => {
-            // Winner rolled back. Race to become the winner ourselves.
-            continue;
-          }
-        },
-      }
-    }
-  }
-
   /// remove entry from Cache by key.
   pub async fn remove(&self, k: &K) {
     self.try_remove(k).await.unwrap()
@@ -921,13 +797,6 @@ where
     ttl: Duration,
     only_update: bool,
   ) -> Result<bool, CacheError> {
-    // Fast-path closed gate: avoid a permit acquire + store write for
-    // inserts that arrive after `close()` has been initiated. The Acquire
-    // load inside `is_closing` pairs with the AcqRel swap in `close()`.
-    if self.0.close_state.is_closing() {
-      return Ok(false);
-    }
-
     // Acquire a permit BEFORE the eager store write. The permit pool is
     // sized to `insert_buffer_size`, so at most that many pre-admission
     // eager writes can exist at once. Without this, an awaited send would
@@ -946,21 +815,6 @@ where
       sem: &self.0.insert_sem,
       held: true,
     };
-
-    // Re-check `closed` AFTER acquiring the permit. `close()` also goes
-    // through the semaphore and sets `closed` (via AcqRel swap) before
-    // it tries to send `Item::Close`, so by the time we hold a permit,
-    // either: (a) we won the race and `close()` hasn't set the flag yet,
-    // in which case we proceed normally; or (b) we lost the race and
-    // `close()` has set the flag, in which case we abort. The permit is
-    // released on guard drop. Without this check, a caller that passed
-    // the fast-path gate could still eager-write the store after close
-    // initiated, producing a ghost row that the processor's close-drain
-    // would have to reap — the drain is a safety net, but avoiding the
-    // ghost write keeps post-close semantics clean.
-    if self.0.close_state.is_closing() {
-      return Ok(false);
-    }
 
     // From this point on there are no `.await` points until we either
     // `try_send` the item (transfer permit) or return with the guard
@@ -1196,190 +1050,6 @@ impl Drop for AsyncPermitGuard<'_> {
   }
 }
 
-/// All shutdown synchronization state for an [`AsyncCache`], grouped in one
-/// place so the close protocol is easier to reason about.
-///
-/// The protocol has three phases:
-///
-/// 1. **Entry race.** A swap on `closed` picks exactly one winner. Losers
-///    park on `event` until the winner either commits or rolls back.
-/// 2. **Commit point.** The winner acquires an insert permit and
-///    `try_send`s `Item::Close`. If that send succeeds, the winner flips
-///    `sentinel_committed` and wakes all losers. From here on processor
-///    exit is inevitable: `wg` is the only thing anyone waits on.
-/// 3. **Rollback.** If the winner's future is dropped (or hits an
-///    unrecoverable error) before the sentinel is queued, its RAII guard
-///    resets `closed` to `false` and wakes all losers so one of them can
-///    retry becoming the winner. Without this, cancellation of the winner
-///    would permanently wedge every future `close()` caller.
-pub(crate) struct AsyncCloseState {
-  /// Entry-race gate. `swap(true, AcqRel)` = `false` identifies the
-  /// winner; every other caller becomes a loser. Reset to `false` by the
-  /// winner's RAII guard on rollback.
-  closed: AtomicBool,
-  /// Commit flag. Flipped once the `Item::Close` sentinel is safely in the
-  /// channel. Loser wakeups check this to decide "wait on `wg`" vs.
-  /// "retry the race". Monotonic: once `true`, never goes back to `false`.
-  sentinel_committed: AtomicBool,
-  /// Wakeup channel for losers. The winner notifies on this event at two
-  /// moments: (a) after flipping `sentinel_committed` on commit, and
-  /// (b) from the rollback branch of its RAII guard after resetting
-  /// `closed`. Losers register a listener *before* re-checking the flags
-  /// to avoid missed wakeups.
-  event: Event,
-  /// Shutdown barrier. Counter starts at `1` and is `done()`'d exactly
-  /// once by the processor's [`CloseSignal`] drop guard (on any exit path
-  /// — normal, early return, or panic-unwind). All `close()` callers
-  /// terminate by awaiting `wg.wait()`.
-  wg: AsyncWaitGroup,
-}
-
-impl AsyncCloseState {
-  pub(crate) fn new() -> Self {
-    Self {
-      closed: AtomicBool::new(false),
-      sentinel_committed: AtomicBool::new(false),
-      event: Event::new(),
-      wg: AsyncWaitGroup::from(1),
-    }
-  }
-
-  /// Fast-path shutdown check for insert/remove paths. Returns `true` as
-  /// soon as any caller has entered the close race, so admission is
-  /// rejected even if the winner is still mid-handshake.
-  #[inline]
-  pub(crate) fn is_closing(&self) -> bool {
-    self.closed.load(Ordering::Acquire)
-  }
-
-  /// Barrier handle for the processor task. The processor owns this clone
-  /// and wraps it in a [`CloseSignal`] drop guard so that `wg.done()`
-  /// fires on any exit path.
-  pub(crate) fn processor_barrier(&self) -> AsyncWaitGroup {
-    self.wg.clone()
-  }
-
-  /// Enter the close race. The caller that flips `closed` from `false` to
-  /// `true` becomes the winner and owns the [`CloseRoleGuard`]. Every
-  /// other caller is a loser and must call [`Self::wait_for_outcome`].
-  fn begin_close(&self) -> CloseRole<'_> {
-    if self.closed.swap(true, Ordering::AcqRel) {
-      CloseRole::Loser
-    } else {
-      CloseRole::Winner(CloseRoleGuard {
-        state: self,
-        committed: false,
-      })
-    }
-  }
-
-  /// Await the winner's decision. Returns [`LoserOutcome::Committed`] once
-  /// the sentinel is in the channel (caller should `wait_complete()`), or
-  /// [`LoserOutcome::Retry`] if the winner rolled back (caller should loop
-  /// and try to become the winner themselves).
-  ///
-  /// Cancellation-safe: listeners register before every flag re-check, so
-  /// a dropped future simply unregisters.
-  async fn wait_for_outcome(&self) -> LoserOutcome {
-    loop {
-      if self.sentinel_committed.load(Ordering::Acquire) {
-        return LoserOutcome::Committed;
-      }
-      if !self.closed.load(Ordering::Acquire) {
-        return LoserOutcome::Retry;
-      }
-      // Arm the listener BEFORE re-checking so a notify from `commit()` or
-      // the rollback branch of `CloseRoleGuard::drop` cannot slip past us.
-      let listener = self.event.listen();
-      if self.sentinel_committed.load(Ordering::Acquire) {
-        return LoserOutcome::Committed;
-      }
-      if !self.closed.load(Ordering::Acquire) {
-        return LoserOutcome::Retry;
-      }
-      listener.await;
-    }
-  }
-
-  /// Wait for the processor to finish draining. Safe to call on any
-  /// thread/task, any number of times.
-  async fn wait_complete(&self) {
-    self.wg.wait().await;
-  }
-}
-
-/// Result of the entry-race swap inside [`AsyncCloseState::begin_close`].
-enum CloseRole<'a> {
-  /// First caller to flip `closed`. Owns the commit/rollback guard.
-  Winner(CloseRoleGuard<'a>),
-  /// Everyone else. Parks on the event loop until the winner decides.
-  Loser,
-}
-
-/// Result of [`AsyncCloseState::wait_for_outcome`].
-enum LoserOutcome {
-  /// Winner queued the `Item::Close` sentinel. Caller should wait on the
-  /// processor barrier to see the drain finish.
-  Committed,
-  /// Winner rolled back (its future was dropped before the sentinel was
-  /// queued). Caller should race to become the winner themselves.
-  Retry,
-}
-
-/// RAII guard returned by [`AsyncCloseState::begin_close`] for the winner.
-///
-/// While `committed == false`, `Drop` resets `closed` to `false` and wakes
-/// every parked loser, so the close race can be retried. Calling
-/// [`Self::commit`] transitions the guard into the committed state — at
-/// that point the sentinel is in the channel, processor exit is
-/// inevitable, and `Drop` becomes a no-op beyond what `commit` already
-/// did.
-struct CloseRoleGuard<'a> {
-  state: &'a AsyncCloseState,
-  committed: bool,
-}
-
-impl CloseRoleGuard<'_> {
-  /// Mark shutdown as committed. Must be called after the `Item::Close`
-  /// sentinel has been successfully queued (or the channel is observed
-  /// closed, in which case processor exit has already happened). Flipping
-  /// `sentinel_committed` with Release ordering pairs with the Acquire
-  /// loads in [`AsyncCloseState::wait_for_outcome`]; the follow-up
-  /// `event.notify(usize::MAX)` wakes every loser currently listening, so
-  /// they re-check and observe the commit.
-  fn commit(&mut self) {
-    self.state.sentinel_committed.store(true, Ordering::Release);
-    self.state.event.notify(usize::MAX);
-    self.committed = true;
-  }
-}
-
-impl Drop for CloseRoleGuard<'_> {
-  fn drop(&mut self) {
-    if self.committed {
-      return;
-    }
-    // Rollback path: the winner future was dropped (or bailed) before
-    // queueing the sentinel. Reset `closed` so a later caller can become
-    // the winner, then notify every parked loser so they re-check and
-    // see `closed == false`, triggering a retry.
-    self.state.closed.store(false, Ordering::Release);
-    self.state.event.notify(usize::MAX);
-  }
-}
-
-/// RAII guard held inside the processor future. On Drop (normal return,
-/// early return, or panic-unwind) it calls `wg.done()`, unblocking every
-/// `close().await` caller. Ensures a processor panic cannot leave waiters
-/// stuck forever.
-pub(crate) struct CloseSignal(AsyncWaitGroup);
-
-impl Drop for CloseSignal {
-  fn drop(&mut self) {
-    self.0.done();
-  }
-}
-
 /// RAII guard held inside the processor future. On Drop it closes the
 /// insert semaphore so blocked `acquire().await` callers wake with
 /// `SemaphoreClosed`. Covers the panic-unwind path where the per-item
@@ -1565,7 +1235,6 @@ where
     callback: Arc<CB>,
     clear_generation: Arc<AtomicU64>,
     insert_sem: Arc<AsyncSemaphore>,
-    close_wg: AsyncWaitGroup,
   ) -> Self {
     let item_size = store.item_size();
     let hasher = store.hasher();
@@ -1583,7 +1252,6 @@ where
       cleanup_duration,
       clear_generation,
       insert_sem,
-      close_wg,
     }
   }
 
@@ -1593,11 +1261,6 @@ where
     <RT as RuntimeLite>::Interval: Send,
   {
     RT::spawn_detach(async move {
-      // RAII guard: fires `close_wg.done()` on ANY exit path (normal return,
-      // early return below, or panic-unwind). Every `close().await` caller
-      // unblocks the moment this drops, so a processor panic cannot hang
-      // waiters.
-      let _close_signal = CloseSignal(self.close_wg.clone());
       // RAII guard: fires `insert_sem.close()` on ANY exit path. A panic
       // through a user callback skips the per-item `insert_sem.release()`
       // below, and buffered items get dropped with the channel when the
@@ -1614,24 +1277,12 @@ where
         select! {
           item = self.insert_buf_rx.recv().fuse() => {
             // Every recv consumes a permit previously held by the sender.
-            // Intercept the in-band `Item::Close` sentinel: release its
-            // permit, run the shutdown barrier, and return so `_close_signal`
-            // drops → `close_wg.done()` fires.
-            match item {
-              Ok(Item::Close) => {
-                self.insert_sem.release();
-                let _ = self.handle_close_event().await;
-                return;
-              }
-              other => {
-                let had_item = other.is_ok();
-                if let Err(e) = self.handle_insert_event(other) {
-                  tracing::error!("fail to handle insert event, error: {}", e);
-                }
-                if had_item {
-                  self.insert_sem.release();
-                }
-              }
+            let had_item = item.is_ok();
+            if let Err(e) = self.handle_insert_event(item) {
+              tracing::error!("fail to handle insert event, error: {}", e);
+            }
+            if had_item {
+              self.insert_sem.release();
             }
           }
           _ = cleanup_timer.next().fuse() => {
@@ -1642,7 +1293,7 @@ where
           _ = self.stop_rx.recv().fuse() => {
             // Stop arm fires when `stop_rx` is disconnected. `AsyncCache::drop`
             // triggers that by dropping `stop_tx` — we never `send()` on
-            // this channel. Either way, drain and exit.
+            // this channel.
             _ = self.handle_close_event().await;
             return;
           },
@@ -1658,23 +1309,17 @@ where
     self.insert_buf_rx.close();
     self.stop_rx.close();
     // Drain buffered items so held permits are released and barrier
-    // markers are signalled. Under the Option B close contract, this
-    // drain MUST NOT mutate store state. A drained `Item::New` or
-    // `Item::Update` carries the version of an eager store write the
-    // caller already committed; `try_remove_if_version` would succeed
-    // against that row and destroy live data that the caller's
-    // `insert(...)→true` return value promised is readable. The post-
-    // permit close-check in `try_insert_in` is not a barrier — a
-    // racer can commit `store.try_update` just before `close()` flips
-    // `closed=true`, then lose the MPSC ordering race so its
-    // `Item::Update` lands in the drain. Leaving the row alone is the
-    // only correct response under "close preserves data."
+    // markers are signalled. This drain MUST NOT mutate store state: a
+    // drained `Item::New` or `Item::Update` carries the version of an
+    // eager store write the caller already committed, and
+    // `try_remove_if_version` would succeed against that row and destroy
+    // live data that the caller's `insert(...)→true` return value
+    // promised is readable.
     //
-    // The tradeoff: for an `Item::New` that raced the sentinel, the
-    // store row is readable but policy never admitted it. This is
-    // harmless — policy is being closed below, so no further admissions
-    // will happen and cost accounting drift cannot cascade. `Drop`
-    // wipes the store wholesale later.
+    // For an `Item::New` that raced shutdown, the store row is readable
+    // but policy never admitted it. Harmless: policy is being closed too,
+    // so no further admissions will happen and cost accounting drift
+    // cannot cascade. `Drop` wipes the store wholesale later.
     //
     // `Wait`/`Clear` markers must still `wg.done()` so any caller
     // parked on them unblocks.
@@ -1683,15 +1328,10 @@ where
         Item::Wait(wg) | Item::Clear(wg) => {
           wg.done();
         }
-        Item::New { .. } | Item::Update { .. } | Item::Delete { .. } | Item::Close => {}
+        Item::New { .. } | Item::Update { .. } | Item::Delete { .. } => {}
       }
       self.insert_sem.release();
     }
-    // Stop the policy's own background worker so it doesn't outlive the
-    // cache processor. `AsyncLFUPolicy::close` flips `is_closed`, so
-    // post-close `policy.push` calls from `get()` paths become clean
-    // no-ops and the policy task exits on its stop channel.
-    let _ = self.policy.close().await;
     Ok(())
   }
 
@@ -1720,5 +1360,228 @@ where
 }
 
 impl_builder!(AsyncCacheBuilder);
-impl_async_cache!(AsyncCache, AsyncCacheBuilder, Item);
 impl_cache_processor!(CacheProcessor, Item);
+
+impl<K, V, KH, C, U, CB, S> AsyncCache<K, V, KH, C, U, CB, S>
+where
+  K: Hash + Eq,
+  V: Send + Sync + 'static,
+  KH: KeyBuilder<Key = K>,
+  C: Coster<Value = V>,
+  U: UpdateValidator<Value = V>,
+  CB: CacheCallback<Value = V>,
+  S: BuildHasher + Clone + 'static + Send,
+{
+  /// `get` returns a `Option<ValueRef<V, SS>>` (if any) representing whether the
+  /// value was found or not.
+  pub async fn get<Q>(&self, key: &Q) -> Option<ValueRef<'_, V, S>>
+  where
+    K: core::borrow::Borrow<Q>,
+    Q: core::hash::Hash + Eq + ?Sized,
+  {
+    let (index, conflict) = self.0.key_to_hash.build_key(key);
+
+    self.0.get_buf.push(index);
+
+    match self.0.store.get(&index, conflict) {
+      None => {
+        self.0.metrics.add(MetricType::Miss, index, 1);
+        None
+      }
+      Some(v) => {
+        self.0.metrics.add(MetricType::Hit, index, 1);
+        Some(v)
+      }
+    }
+  }
+
+  /// `get_mut` returns a `Option<ValueRefMut<V, SS>>` (if any) representing whether the
+  /// value was found or not.
+  pub async fn get_mut<Q>(&self, key: &Q) -> Option<ValueRefMut<'_, V, S>>
+  where
+    K: core::borrow::Borrow<Q>,
+    Q: core::hash::Hash + Eq + ?Sized,
+  {
+    let (index, conflict) = self.0.key_to_hash.build_key(key);
+
+    self.0.get_buf.push(index);
+
+    match self.0.store.get_mut(&index, conflict) {
+      None => {
+        self.0.metrics.add(MetricType::Miss, index, 1);
+        None
+      }
+      Some(v) => {
+        self.0.metrics.add(MetricType::Hit, index, 1);
+        Some(v)
+      }
+    }
+  }
+
+  /// Returns the TTL for the specified key if the
+  /// item was found and is not expired.
+  pub fn get_ttl<Q>(&self, key: &Q) -> Option<Duration>
+  where
+    K: core::borrow::Borrow<Q>,
+    Q: core::hash::Hash + Eq + ?Sized,
+  {
+    let (index, conflict) = self.0.key_to_hash.build_key(key);
+    self
+      .0
+      .store
+      .get(&index, conflict)
+      .and_then(|_| self.0.store.expiration(&index).map(|time| time.get_ttl()))
+  }
+
+  /// `max_cost` returns the max cost of the cache.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub fn max_cost(&self) -> i64 {
+    self.0.policy.max_cost()
+  }
+
+  /// `update_max_cost` updates the maxCost of an existing cache.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub fn update_max_cost(&self, max_cost: i64) {
+    self.0.policy.update_max_cost(max_cost)
+  }
+
+  /// Returns the number of items in the Cache
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub fn len(&self) -> usize {
+    self.0.store.len()
+  }
+
+  /// Returns true if the cache is empty
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub fn is_empty(&self) -> bool {
+    self.0.store.len() == 0
+  }
+
+  /// Eager store write. Returns the new `Item` to enqueue along with the
+  /// prior value (for Update). The caller is responsible for firing
+  /// `CacheCallback::on_exit(prev)` — but NOT while holding an insert
+  /// permit. User callbacks that re-enter the cache would otherwise
+  /// block on `insert_sem.acquire()` indefinitely under a small
+  /// `buffer_size`. See `try_insert_in` in `src/cache/sync.rs` and
+  /// `src/cache/async.rs` for the exact firing points.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  fn try_update(
+    &self,
+    key: K,
+    val: V,
+    cost: i64,
+    ttl: Duration,
+    only_update: bool,
+  ) -> Result<Option<(u64, Item<V>, Option<V>)>, CacheError> {
+    let expiration = if ttl.is_zero() {
+      Time::now()
+    } else {
+      Time::now_with_expiration(ttl)
+    };
+
+    let (index, conflict) = self.0.key_to_hash.build_key(&key);
+
+    // cost is eventually updated. The expiration must also be immediately updated
+    // to prevent items from being prematurely removed from the map.
+    let external_cost = if cost == 0 {
+      self.0.coster.cost(&val)
+    } else {
+      0
+    };
+    // Capture the clear generation BEFORE the eager store write. If a
+    // clear() observes a higher generation by the time the processor
+    // admits this item, the processor treats it as stale and removes the
+    // store entry (if any) instead of admitting to policy. Acquire
+    // ordering pairs with the Release-ordered fetch_add in the Clear
+    // handler so a captured "pre-clear" generation is guaranteed to be
+    // less than the post-clear value.
+    let captured_gen = self
+      .0
+      .clear_generation
+      .load(std::sync::atomic::Ordering::Acquire);
+    match self
+      .0
+      .store
+      .try_update(index, val, conflict, expiration, captured_gen)?
+    {
+      UpdateResult::NotExist(v) => {
+        if only_update {
+          Ok(None)
+        } else {
+          // Insert into store immediately so reads after write see the value.
+          // The background processor still runs policy admission; if rejected
+          // it removes the item from the store.
+          // try_insert returns None when a concurrent insert beat us and the
+          // validator/conflict blocked the write (or when a post-clear row
+          // already occupies this key and our captured generation is
+          // stale — the store refuses in that case); skip policy.
+          match self
+            .0
+            .store
+            .try_insert(index, v, conflict, expiration, captured_gen)?
+          {
+            Some(version) => Ok(Some((
+              index,
+              Item::new(
+                index,
+                conflict,
+                cost + external_cost,
+                expiration,
+                version,
+                captured_gen,
+              ),
+              None,
+            ))),
+            None => Ok(None),
+          }
+        }
+      }
+      // Key already exists but the validator or conflict hash blocked the update.
+      // The store is unchanged; no New item should be queued.
+      UpdateResult::Reject(_) | UpdateResult::Conflict(_) => Ok(None),
+      // A clear raced with this caller: the existing row was written
+      // under a later generation than we captured, and the store refused
+      // to clobber it. The post-clear row belongs to a different writer
+      // who will admit it through their own Item — we have nothing to
+      // enqueue and must not fire `on_exit`.
+      UpdateResult::Stale(_) => Ok(None),
+      UpdateResult::Update(v, version) => {
+        // `on_exit(Some(v))` is intentionally NOT fired here. The
+        // caller fires it after the insert permit is released (or
+        // transferred to the channel) so a user callback that
+        // re-enters the cache cannot deadlock on a permit the outer
+        // call still holds. See `try_insert_in` for the firing
+        // points.
+        Ok(Some((
+          index,
+          Item::update(
+            index,
+            conflict,
+            cost,
+            external_cost,
+            expiration,
+            version,
+            captured_gen,
+          ),
+          Some(v),
+        )))
+      }
+    }
+  }
+}
+
+impl<K, V, KH, C, U, CB, S> AsRef<AsyncCache<K, V, KH, C, U, CB, S>>
+  for AsyncCache<K, V, KH, C, U, CB, S>
+where
+  K: Hash + Eq,
+  V: Send + Sync + 'static,
+  KH: KeyBuilder<Key = K>,
+  C: Coster<Value = V>,
+  U: UpdateValidator<Value = V>,
+  CB: CacheCallback<Value = V>,
+  S: BuildHasher + Clone + 'static,
+{
+  fn as_ref(&self) -> &AsyncCache<K, V, KH, C, U, CB, S> {
+    self
+  }
+}

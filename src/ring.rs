@@ -1,4 +1,4 @@
-use std::{hash::BuildHasher, sync::Arc};
+use std::{hash::BuildHasher, mem::take, sync::Arc};
 
 use parking_lot::Mutex;
 
@@ -31,9 +31,13 @@ where
     let mut data = self.data.lock();
     data.push(item);
     if data.len() >= self.capa {
-      match self.cons.push(data.clone()) {
-        Ok(true) => *data = Vec::with_capacity(self.capa),
-        _ => data.clear(),
+      let v = take(&mut *data);
+      match self.cons.push(v) {
+        Some(mut ret) => {
+          ret.clear();
+          *data = ret;
+        }
+        None => *data = Vec::with_capacity(self.capa),
       }
     }
   }
@@ -59,19 +63,18 @@ where
     }
   }
 
-  pub async fn push(&self, item: u64) {
-    let data = {
-      let mut data = self.data.lock();
-      data.push(item);
-      if data.len() >= self.capa {
-        let ret = data.clone();
-        data.clear();
-        ret
-      } else {
-        return;
+  pub fn push(&self, item: u64) {
+    let mut data = self.data.lock();
+    data.push(item);
+    if data.len() >= self.capa {
+      let v = take(&mut *data);
+      match self.cons.push(v) {
+        Some(mut ret) => {
+          ret.clear();
+          *data = ret;
+        }
+        None => *data = Vec::with_capacity(self.capa),
       }
-    };
-
-    _ = self.cons.push(data).await;
+    }
   }
 }

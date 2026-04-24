@@ -31,7 +31,6 @@ pub(crate) mod utils;
 pub(crate) mod axync {
   pub(crate) use async_channel::{Receiver, RecvError, Sender, TrySendError, bounded, unbounded};
   pub(crate) use futures::{channel::oneshot, select};
-  pub(crate) use wg::future::WaitGroup as AsyncWaitGroup;
 
   /// Signaling half of a one-shot barrier used by `Item::Wait` / `Item::Clear`.
   ///

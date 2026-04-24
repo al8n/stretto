@@ -356,17 +356,14 @@ mod sync_test {
     c.insert(1, 2, 2);
     assert_eq!(c.get(&1).unwrap().read(), 2);
 
-    // Send a stop to the processor so its select stop arm fires. The
-    // production path uses `Drop` (which takes/drops the Option'd Sender
-    // to trigger disconnection); here we still send explicitly because we
-    // only hold a shared reference.
-    let _ = c.0.stop_tx.as_ref().unwrap().send(());
-    (0..32768).for_each(|_| {
-      let _ = c
-        .0
-        .insert_buf_tx
-        .send(Item::update(1, 1, 0, 0, crate::ttl::Time::now(), 0, 0));
-    });
+    // Simulate the end-state of processor shutdown: the insert
+    // semaphore has been closed by the processor's RAII drop-guard.
+    // Subsequent inserts must fail at the acquire step and record a
+    // dropped set. In production this is driven by `Cache::drop`
+    // disconnecting `stop_tx`; driving it directly here avoids a
+    // dependency on scheduling between the cache and policy processors
+    // (they share `stop_rx`, so a single `send(())` only wakes one).
+    c.0.insert_sem.close();
 
     assert!(!c.insert(2, 2, 1));
     assert_eq!(c.0.metrics.get_sets_dropped().unwrap(), 1);
@@ -3355,16 +3352,14 @@ mod async_test {
     c.insert(1, 2, 2).await;
     assert_eq!(c.get(&1).await.unwrap().read(), 2);
 
-    // Trigger processor shutdown via the stop channel. Under the narrowed
-    // close contract, the handler drains buffered items, stops the policy
-    // worker, and closes the insert semaphore — but does NOT clear
-    // user-visible state, so pre-close entries remain readable.
-    assert!(c.0.stop_tx.as_ref().unwrap().send(()).await.is_ok());
-    // Give the stop arm time to run the close handler.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Simulate the end-state of processor shutdown: the insert semaphore
+    // has been closed by the processor's RAII SemCloser. Close it directly
+    // because the processor and policy share `stop_rx`, so a single
+    // `send(())` would race and only one consumer would wake.
+    c.0.insert_sem.close();
 
-    // Post-close insert is rejected by the `is_closing` fast-path gate
-    // (returns `Ok(false)` before touching metrics, so DropSets stays 0).
+    // Post-close insert bails at the permit acquire (semaphore closed) and
+    // returns `Ok(false)` before touching metrics, so DropSets stays 0.
     // Pre-close data is preserved.
     assert!(!c.insert(2, 2, 1).await);
     assert_eq!(c.get(&1).await.unwrap().read(), 2);
@@ -4722,127 +4717,6 @@ mod async_test {
 
   // close() on an idle cache resolves promptly and subsequent inserts are
   // rejected. Verifies the happy-path sentinel + wg barrier.
-  #[tokio::test]
-  async fn test_async_close_basic() {
-    let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(100, 10)
-      .set_key_builder(TransparentKeyBuilder::default())
-      .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
-      .unwrap();
-
-    assert!(c.insert(1, 1, 1).await);
-    c.wait().await.unwrap();
-
-    tokio::time::timeout(Duration::from_secs(5), c.close())
-      .await
-      .expect("close() hung")
-      .expect("close() errored");
-
-    assert!(
-      !c.insert(2, 2, 1).await,
-      "post-close insert must be rejected"
-    );
-  }
-
-  // close() is idempotent — calling it repeatedly returns Ok each time, with
-  // the later calls resolving immediately via `close_wg.wait().await` on the
-  // already-completed waitgroup.
-  #[tokio::test]
-  async fn test_async_close_idempotent() {
-    let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(100, 10)
-      .set_key_builder(TransparentKeyBuilder::default())
-      .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
-      .unwrap();
-
-    c.close().await.unwrap();
-    tokio::time::timeout(Duration::from_secs(2), c.close())
-      .await
-      .expect("second close() hung")
-      .unwrap();
-    tokio::time::timeout(Duration::from_secs(2), c.close())
-      .await
-      .expect("third close() hung")
-      .unwrap();
-  }
-
-  // Many concurrent close() callers all resolve. Exactly one wins the race
-  // (drives shutdown via sentinel); the rest wait on `close_wg`.
-  #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-  async fn test_async_close_concurrent() {
-    let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(1000, 100)
-      .set_key_builder(TransparentKeyBuilder::default())
-      .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
-      .unwrap();
-
-    for k in 0..32u64 {
-      c.insert(k, k, 1).await;
-    }
-
-    let mut handles = Vec::new();
-    for _ in 0..16 {
-      let c2 = c.clone();
-      handles.push(spawn(async move { c2.close().await }));
-    }
-
-    for h in handles {
-      let r = tokio::time::timeout(Duration::from_secs(5), h)
-        .await
-        .expect("concurrent close() hung")
-        .expect("task panicked");
-      r.unwrap();
-    }
-  }
-
-  // close() drains pre-sentinel items so nothing stays buffered, but it
-  // does NOT clear user-visible cache state. Entries admitted before the
-  // close sentinel survive and remain readable; new inserts after close
-  // are rejected.
-  #[tokio::test]
-  async fn test_async_close_drains_in_flight() {
-    let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(10_000, 1_000)
-      .set_key_builder(TransparentKeyBuilder::default())
-      .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
-      .unwrap();
-
-    for k in 0..100u64 {
-      c.insert(k, k, 1).await;
-    }
-    // wait() flushes all pre-close items through the processor so every
-    // insert has reached admission by the time close runs.
-    c.wait().await.unwrap();
-
-    tokio::time::timeout(Duration::from_secs(5), c.close())
-      .await
-      .expect("close() hung")
-      .unwrap();
-
-    // Narrowed contract: close stops background work, not data. At least
-    // some pre-close keys must still be readable — close does not clear.
-    let mut survivors = 0usize;
-    for k in 0..100u64 {
-      if c.get(&k).await.is_some() {
-        survivors += 1;
-      }
-    }
-    assert!(
-      survivors > 0,
-      "close() must preserve admitted data; 0/100 survived",
-    );
-
-    // New inserts after close return false and must not change state.
-    assert!(
-      !c.insert(999, 999, 1).await,
-      "insert() after close must return false",
-    );
-    assert!(
-      c.get(&999).await.is_none(),
-      "rejected post-close insert must not land",
-    );
-  }
-
   // Cloning AsyncCache is cheap (Arc bump) and the clones share backing state.
   #[tokio::test]
   async fn test_async_clone_shares_state() {
@@ -4867,199 +4741,16 @@ mod async_test {
     drop(c);
     let val = c2.get(&7).await.expect("cache must survive original drop");
     assert_eq!(*val.value(), 42);
-    drop(val);
-
-    // Closing via the surviving clone works.
-    tokio::time::timeout(Duration::from_secs(5), c2.close())
-      .await
-      .expect("close() hung")
-      .unwrap();
   }
 
-  // Cancellation of the winner *before* the close sentinel is in the
-  // channel must not wedge the losers. Forces the winner into the
-  // pre-sentinel window by saturating the permit pool with parked
-  // inserters, then aborts the winner. Every loser close() must still
-  // complete: one of them takes over the handshake (via the rollback
-  // event) and drives shutdown to completion.
-  #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-  async fn test_async_close_winner_cancelled_pre_sentinel_does_not_hang_losers() {
-    let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(1000, 100)
-      .set_key_builder(TransparentKeyBuilder::default())
-      .set_ignore_internal_cost(true)
-      .set_buffer_size(1)
-      .finalize::<TokioRuntime>()
-      .unwrap();
-
-    // Park many inserters on `insert_sem.acquire()` so any new sender
-    // (including `close()`) also parks in the pre-sentinel window.
-    let mut inserters = Vec::new();
-    for k in 0..32u64 {
-      let c2 = c.clone();
-      inserters.push(spawn(async move { c2.insert(k, k, 1).await }));
-    }
-    sleep(Duration::from_millis(50)).await;
-
-    // Winner candidate — spawn first so it is most likely to be the
-    // one that wins `closed.swap(true)`.
-    let winner = spawn({
-      let c = c.clone();
-      async move { c.close().await }
-    });
-    // Give it a moment to run far enough to call `begin_close()` and
-    // start awaiting the permit.
-    sleep(Duration::from_millis(20)).await;
-
-    // Losers: these will all observe `closed == true` and park on the
-    // event loop inside `wait_for_outcome`.
-    let mut losers = Vec::new();
-    for _ in 0..4 {
-      let c = c.clone();
-      losers.push(spawn(async move { c.close().await }));
-    }
-    sleep(Duration::from_millis(20)).await;
-
-    // Abort the winner mid-acquire. The rollback branch of
-    // `CloseRoleGuard::drop` must reset `closed` and wake every loser.
-    winner.abort();
-    let _ = winner.await;
-
-    for h in losers {
-      tokio::time::timeout(Duration::from_secs(10), h)
-        .await
-        .expect("loser close() hung after winner was aborted pre-sentinel")
-        .expect("loser task panicked")
-        .unwrap();
-    }
-
-    // Inserters park on `insert_sem.acquire()`. Post-close they observe
-    // either the fast-path closed gate (returning `false` after their
-    // acquire wakes) or, for the ones already past the gate, release on
-    // drop when the cache is dropped. Drain them with a timeout.
-    for h in inserters {
-      let _ = tokio::time::timeout(Duration::from_secs(5), h).await;
-    }
-  }
-
-  // Many concurrent `close()` callers with interleaved aborts. Every
-  // non-aborted caller must still complete. Stresses every window:
-  // pre-acquire, post-acquire, pre-commit, post-commit.
-  #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-  async fn test_async_close_cancellation_storm() {
-    for _trial in 0..4 {
-      let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(500, 100)
-        .set_key_builder(TransparentKeyBuilder::default())
-        .set_ignore_internal_cost(true)
-        .set_buffer_size(2)
-        .finalize::<TokioRuntime>()
-        .unwrap();
-
-      for k in 0..16u64 {
-        c.insert(k, k, 1).await;
-      }
-
-      let mut survivors = Vec::new();
-      for _ in 0..8 {
-        let c2 = c.clone();
-        survivors.push(spawn(async move { c2.close().await }));
-      }
-      let mut to_abort = Vec::new();
-      for _ in 0..4 {
-        let c2 = c.clone();
-        to_abort.push(spawn(async move { c2.close().await }));
-      }
-
-      for (i, h) in to_abort.into_iter().enumerate() {
-        sleep(Duration::from_millis(i as u64 * 3)).await;
-        h.abort();
-        let _ = h.await;
-      }
-
-      for h in survivors {
-        tokio::time::timeout(Duration::from_secs(10), h)
-          .await
-          .expect("survivor close() hung under abort storm")
-          .expect("survivor task panicked")
-          .unwrap();
-      }
-    }
-  }
-
-  // Regression for the Codex adversarial finding on the old close-clears-state
-  // contract: N tasks loop-inserting the same key while another task calls
-  // close(). Previously this produced orphan store rows whose Item::Update
-  // try_send saw Closed after handle_close_event had cleared the store. Under
-  // the narrowed contract close no longer clears state, so raced writers that
-  // slipped past the close recheck are benign. The only invariants this test
-  // exercises: close resolves, no panic, no permit leak (post-close inserts
-  // cleanly return false), post-close data is readable.
-  #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-  async fn test_async_close_does_not_hang_under_concurrent_writers_on_same_key() {
-    let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(1000, 100)
-      .set_key_builder(TransparentKeyBuilder::default())
-      .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
-      .unwrap();
-
-    // Prime an entry so the Update path is actually exercised by racers.
-    assert!(c.insert(42, 0, 1).await);
-    c.wait().await.unwrap();
-
-    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let mut writers = Vec::new();
-    for t in 0..8u64 {
-      let c2 = c.clone();
-      let stop2 = stop.clone();
-      writers.push(tokio::spawn(async move {
-        let mut n = 0u64;
-        while !stop2.load(std::sync::atomic::Ordering::Relaxed) {
-          let _ = c2.insert(42, t * 1000 + n, 1).await;
-          n = n.wrapping_add(1);
-        }
-      }));
-    }
-
-    // Let the racers pile up, then close. If the narrowed contract or the
-    // SemCloser drop-guard regress, this timeout is where it shows up.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    tokio::time::timeout(Duration::from_secs(5), c.close())
-      .await
-      .expect("close() hung under concurrent writers")
-      .expect("close() errored");
-
-    stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    for h in writers {
-      tokio::time::timeout(Duration::from_secs(5), h)
-        .await
-        .expect("writer task hung after close")
-        .expect("writer task panicked");
-    }
-
-    // Post-close: data survives (option B contract) and new inserts are
-    // rejected cleanly.
-    assert!(
-      c.get(&42).await.is_some(),
-      "pre-close admitted key must still be readable",
-    );
-    assert!(
-      !c.insert(99, 99, 1).await,
-      "post-close insert must return false",
-    );
-
-    // Idempotent: a second close must still resolve.
-    tokio::time::timeout(Duration::from_secs(5), c.close())
-      .await
-      .expect("second close() hung")
-      .expect("second close() errored");
-  }
-
-  // close() must stop the policy's background LFU worker. Guards against
-  // anyone dropping `policy.close().await` from handle_close_event — if
-  // the policy worker kept running after cache close, post-close get()
-  // paths would push into a live items channel whose drain is no longer
-  // coupled to the cache lifecycle.
+  // Dropping the cache must stop the policy's background LFU worker.
+  // Policy shutdown is Drop-driven: the cache owns `stop_tx`, which the
+  // policy processor watches via `stop_rx`; dropping the cache disconnects
+  // both the cache processor and the policy processor. The observable
+  // signal that the policy worker has exited is that `policy.push` can no
+  // longer enqueue — `items_rx` has been dropped by the exited processor.
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-  async fn test_async_close_stops_policy_worker() {
+  async fn test_drop_stops_policy_worker() {
     let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(100, 10)
       .set_key_builder(TransparentKeyBuilder::default())
       .set_ignore_internal_cost(true)
@@ -5068,110 +4759,26 @@ mod async_test {
 
     assert!(c.insert(1, 1, 1).await);
     c.wait().await.unwrap();
+
+    // Keep an Arc to the policy alive past the cache drop so we can
+    // observe it. Before drop, the worker is alive and push succeeds.
+    let policy = c.0.policy.clone();
     assert!(
-      !c.0
-        .policy
-        .is_closed
-        .load(std::sync::atomic::Ordering::Acquire),
-      "policy worker must be live before close()",
+      policy.push(vec![1]).is_none(),
+      "policy must accept pushes before drop"
     );
 
-    tokio::time::timeout(Duration::from_secs(5), c.close())
-      .await
-      .expect("close() hung")
-      .expect("close() errored");
+    drop(c);
 
-    assert!(
-      c.0
-        .policy
-        .is_closed
-        .load(std::sync::atomic::Ordering::Acquire),
-      "close() must stop the policy worker",
-    );
-  }
-
-  // Regression for the drain-deletes-live-updates race. Before the
-  // handle_close_event simplification, the post-sentinel drain called
-  // `store.try_remove_if_version` on every `Item::New`/`Update`, so a
-  // writer that passed the post-permit close recheck, committed an
-  // eager `store.try_update`, then lost the MPSC ordering race to
-  // `close()`'s `Item::Close` sentinel would see its live row version-
-  // removed by the drain. The caller's `insert()` returned `true` but
-  // a subsequent `get()` returned `None` — directly violating the
-  // Option B close contract ("close preserves committed data").
-  //
-  // The scheduler rarely produces the [Close, Update] MPSC ordering in
-  // a single-key, single-writer shape, so this test pre-admits many
-  // distinct keys and fires a concurrent update for each while close()
-  // runs. Volume makes the race likely to fire at least once in the
-  // regression window even if any individual key is unlucky. Under the
-  // fix, the drain does not touch store rows at all, so every pre-
-  // admitted key must remain readable regardless of ordering.
-  #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-  async fn test_async_close_drain_preserves_committed_updates() {
-    const N: u64 = 32;
-
-    let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(1000, 1000)
-      .set_key_builder(TransparentKeyBuilder::default())
-      .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
-      .unwrap();
-
-    // Pre-admit N distinct keys with a known sentinel value.
-    for k in 0..N {
-      assert!(c.insert(k, 0, 1).await);
-    }
-    c.wait().await.unwrap();
-    for k in 0..N {
-      assert_eq!(
-        c.get(&k).await.unwrap().read(),
-        0,
-        "key {k} must be admitted pre-close",
-      );
-    }
-
-    // Fire one update task per key. Each loops until it observes a
-    // post-close `insert→false`, so the race window overlaps `close()`.
-    let mut writers = Vec::with_capacity(N as usize);
-    for k in 0..N {
-      let c2 = c.clone();
-      writers.push(tokio::spawn(async move {
-        loop {
-          if !c2.insert(k, k + 1, 1).await {
-            return;
-          }
-        }
-      }));
-    }
-
-    // Let writers pile up eager store writes, then close.
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    tokio::time::timeout(Duration::from_secs(5), c.close())
-      .await
-      .expect("close() hung")
-      .expect("close() errored");
-
-    for h in writers {
-      tokio::time::timeout(Duration::from_secs(5), h)
-        .await
-        .expect("writer hung after close")
-        .expect("writer panicked");
-    }
-
-    // The Option B invariant: every pre-admitted key must still be
-    // readable. Its value may be the sentinel 0 (no update landed) or
-    // the updated k+1 (an update committed before close), but it must
-    // not be `None` — that would mean close-drain deleted a live row.
-    let mut missing = Vec::new();
-    for k in 0..N {
-      if c.get(&k).await.is_none() {
-        missing.push(k);
+    // Wait for the processor to observe the stop_tx disconnect and exit,
+    // dropping items_rx. After that, `push` can no longer enqueue.
+    for _ in 0..50 {
+      if policy.push(vec![1]).is_some() {
+        return;
       }
+      tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert!(
-      missing.is_empty(),
-      "close-drain must not delete pre-admitted rows; missing keys: {missing:?}",
-    );
+    panic!("policy worker did not exit after cache drop");
   }
 
   // Regression for async processor permit-leak on user-callback panic.
