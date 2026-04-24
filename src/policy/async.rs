@@ -1,14 +1,19 @@
-use crate::axync::{Receiver, RecvError, Sender, select, stop_channel, unbounded};
-use crate::policy::PolicyInner;
-use crate::{CacheError, MetricType, Metrics};
+use crate::{
+  CacheError, MetricType, Metrics,
+  axync::{Receiver, RecvError, Sender, select, stop_channel, unbounded},
+  policy::PolicyInner,
+};
 use agnostic_lite::RuntimeLite;
-use futures::future::FutureExt;
-use futures::lock::Mutex as AsyncMutex;
+use futures::{future::FutureExt, lock::Mutex as AsyncMutex};
 use parking_lot::Mutex;
-use std::collections::hash_map::RandomState;
-use std::hash::BuildHasher;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+  collections::hash_map::RandomState,
+  hash::BuildHasher,
+  sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+  },
+};
 
 pub(crate) struct AsyncLFUPolicy<S = RandomState> {
   pub(crate) inner: Arc<Mutex<PolicyInner<S>>>,

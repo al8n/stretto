@@ -1,26 +1,108 @@
-use crate::cache::builder::CacheBuilderCore;
-use crate::policy::LFUPolicy;
-use crate::ring::RingStripe;
-use crate::store::ShardedMap;
-use crate::sync::{
-  Instant, JoinHandle, Receiver, Sender, UnboundedReceiver, UnboundedSender, WaitGroup, bounded,
-  select, spawn, stop_channel, unbounded,
-};
-use crate::ttl::{ExpirationMap, Time};
 use crate::{
   CacheCallback, CacheError, Coster, DefaultCacheCallback, DefaultCoster, DefaultKeyBuilder,
   DefaultUpdateValidator, Item as CrateItem, KeyBuilder, Metrics, UpdateValidator,
+  cache::builder::CacheBuilderCore,
   metrics::MetricType,
+  policy::{AddOutcome, LFUPolicy},
+  ring::RingStripe,
+  semaphore::SyncSemaphore,
+  store::ShardedMap,
+  sync::{Instant, JoinHandle, Receiver, Sender, WaitGroup, bounded, select, spawn, stop_channel},
+  ttl::{ExpirationMap, Time},
 };
-use crossbeam_channel::{RecvError, tick};
-use parking_lot::Mutex;
-use std::collections::HashMap;
-use std::collections::hash_map::RandomState;
-use std::hash::{BuildHasher, Hash};
-use std::marker::PhantomData;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use crossbeam_channel::{RecvError, TrySendError, tick};
+use std::{
+  cell::Cell,
+  collections::{HashMap, hash_map::RandomState},
+  hash::{BuildHasher, Hash},
+  marker::PhantomData,
+  sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+  },
+  time::Duration,
+};
+
+thread_local! {
+  /// True while the current thread is the sync cache processor. User
+  /// `CacheCallback` methods (on_evict/on_reject/on_exit) run on the processor
+  /// thread; if such a callback re-enters the cache (e.g. calls `insert`), a
+  /// blocking `send` into the bounded insert buffer would deadlock — the sole
+  /// consumer is the very thread we would be waiting on. Re-entrant callers
+  /// observe this flag and fall back to non-blocking `try_send`.
+  static ON_PROCESSOR_THREAD: Cell<bool> = const { Cell::new(false) };
+
+  /// True while the current thread holds an `insert_sem` permit through
+  /// `SyncPermitGuard` (the permit-held window in `try_insert_in`). User-
+  /// controlled code (`Coster::cost`, `UpdateValidator::should_update`, or
+  /// a callback that eventually fires before the guard releases) runs
+  /// inside this window; if such code re-enters the cache via another
+  /// `insert`/`clear`/`wait`/`close`/`remove`, a blocking permit acquire
+  /// would self-deadlock — the thread that would release the permit is
+  /// the very thread now asking for a second one. Re-entrant callers
+  /// observe this flag and either fall back to `try_acquire` (inserts,
+  /// drop on full) or fail fast with an error (`clear`/`wait`/`close`)
+  /// or skip the permit-requiring enqueue (`remove`'s Delete path).
+  static INSERT_PERMIT_HELD: Cell<bool> = const { Cell::new(false) };
+}
+
+#[inline]
+fn on_processor_thread() -> bool {
+  ON_PROCESSOR_THREAD.with(|c| c.get())
+}
+
+#[inline]
+fn insert_permit_held() -> bool {
+  INSERT_PERMIT_HELD.with(|c| c.get())
+}
+
+/// RAII guard for a permit acquired from `SyncSemaphore`. On drop it releases
+/// the permit unless `held` has been cleared via `transfer()` (permit handed
+/// off to the processor via a successful send).
+///
+/// Without this guard, a panic or `Err` return from user-controlled code
+/// between `insert_sem.acquire()` and the channel `try_send` would permanently
+/// leak a permit — with `set_buffer_size(1)` one such leak stalls every
+/// subsequent insert. The async cache uses the equivalent `AsyncPermitGuard`
+/// for the same reason (plus cancellation safety, which is irrelevant here).
+///
+/// Construction also sets the `INSERT_PERMIT_HELD` thread-local, so user-
+/// controlled code that runs during the permit-held window (e.g. `Coster`
+/// or `UpdateValidator` invoked by `try_update`) can be detected if it
+/// re-enters the cache. Drop unconditionally clears the flag.
+struct SyncPermitGuard<'a> {
+  sem: &'a Arc<SyncSemaphore>,
+  held: bool,
+}
+
+impl<'a> SyncPermitGuard<'a> {
+  /// Construct a guard asserting that the caller has just successfully
+  /// acquired a permit from `sem`. Sets `INSERT_PERMIT_HELD` so any
+  /// re-entrant cache call on this thread fails fast instead of blocking
+  /// on a permit that the outer call still owns.
+  #[inline]
+  fn new(sem: &'a Arc<SyncSemaphore>) -> Self {
+    INSERT_PERMIT_HELD.with(|c| c.set(true));
+    Self { sem, held: true }
+  }
+
+  #[inline]
+  fn transfer(&mut self) {
+    self.held = false;
+  }
+}
+
+impl Drop for SyncPermitGuard<'_> {
+  fn drop(&mut self) {
+    // Clear the re-entry flag unconditionally — the guard's lifetime
+    // defines the permit-held window, not whether we still own the
+    // permit (a transferred permit still implies the window is over).
+    INSERT_PERMIT_HELD.with(|c| c.set(false));
+    if self.held {
+      self.sem.release();
+    }
+  }
+}
 
 /// The `CacheBuilder` struct is used when creating [`Cache`] instances if you want to customize the [`Cache`] settings.
 ///
@@ -181,7 +263,7 @@ where
 
     let (buf_tx, buf_rx) = bounded(insert_buffer_size);
     let (stop_tx, stop_rx) = stop_channel();
-    let (clear_tx, clear_rx) = unbounded();
+    let insert_sem = Arc::new(SyncSemaphore::new(insert_buffer_size));
 
     let hasher = self.inner.hasher.unwrap();
     let expiration_map = ExpirationMap::with_hasher(hasher.clone());
@@ -206,7 +288,8 @@ where
     };
 
     let policy = Arc::new(policy);
-    CacheProcessor::new(
+    let clear_generation = Arc::new(AtomicU64::new(0));
+    let processor = CacheProcessor::new(
       100000,
       self.inner.ignore_internal_cost,
       self.inner.cleanup_duration,
@@ -214,30 +297,32 @@ where
       policy.clone(),
       buf_rx,
       stop_rx,
-      clear_rx,
       metrics.clone(),
       callback.clone(),
+      clear_generation.clone(),
+      insert_sem.clone(),
     )
     .spawn();
 
     let get_buf = RingStripe::new(policy.clone(), buffer_items);
-    let this = Cache {
+    let inner = CacheInner {
       store,
       policy,
       get_buf: Arc::new(get_buf),
       insert_buf_tx: buf_tx,
+      insert_sem,
       callback,
       key_to_hash: Arc::new(self.inner.key_to_hash),
-      stop_tx,
-      clear_tx,
-      is_closed: Arc::new(AtomicBool::new(false)),
-      close_lock: Arc::new(Mutex::new(())),
+      stop_tx: Some(stop_tx),
       coster,
       metrics,
+      clear_generation,
+      ignore_internal_cost: self.inner.ignore_internal_cost,
+      processor: Some(processor),
       _marker: Default::default(),
     };
 
-    Ok(this)
+    Ok(Cache(Arc::new(inner)))
   }
 }
 
@@ -248,45 +333,103 @@ pub(crate) enum Item<V> {
     cost: i64,
     expiration: Time,
     version: u64,
+    /// Clear-generation captured at the eager store write. Compared against
+    /// the cache's current generation when the processor admits this item; a
+    /// mismatch means a `clear()` intervened and the eager write has been
+    /// (or must be) invalidated, so admission is skipped.
+    generation: u64,
     _marker: std::marker::PhantomData<fn() -> V>,
   },
   Update {
     key: u64,
+    /// Conflict hash of the row we just updated. Used by the stale-generation
+    /// branch of the Update handler to version-gate the ghost-row cleanup so
+    /// it can only remove a row whose (key, conflict, version) exactly match
+    /// the eager write we installed.
+    conflict: u64,
     cost: i64,
     external_cost: i64,
+    #[allow(dead_code)]
+    expiration: Time,
+    /// New version assigned by the store to the row we just wrote. Used by
+    /// the stale-generation branch of the Update handler for version-gated
+    /// ghost-row cleanup; a concurrent writer who has since landed a newer
+    /// version at the same (key, conflict) is preserved.
+    version: u64,
+    /// Clear-generation captured at the eager store update. If a `clear()`
+    /// slipped between the eager write and this admission the policy state
+    /// was already wiped, so applying the stale cost would corrupt a
+    /// post-clear admission.
+    generation: u64,
   },
   Delete {
     key: u64,
     conflict: u64,
+    /// Clear-generation captured at the eager `store.try_remove`. A stale
+    /// pre-clear Delete must not fire against post-clear state.
+    generation: u64,
+    /// Version of the store entry that the eager remove actually removed.
+    /// Always non-zero: `try_remove` only enqueues a Delete when the eager
+    /// remove returned Some, and store versions start at 1 (0 is reserved
+    /// as a "no row" sentinel). The processor's follow-up cleanup uses
+    /// `try_remove_if_version` so a concurrent reinsert at the same
+    /// (key, conflict) under a different version is preserved.
+    version: u64,
   },
   Wait(WaitGroup),
+  Clear(WaitGroup),
 }
 
 impl<V> Item<V> {
   #[cfg_attr(not(tarpaulin), inline(always))]
-  fn new(key: u64, conflict: u64, cost: i64, exp: Time, version: u64) -> Self {
+  pub(crate) fn new(
+    key: u64,
+    conflict: u64,
+    cost: i64,
+    exp: Time,
+    version: u64,
+    generation: u64,
+  ) -> Self {
     Self::New {
       key,
       conflict,
       cost,
       expiration: exp,
       version,
+      generation,
       _marker: std::marker::PhantomData,
     }
   }
 
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub(crate) fn update(key: u64, cost: i64, external_cost: i64) -> Self {
+  pub(crate) fn update(
+    key: u64,
+    conflict: u64,
+    cost: i64,
+    external_cost: i64,
+    expiration: Time,
+    version: u64,
+    generation: u64,
+  ) -> Self {
     Self::Update {
       key,
+      conflict,
       cost,
       external_cost,
+      expiration,
+      version,
+      generation,
     }
   }
 
   #[cfg_attr(not(tarpaulin), inline(always))]
-  fn delete(key: u64, conflict: u64) -> Self {
-    Self::Delete { key, conflict }
+  pub(crate) fn delete(key: u64, conflict: u64, generation: u64, version: u64) -> Self {
+    Self::Delete {
+      key,
+      conflict,
+      generation,
+      version,
+    }
   }
 
   #[cfg_attr(not(tarpaulin), inline(always))]
@@ -298,7 +441,6 @@ impl<V> Item<V> {
 pub(crate) struct CacheProcessor<V, U, CB, S> {
   pub(crate) insert_buf_rx: Receiver<Item<V>>,
   pub(crate) stop_rx: Receiver<()>,
-  pub(crate) clear_rx: UnboundedReceiver<()>,
   pub(crate) metrics: Arc<Metrics>,
   pub(crate) store: Arc<ShardedMap<V, U, S, S>>,
   pub(crate) policy: Arc<LFUPolicy<S>>,
@@ -308,10 +450,15 @@ pub(crate) struct CacheProcessor<V, U, CB, S> {
   pub(crate) ignore_internal_cost: bool,
   pub(crate) item_size: usize,
   pub(crate) cleanup_duration: Duration,
-}
-
-pub(crate) struct CacheCleaner<'a, V, U, CB, S> {
-  pub(crate) processor: &'a mut CacheProcessor<V, U, CB, S>,
+  /// Shared counter bumped on every clear. The handler reads and advances
+  /// this before wiping the store so any `Item::New` queued with the
+  /// pre-bump generation is recognized as stale and skipped.
+  pub(crate) clear_generation: Arc<AtomicU64>,
+  /// Same permit pool as `Cache::insert_sem`. The processor releases one
+  /// permit for every item it consumes from the insert buffer (whether in
+  /// the main loop or the stop-drain), closing the loop with the sender-
+  /// side acquire.
+  pub(crate) insert_sem: Arc<SyncSemaphore>,
 }
 
 /// Cache is a thread-safe implementation of a hashmap with a TinyLFU admission
@@ -343,6 +490,27 @@ pub struct Cache<
   U = DefaultUpdateValidator<V>,
   CB = DefaultCacheCallback<V>,
   S = RandomState,
+>(pub(crate) Arc<CacheInner<K, V, KH, C, U, CB, S>>);
+
+impl<K, V, KH, C, U, CB, S> Clone for Cache<K, V, KH, C, U, CB, S> {
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  fn clone(&self) -> Self {
+    Self(self.0.clone())
+  }
+}
+
+/// Private shared state behind [`Cache`]. Every `Cache` handle clones the
+/// same `Arc<CacheInner>`; `Drop` on `CacheInner` fires exactly once, when
+/// the last handle is dropped. Not part of the public API — all user-facing
+/// methods live on [`Cache`] and reach this via `self.0`.
+pub(crate) struct CacheInner<
+  K,
+  V,
+  KH = DefaultKeyBuilder<K>,
+  C = DefaultCoster<V>,
+  U = DefaultUpdateValidator<V>,
+  CB = DefaultCacheCallback<V>,
+  S = RandomState,
 > {
   /// store is the central concurrent hashmap where key-value items are stored.
   pub(crate) store: Arc<ShardedMap<V, U, S, S>>,
@@ -356,26 +524,91 @@ pub struct Cache<
   /// contention.
   pub(crate) insert_buf_tx: Sender<Item<V>>,
 
-  pub(crate) stop_tx: Sender<()>,
+  /// Bounded permit pool sized to `insert_buffer_size`. Every send into
+  /// `insert_buf_tx` (New/Update/Delete/Wait/Clear) is gated on acquiring
+  /// a permit. The processor releases one permit per recv (including stop-
+  /// drain). Acquiring BEFORE the eager store write moves backpressure to
+  /// the input side so pre-admission store rows cannot accumulate beyond
+  /// `insert_buffer_size` under contention. Without this, a blocked
+  /// `insert_buf_tx.send` would leave the eager `try_update` row live and
+  /// uncharged, so N blocked senders could push `store.len()` past
+  /// `max_cost` until the processor catches up.
+  pub(crate) insert_sem: Arc<SyncSemaphore>,
 
-  pub(crate) clear_tx: UnboundedSender<()>,
+  /// Held in `Option` so `Drop` can `take()` and drop it, disconnecting the
+  /// processor's `stop_rx`. This is how shutdown is signaled — we never
+  /// `send()` on this channel. Disconnection wakes the processor's
+  /// `select!` stop arm via `Err(RecvError)`, which is matched by `_`.
+  pub(crate) stop_tx: Option<Sender<()>>,
 
   pub(crate) callback: Arc<CB>,
 
   pub(crate) key_to_hash: Arc<KH>,
 
-  pub(crate) is_closed: Arc<AtomicBool>,
-
-  /// Serializes concurrent `close()` callers so every caller observes the fully
-  /// shut-down state before returning.
-  pub(crate) close_lock: Arc<Mutex<()>>,
-
   pub(crate) coster: Arc<C>,
 
   /// the metrics for the cache
-  pub metrics: Arc<Metrics>,
+  pub(crate) metrics: Arc<Metrics>,
+
+  /// Clear-generation counter shared with the processor. `try_update`
+  /// captures this before the eager store write so a subsequent `clear()`
+  /// can invalidate the still-in-flight `Item::New` and any stale eager
+  /// write it represents.
+  pub(crate) clear_generation: Arc<AtomicU64>,
+
+  /// Mirrors the processor's `ignore_internal_cost` flag. Needed here so
+  /// `try_insert_in` can reconcile an `Item::Update`'s total effective cost
+  /// against policy inline when the caller is the processor thread itself
+  /// (re-entering via a `CacheCallback`) and the bounded insert buffer is
+  /// full. Without this reconciliation the eager `try_update` would leave
+  /// the store at the new value/version while policy keeps the old cost,
+  /// silently bypassing `max_cost`.
+  pub(crate) ignore_internal_cost: bool,
+
+  /// Handle to the processor thread. `Drop` joins this so dropping the
+  /// cache returns only after the processor has fully shut down (drain
+  /// complete, no further handler work in flight). Stored as `Option` so
+  /// `Drop` can `take()` the handle to call `join()` on an owned value.
+  ///
+  /// Using `JoinHandle` instead of a handshake WaitGroup makes shutdown
+  /// panic-safe: a panicking user callback (`CacheCallback::on_evict` etc.)
+  /// unwinds the processor thread past its normal drain/signal path, but
+  /// `join()` still returns once the thread's stack has unwound. With the
+  /// old WaitGroup design, a callback panic skipped the `done()` call and
+  /// left `Drop` waiting forever.
+  pub(crate) processor: Option<JoinHandle<Result<(), CacheError>>>,
 
   pub(crate) _marker: PhantomData<fn(K)>,
+}
+
+impl<K, V, KH, C, U, CB, S> Drop for CacheInner<K, V, KH, C, U, CB, S> {
+  /// Blocking shutdown when the last `Cache` handle is dropped. Dropping
+  /// `stop_tx` disconnects the processor's `stop_rx`, which causes its
+  /// `select!` stop arm to fire on the next poll and run the drain path.
+  /// Then we join the processor thread so no further `CacheCallback` or
+  /// policy mutation can fire after the last `Cache::drop` returns.
+  ///
+  /// Panic-safe: `JoinHandle::join` returns `Err` if the processor thread
+  /// panicked (e.g. from a user callback), so shutdown cannot hang on a
+  /// missed handshake. The join result is otherwise discarded — any
+  /// internal error was already logged by the processor.
+  ///
+  /// Self-drop handling: if the last `Cache` is dropped inside a
+  /// `CacheCallback` running on the processor thread, joining that same
+  /// thread from its own stack would deadlock (self-join). In that case
+  /// we skip the join — the `JoinHandle` is dropped, which detaches the
+  /// thread. The thread runs to completion normally after the callback
+  /// returns, observes the disconnected `stop_rx`, and exits its drain
+  /// path on its own.
+  fn drop(&mut self) {
+    let _ = self.stop_tx.take();
+    if let Some(handle) = self.processor.take() {
+      if handle.thread().id() == std::thread::current().id() {
+        return;
+      }
+      let _ = handle.join();
+    }
+  }
 }
 
 impl<K: Hash + Eq, V: Send + Sync + 'static> Cache<K, V> {
@@ -428,24 +661,62 @@ where
   /// clear the Cache.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn clear(&self) -> Result<(), CacheError> {
-    if self.is_closed.load(Ordering::SeqCst) {
+    // Reject processor-thread re-entry. `clear()` enqueues `Item::Clear`
+    // and then blocks on the marker's WaitGroup; the marker is only
+    // signaled by the processor. A callback running on the processor that
+    // calls `clear()` would be waiting for itself — permanent deadlock.
+    if on_processor_thread() {
+      return Err(CacheError::ChannelError(
+        "clear() cannot be called from a CacheCallback: \
+         it would wait on the processor thread that is currently running \
+         the callback"
+          .to_string(),
+      ));
+    }
+
+    // Reject re-entry from inside `try_insert_in`'s permit-held window.
+    // `Coster::cost` / `UpdateValidator::should_update` / any `on_exit`
+    // callback that fires before the outer guard drops runs with
+    // `INSERT_PERMIT_HELD=true`. A blocking `insert_sem.acquire()` here
+    // would self-deadlock: the thread that would release the permit is
+    // the very thread now asking for a second one.
+    if insert_permit_held() {
+      return Err(CacheError::ChannelError(
+        "clear() cannot be called from a Coster/UpdateValidator or any \
+         callback invoked during an outer insert: the outer call still \
+         holds the insert permit, so acquiring another would self-deadlock"
+          .to_string(),
+      ));
+    }
+
+    // Every send into the channel is gated on acquiring a permit. The
+    // processor releases one per recv (including Clear).
+    if self.0.insert_sem.acquire().is_err() {
+      // Unreachable while the cache is live: the semaphore is only closed
+      // by `Drop`, which cannot run while the caller holds a reference.
       return Ok(());
     }
-    self.clear_inner()
-  }
 
-  #[cfg_attr(not(tarpaulin), inline(always))]
-  fn clear_inner(&self) -> Result<(), CacheError> {
-    // stop the process item thread.
-    self.clear_tx.send(()).map_err(|e| {
-      CacheError::SendError(format!("fail to send clear signal to working thread {}", e))
-    })?;
-
-    self.policy.clear();
-    self.store.clear();
-    self.metrics.clear();
-
-    Ok(())
+    let wg = WaitGroup::new();
+    let wait = wg.add(1);
+    match self.0.insert_buf_tx.try_send(Item::Clear(wait)) {
+      Ok(()) => {
+        // Permit transfers to the processor, which releases it when the
+        // Clear item is consumed.
+        wg.wait();
+        Ok(())
+      }
+      Err(_) => {
+        // Unreachable under the permit invariant while the cache is live:
+        // the permit pool is sized to the channel capacity, and the channel
+        // is only disconnected when the processor has exited. Release the
+        // unused permit and surface the error.
+        self.0.insert_sem.release();
+        Err(CacheError::SendError(
+          "fail to enqueue clear marker: channel closed".to_string(),
+        ))
+      }
+    }
   }
 
   /// `insert` attempts to add the key-value item to the cache. If it returns false,
@@ -497,17 +768,49 @@ where
 
   /// wait until all the previous operations finished.
   pub fn wait(&self) -> Result<(), CacheError> {
-    if self.is_closed.load(Ordering::SeqCst) {
+    // Reject processor-thread re-entry. Same rationale as `clear()`: the
+    // Wait marker is signaled by the processor, and a callback running on
+    // the processor cannot wait for itself.
+    if on_processor_thread() {
+      return Err(CacheError::ChannelError(
+        "wait() cannot be called from a CacheCallback: \
+         it would wait on the processor thread that is currently running \
+         the callback"
+          .to_string(),
+      ));
+    }
+
+    // Reject re-entry from inside `try_insert_in`'s permit-held window.
+    // Same rationale as `clear()` — a blocking permit acquire here would
+    // deadlock on the permit the outer insert still owns.
+    if insert_permit_held() {
+      return Err(CacheError::ChannelError(
+        "wait() cannot be called from a Coster/UpdateValidator or any \
+         callback invoked during an outer insert: the outer call still \
+         holds the insert permit, so acquiring another would self-deadlock"
+          .to_string(),
+      ));
+    }
+
+    if self.0.insert_sem.acquire().is_err() {
+      // Unreachable while the cache is live — see `clear()`.
       return Ok(());
     }
 
     let wg = WaitGroup::new();
     let wait_item = Item::Wait(wg.add(1));
-    self
-      .insert_buf_tx
-      .try_send(wait_item)
-      .map(|_| wg.wait())
-      .map_err(|e| CacheError::SendError(format!("cache set buf sender: {}", e)))
+    match self.0.insert_buf_tx.try_send(wait_item) {
+      Ok(()) => {
+        wg.wait();
+        Ok(())
+      }
+      Err(_) => {
+        self.0.insert_sem.release();
+        Err(CacheError::SendError(
+          "cache set buf sender: channel closed".to_string(),
+        ))
+      }
+    }
   }
 
   /// remove an entry from Cache by key.
@@ -517,59 +820,95 @@ where
 
   /// try to remove an entry from Cache by key.
   pub fn try_remove(&self, k: &K) -> Result<(), CacheError> {
-    if self.is_closed.load(Ordering::SeqCst) {
+    // Insert-permit re-entry (checked BEFORE the eager store write): if
+    // this `try_remove` runs inside an OUTER `try_insert_in`'s permit-
+    // held window — e.g. from a user `Coster`/`UpdateValidator` or a
+    // callback fired within that window — a blocking `insert_sem.acquire()`
+    // below would self-deadlock on the permit the outer caller still
+    // owns. We cannot safely mutate policy inline here either (the
+    // processor runs concurrently on another thread). Skip the whole
+    // operation so store and policy stay consistent: if we did the
+    // eager remove but then bailed without the Item::Delete enqueue,
+    // the store would be empty while policy still tracked the key's
+    // cost — a phantom residual that silently bypasses `max_cost`.
+    // Matches drop-on-full semantics for re-entrant inserts.
+    if insert_permit_held() {
       return Ok(());
     }
 
-    let (index, conflict) = self.key_to_hash.build_key(k);
+    let (index, conflict) = self.0.key_to_hash.build_key(k);
+    // Capture the current clear generation before the eager remove. Paired
+    // with the Release-ordered bump in the Clear handler, this Acquire load
+    // lets the processor recognize a Delete queued before a clear as stale.
+    // The store gates the remove on `row.generation <= captured_gen` so a
+    // pre-clear caller that resumes after `clear()` and a racing post-clear
+    // reinsert cannot destroy the fresh row.
+    let captured_gen = self.0.clear_generation.load(Ordering::Acquire);
     // delete immediately
-    let prev = self.store.try_remove(&index, conflict)?;
+    let prev = self
+      .0
+      .store
+      .try_remove_if_not_stale(&index, conflict, captured_gen)?;
 
+    // Only enqueue Item::Delete if we actually removed a store row. If the
+    // eager remove found nothing there is no policy/store state we own to
+    // reconcile, and enqueueing a Delete with version=0 would race with a
+    // concurrent insert: processor admits the new row via Item::New, then
+    // our Delete unconditionally calls policy.remove and orphans the fresh
+    // admission outside policy accounting (bypassing max_cost).
     if let Some(prev) = prev {
-      self.callback.on_exit(Some(prev.value.into_inner()));
+      let prev_version = prev.version;
+      self.0.callback.on_exit(Some(prev.value.into_inner()));
+
+      // Callback re-entry: if this `try_remove` was called from inside a
+      // user `CacheCallback` running on the processor thread, a blocking
+      // acquire/send below would self-deadlock — the sole consumer IS us,
+      // and we can't drain while we're executing a callback. Apply the
+      // `Item::Delete` handler inline instead, mirroring src/cache.rs's
+      // Delete arm: generation-gate against a racing `clear()`, and only
+      // wipe policy if no concurrent insert has since reoccupied this
+      // index (which would have already refreshed the shared policy entry
+      // via `UpdatedExisting`). The eager `store.try_remove` above already
+      // did the row removal, so the processor's follow-up
+      // `try_remove_if_version` would be a no-op here and is skipped.
+      if on_processor_thread() {
+        let current_gen = self.0.clear_generation.load(Ordering::Acquire);
+        if captured_gen == current_gen && !self.0.store.contains_key(&index, 0) {
+          self.0.policy.remove(&index);
+        }
+        return Ok(());
+      }
+
+      // Acquire a permit before enqueueing the Delete so backpressure
+      // applies uniformly to every insert-buffer producer. The processor
+      // releases one permit per recv (including Delete).
+      if self.0.insert_sem.acquire().is_err() {
+        // Unreachable while the cache is live: the semaphore is only
+        // closed by `Drop`, which cannot run while the caller holds a
+        // reference. Our eager remove already ran; the store is
+        // consistent, so simply bail.
+        return Ok(());
+      }
+
+      // The version we just removed is stamped on the Item so a concurrent
+      // reinsert at the same (key, conflict) under a newer version survives
+      // the follow-up store cleanup.
+      match self
+        .0
+        .insert_buf_tx
+        .try_send(Item::delete(index, conflict, captured_gen, prev_version))
+      {
+        Ok(()) => Ok(()),
+        Err(e) => {
+          self.0.insert_sem.release();
+          Err(CacheError::ChannelError(format!(
+            "failed to send message to the insert buffer: {}",
+            &e
+          )))
+        }
+      }?;
     }
-    // If we've set an item, it would be applied slightly later.
-    // So we must push the same item to `setBuf` with the deletion flag.
-    // This ensures that if a set is followed by a delete, it will be
-    // applied in the correct order.
-    self
-      .insert_buf_tx
-      .try_send(Item::delete(index, conflict))
-      .map_err(|e| {
-        CacheError::ChannelError(format!(
-          "failed to send message to the insert buffer: {}",
-          &e
-        ))
-      })?;
 
-    Ok(())
-  }
-
-  /// `close` stops all threads and closes all channels.
-  ///
-  /// Concurrent calls are serialized: callers that arrive while another thread
-  /// is performing the shutdown block until that shutdown completes, and every
-  /// caller that receives `Ok(())` is guaranteed to observe the fully cleared
-  /// state (empty store, zeroed metrics, stopped processor).
-  #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn close(&self) -> Result<(), CacheError> {
-    if self.is_closed.load(Ordering::Acquire) {
-      return Ok(());
-    }
-
-    let _guard = self.close_lock.lock();
-    if self.is_closed.load(Ordering::Acquire) {
-      return Ok(());
-    }
-
-    self.clear_inner()?;
-    self
-      .stop_tx
-      .send(())
-      .map_err(|e| CacheError::SendError(format!("{}", e)))?;
-    self.policy.close()?;
-
-    self.is_closed.store(true, Ordering::Release);
     Ok(())
   }
 
@@ -582,70 +921,271 @@ where
     ttl: Duration,
     only_update: bool,
   ) -> Result<bool, CacheError> {
-    if self.is_closed.load(Ordering::SeqCst) {
+    // Acquire a permit BEFORE the eager store write. The permit pool is
+    // sized to `insert_buffer_size`, so at most that many pre-admission
+    // eager writes can exist at once. Without this, a blocked send would
+    // let multiple callers each leave a live uncharged row in the store,
+    // letting `store.len()` drift past `max_cost` under contention.
+    //
+    // Fall back to non-blocking `try_acquire` (drop on full) when the
+    // caller cannot afford to block:
+    //   * `on_processor`: the processor thread is re-entering via a user
+    //     `CacheCallback`. The processor IS the sole releaser, so a
+    //     blocking acquire would self-deadlock.
+    //   * `insert_permit_held`: the caller is running inside an OUTER
+    //     `try_insert_in`'s permit-held window (user `Coster` or
+    //     `UpdateValidator` or a callback re-entering the cache). The
+    //     outer call still owns a permit; a blocking acquire here would
+    //     wait on a permit the same thread will not release until this
+    //     nested call returns — self-deadlock on `set_buffer_size(1)`.
+    let on_processor = on_processor_thread();
+    let bypass_block = on_processor || insert_permit_held();
+    let acquired = if bypass_block {
+      self.0.insert_sem.try_acquire()
+    } else {
+      self.0.insert_sem.acquire().is_ok()
+    };
+    if !acquired {
+      self.0.metrics.add(MetricType::DropSets, 0, 1);
       return Ok(false);
     }
 
-    self.try_update(key, val, cost, ttl, only_update)?
-      .map_or(Ok(false), |(index, item)| {
-        let is_update = item.is_update();
-        // Extract metadata from New items before moving into select.
-        let (item_conflict, item_cost, item_exp, item_version) = match &item {
-            Item::New { conflict, cost, expiration, version, .. } => {
-                (*conflict, *cost, *expiration, *version)
-            }
-            _ => (0, 0, Time::now(), 0),
-        };
-        // Attempt to send item to policy.
-        select! {
-          send(self.insert_buf_tx, item) -> res => {
-            res.map_or_else(|_| {
-              if is_update {
-                // Return true if this was an update operation since we've already
-                // updated the store. For all the other operations (set/delete), we
-                // return false which means the item was not inserted.
-                Ok(true)
-              } else {
-                self.metrics.add(MetricType::DropSets, index, 1);
-                // Roll back eager store insertion; use gen guard so a
-                // concurrent update is not evicted.
-                if let Ok(Some(sitem)) = self.store.try_remove_if_version(&index, item_conflict, item_version) {
-                  self.callback.on_reject(CrateItem {
-                    val: Some(sitem.value.into_inner()),
-                    index,
-                    conflict: item_conflict,
-                    cost: item_cost,
-                    exp: item_exp,
-                  });
-                }
-                Ok(false)
-              }
-            }, |_| Ok(true))
-          },
-          default => {
-            if is_update {
-              // Return true if this was an update operation since we've already
-              // updated the store. For all the other operations (set/delete), we
-              // return false which means the item was not inserted.
-              Ok(true)
-            } else {
-              self.metrics.add(MetricType::DropSets, index, 1);
-              // Roll back eager store insertion; use gen guard so a
-              // concurrent update is not evicted.
-              if let Ok(Some(sitem)) = self.store.try_remove_if_version(&index, item_conflict, item_version) {
-                self.callback.on_reject(CrateItem {
-                  val: Some(sitem.value.into_inner()),
-                  index,
-                  conflict: item_conflict,
-                  cost: item_cost,
-                  exp: item_exp,
-                });
-              }
-              Ok(false)
-            }
+    // RAII guard for the permit. We run user-controlled code below
+    // (`try_update` invokes the user's `Coster` and `UpdateValidator`),
+    // and any Err or panic from that code must not leak the permit — a
+    // permanent leak with `set_buffer_size(1)` stalls all later inserts.
+    // The guard releases on drop; `transfer()` disarms it when the permit
+    // ownership has moved to the processor via a successful `try_send`.
+    //
+    // `SyncPermitGuard::new` also sets `INSERT_PERMIT_HELD` for the
+    // duration of the guard, so any re-entrant cache call (from Coster,
+    // UpdateValidator, or an `on_exit` callback fired before we reach
+    // the release/transfer points) observes the flag and fails fast
+    // instead of blocking on the permit this thread already owns.
+    let mut permit = SyncPermitGuard::new(&self.0.insert_sem);
+
+    // Do the eager store write. Below this point every early-return path
+    // must either drop `permit` (if the item never ships) or call
+    // `permit.transfer()` (if the item is successfully sent, in which case
+    // the processor's recv path releases it).
+    //
+    // `try_update` no longer fires `CacheCallback::on_exit` for the prior
+    // value itself — the firing happens below, AFTER the insert permit is
+    // released (failure paths) or transferred to the processor via a
+    // successful `try_send` (happy path). This keeps user callbacks out of
+    // the permit-held window, so a callback re-entering the cache via
+    // `insert`, `clear`, or `wait` cannot deadlock on a permit the outer
+    // call still owns (see
+    // `test_sync_on_exit_reenters_cache_does_not_deadlock`).
+    //
+    // If `try_update` returns `Err` (or the user's coster/validator
+    // panics) the guard's Drop still releases the permit.
+    let (index, item, prev_val) = match self.try_update(key, val, cost, ttl, only_update)? {
+      Some(triple) => triple,
+      None => {
+        drop(permit);
+        return Ok(false);
+      }
+    };
+
+    let is_update = item.is_update();
+    let (item_conflict, item_cost, item_exp, item_version, item_generation, item_reconcile_cost) =
+      match &item {
+        Item::New {
+          conflict,
+          cost,
+          expiration,
+          version,
+          generation,
+          ..
+        } => (*conflict, *cost, *expiration, *version, *generation, 0),
+        Item::Update {
+          conflict,
+          cost,
+          external_cost,
+          expiration,
+          version,
+          generation,
+          ..
+        } => (
+          *conflict,
+          *cost,
+          *expiration,
+          *version,
+          *generation,
+          self.calculate_internal_cost(*cost) + *external_cost,
+        ),
+        _ => (0, 0, Time::now(), 0, 0, 0),
+      };
+
+    // The permit invariant (permit count == channel capacity) guarantees
+    // `try_send` cannot return `Full`, so no blocking `send` is needed.
+    // `Disconnected` is also unreachable while the cache is live: the
+    // processor holds the only receiver and only exits when `Drop`
+    // disconnects `stop_tx`, which cannot happen while this caller holds
+    // a reference.
+    match self.0.insert_buf_tx.try_send(item) {
+      Ok(()) => {
+        permit.transfer();
+        drop(permit);
+        // Fire `on_exit` for the prior value (Update only) now, OUTSIDE
+        // the permit-held window, so user callbacks that re-enter the
+        // cache cannot self-deadlock on a second permit acquire.
+        if let Some(v) = prev_val {
+          self.0.callback.on_exit(Some(v));
+        }
+        Ok(true)
+      }
+      Err(TrySendError::Full(_)) => {
+        // Unreachable under the permit invariant. Be defensive: release
+        // the permit and roll back the eager write so the store stays
+        // consistent if the invariant were ever violated.
+        drop(permit);
+        self.0.metrics.add(MetricType::DropSets, index, 1);
+        if !is_update {
+          if let Ok(Some(sitem)) =
+            self
+              .0
+              .store
+              .try_remove_if_version(&index, item_conflict, item_version)
+          {
+            self.0.callback.on_reject(CrateItem {
+              val: Some(sitem.value.into_inner()),
+              index,
+              conflict: item_conflict,
+              cost: item_cost,
+              exp: item_exp,
+            });
+          }
+        } else if on_processor {
+          // Re-entry path: the eager `try_update` already destroyed the
+          // previous value in the store (we fire `on_exit` for it below),
+          // so we cannot simply roll the store back. Reconcile policy
+          // inline, mirroring the processor's `Item::Update` handler.
+          self.reconcile_update_on_send_fail(
+            index,
+            item_conflict,
+            item_version,
+            item_generation,
+            item_reconcile_cost,
+            item_exp,
+          );
+        }
+        if let Some(v) = prev_val {
+          self.0.callback.on_exit(Some(v));
+        }
+        Ok(false)
+      }
+      Err(TrySendError::Disconnected(_)) => {
+        // Unreachable while the cache is live. Defensive: reap the eager
+        // write version-gated so a concurrent newer writer is preserved.
+        drop(permit);
+        self.0.metrics.add(MetricType::DropSets, index, 1);
+        if let Ok(Some(sitem)) =
+          self
+            .0
+            .store
+            .try_remove_if_version(&index, item_conflict, item_version)
+        {
+          if !is_update {
+            self.0.callback.on_reject(CrateItem {
+              val: Some(sitem.value.into_inner()),
+              index,
+              conflict: item_conflict,
+              cost: item_cost,
+              exp: item_exp,
+            });
+          } else {
+            self.0.callback.on_exit(Some(sitem.value.into_inner()));
           }
         }
-      })
+        if let Some(v) = prev_val {
+          self.0.callback.on_exit(Some(v));
+        }
+        Ok(false)
+      }
+    }
+  }
+
+  /// Reconcile policy for an `Item::Update` whose buffered send was dropped
+  /// because the caller is the processor thread itself (re-entering via a
+  /// `CacheCallback`) and the insert buffer is full. Mirrors the processor's
+  /// `Item::Update` handler — generation-gated (skip if `clear()` ran after
+  /// our eager write), version-gated (skip if a newer writer has since
+  /// overwritten our row), with a `policy.add` fallthrough and
+  /// rejection/victim cleanup. Running on the processor thread means no
+  /// concurrent processor loop iteration can race us — we ARE the processor
+  /// for the duration of the callback.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  fn reconcile_update_on_send_fail(
+    &self,
+    index: u64,
+    conflict: u64,
+    version: u64,
+    captured_gen: u64,
+    reconcile_cost: i64,
+    exp: Time,
+  ) {
+    let current_gen = self.0.clear_generation.load(Ordering::Acquire);
+    if captured_gen != current_gen {
+      // `clear()` ran after our eager write. Reap the ghost row; do not
+      // touch policy (already wiped).
+      let _ = self
+        .0
+        .store
+        .try_remove_if_version(&index, conflict, version);
+      return;
+    }
+    if !self.0.store.contains_version(&index, conflict, version) {
+      return;
+    }
+    if self.0.policy.update(&index, reconcile_cost) {
+      return;
+    }
+    let (rejected, victims) = match self.0.policy.add(index, reconcile_cost) {
+      AddOutcome::Admitted { victims } => (false, victims),
+      AddOutcome::UpdatedExisting => (false, Vec::new()),
+      AddOutcome::RejectedByCost => (true, Vec::new()),
+      AddOutcome::RejectedBySampling { victims } => (true, victims),
+    };
+    if rejected {
+      if let Ok(Some(sitem)) = self
+        .0
+        .store
+        .try_remove_if_version(&index, conflict, version)
+      {
+        self.0.callback.on_reject(CrateItem {
+          val: Some(sitem.value.into_inner()),
+          index,
+          conflict,
+          cost: reconcile_cost,
+          exp,
+        });
+        if !self.0.store.contains_key(&index, 0) {
+          self.0.policy.remove(&index);
+        }
+      }
+    }
+    for victim in victims {
+      if let Ok(Some(sitem)) = self.0.store.try_remove(&victim.key, 0) {
+        self.0.callback.on_evict(CrateItem {
+          index: victim.key,
+          val: Some(sitem.value.into_inner()),
+          cost: victim.cost,
+          conflict: sitem.conflict,
+          exp: sitem.expiration,
+        });
+      }
+    }
+  }
+
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  fn calculate_internal_cost(&self, cost: i64) -> i64 {
+    if !self.0.ignore_internal_cost {
+      cost + (self.0.store.item_size() as i64)
+    } else {
+      cost
+    }
   }
 }
 
@@ -664,16 +1204,16 @@ where
     policy: Arc<LFUPolicy<S>>,
     insert_buf_rx: Receiver<Item<V>>,
     stop_rx: Receiver<()>,
-    clear_rx: UnboundedReceiver<()>,
     metrics: Arc<Metrics>,
     callback: Arc<CB>,
+    clear_generation: Arc<AtomicU64>,
+    insert_sem: Arc<SyncSemaphore>,
   ) -> Self {
     let item_size = store.item_size();
     let hasher = store.hasher();
     Self {
       insert_buf_rx,
       stop_rx,
-      clear_rx,
       metrics,
       store,
       policy,
@@ -683,23 +1223,44 @@ where
       ignore_internal_cost,
       item_size,
       cleanup_duration,
+      clear_generation,
+      insert_sem,
     }
   }
 
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub(crate) fn spawn(mut self) -> JoinHandle<Result<(), CacheError>> {
     let ticker = tick(self.cleanup_duration);
+    let sem_closer = SemCloser(self.insert_sem.clone());
     spawn(move || {
+      // RAII guard: fires `insert_sem.close()` on ANY exit path (normal
+      // return, early return, or panic-unwind from a user callback). A
+      // panicking `on_evict`/`on_reject`/`on_exit` skips the per-item
+      // `insert_sem.release()` below, and buffered items get dropped with
+      // the channel when the stack unwinds — their permits are lost too.
+      // Without this guard, a live clone's next `insert`/`clear`/`wait`
+      // would block forever on `insert_sem.acquire()`. Closing the
+      // semaphore wakes every waiter with `SemaphoreClosed`, and the
+      // caller-side `acquire().is_err()` branch turns the call into a
+      // graceful no-op.
+      let _sem_closer = sem_closer;
+      // Advertise to any re-entrant callback that tries `insert` from inside
+      // `on_evict`/`on_reject`/`on_exit` that blocking on the insert buffer
+      // would self-deadlock. See `ON_PROCESSOR_THREAD` at the top of the file.
+      ON_PROCESSOR_THREAD.with(|c| c.set(true));
       loop {
         select! {
           recv(self.insert_buf_rx) -> res => {
+            // Every recv consumes a permit previously held by the sender.
+            // Release unconditionally on recv success, even if handle_item
+            // errors — the item was dequeued and the permit must flow back
+            // so blocked acquirers can make progress.
+            let had_item = res.is_ok();
             if let Err(e) = self.handle_insert_event(res) {
               tracing::error!("fail to handle insert event: {}", e);
             }
-          },
-          recv(self.clear_rx) -> _ => {
-            if let Err(e) = self.handle_clear_event() {
-              tracing::error!("fail to handle clear event: {}", e);
+            if had_item {
+              self.insert_sem.release();
             }
           },
           recv(ticker) -> msg => {
@@ -707,15 +1268,39 @@ where
               tracing::error!("fail to handle cleanup event: {}", e);
             }
           },
-          recv(self.stop_rx) -> _ => return Ok(()),
+          recv(self.stop_rx) -> _ => {
+            // The stop arm fires when `stop_rx` is disconnected, which
+            // `Cache::drop` triggers by dropping `stop_tx`. Normally that
+            // happens after every cache reference has gone out of scope, so
+            // no new items can be enqueued while we drain and no caller is
+            // waiting on a marker (Wait/Clear are synchronous calls that
+            // hold a live reference). Still, drain defensively
+            // so a stray buffered item doesn't keep the store alive past
+            // drop: reap New/Update ghost writes version-gated (policy is
+            // about to be torn down with the processor, so we don't touch
+            // it), and signal any leftover markers.
+            //
+            // Each drained item corresponds to a held permit; release
+            // them so the semaphore invariant is preserved in case
+            // anything ever re-uses it post-drain.
+            while let Ok(item) = self.insert_buf_rx.try_recv() {
+              match item {
+                Item::Wait(wg) | Item::Clear(wg) => {
+                  wg.done();
+                }
+                Item::New { key, conflict, version, .. }
+                | Item::Update { key, conflict, version, .. } => {
+                  let _ = self.store.try_remove_if_version(&key, conflict, version);
+                }
+                Item::Delete { .. } => {}
+              }
+              self.insert_sem.release();
+            }
+            return Ok(());
+          },
         }
       }
     })
-  }
-
-  #[cfg_attr(not(tarpaulin), inline(always))]
-  pub(crate) fn handle_clear_event(&mut self) -> Result<(), CacheError> {
-    CacheCleaner::new(self).clean()
   }
 
   #[cfg_attr(not(tarpaulin), inline(always))]
@@ -746,28 +1331,16 @@ where
   }
 }
 
-impl<V, U, CB, S> CacheCleaner<'_, V, U, CB, S>
-where
-  V: Send + Sync + 'static,
-  U: UpdateValidator<Value = V>,
-  CB: CacheCallback<Value = V>,
-  S: BuildHasher + Clone + 'static + Send,
-{
-  #[cfg_attr(not(tarpaulin), inline(always))]
-  pub(crate) fn clean(mut self) -> Result<(), CacheError> {
-    loop {
-      select! {
-          // clear out the insert buffer channel.
-          recv(self.processor.insert_buf_rx) -> msg => {
-              msg.map(|item| self.handle_item(item)).map_err(|e| CacheError::RecvError(format!("fail to receive msg from insert buffer: {}", e)))?;
-          },
-          default => return Ok(()),
-      }
-    }
+/// Drop-guard that closes the insert semaphore on processor-thread exit,
+/// including panic-unwind. See the `spawn` body for rationale.
+struct SemCloser(Arc<SyncSemaphore>);
+
+impl Drop for SemCloser {
+  fn drop(&mut self) {
+    self.0.close();
   }
 }
 
 impl_builder!(CacheBuilder);
 impl_cache!(Cache, CacheBuilder, Item);
 impl_cache_processor!(CacheProcessor, Item);
-impl_cache_cleaner!(CacheCleaner, CacheProcessor, Item);

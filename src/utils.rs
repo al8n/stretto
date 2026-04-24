@@ -17,12 +17,13 @@
  */
 use crate::store::StoreItem;
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
-use std::cell::UnsafeCell;
-use std::collections::HashMap;
-use std::collections::hash_map::RandomState;
-use std::fmt::{Debug, Display, Formatter};
-use std::hash::BuildHasher;
-use std::time::Duration;
+use std::{
+  cell::UnsafeCell,
+  collections::{HashMap, hash_map::RandomState},
+  fmt::{Debug, Display, Formatter},
+  hash::BuildHasher,
+  time::Duration,
+};
 
 /// ValueRef is returned when invoking `get` method of the Cache.
 /// It contains a `RwLockReadGuard` and a value reference.
@@ -246,14 +247,12 @@ pub(crate) unsafe fn change_lifetime_const<'b, T>(x: &T) -> &'b T {
 
 #[cfg(test)]
 mod test {
-  use crate::store::StoreItem;
-  use crate::ttl::Time;
   use crate::utils::{
     // SharedNonNull,
     SharedValue,
     change_lifetime_const,
   };
-  use crate::{ValueRef, ValueRefMut};
+  use crate::{ValueRef, ValueRefMut, store::StoreItem, ttl::Time};
   use parking_lot::RwLock;
   use std::collections::HashMap;
 
@@ -266,6 +265,7 @@ mod test {
         key: 1,
         conflict: 0,
         version: 0,
+        generation: 0,
         value: SharedValue::new(3),
         expiration: Time::now(),
       },
@@ -276,6 +276,7 @@ mod test {
         key: 2,
         conflict: 0,
         version: 0,
+        generation: 0,
         value: SharedValue::new(3),
         expiration: Time::now(),
       },
@@ -300,6 +301,7 @@ mod test {
         key: 1,
         conflict: 0,
         version: 0,
+        generation: 0,
         value: SharedValue::new(3),
         expiration: Time::now(),
       },
@@ -310,6 +312,7 @@ mod test {
         key: 2,
         conflict: 0,
         version: 0,
+        generation: 0,
         value: SharedValue::new(3),
         expiration: Time::now(),
       },

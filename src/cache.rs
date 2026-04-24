@@ -200,8 +200,7 @@ macro_rules! impl_builder {
 #[cfg(feature = "sync")]
 macro_rules! impl_cache {
   ($cache: ident, $builder: ident, $item: ident) => {
-    use crate::store::UpdateResult;
-    use crate::{ValueRef, ValueRefMut};
+    use crate::{ValueRef, ValueRefMut, store::UpdateResult};
 
     impl<K, V, KH, C, U, CB, S> $cache<K, V, KH, C, U, CB, S>
     where
@@ -220,21 +219,17 @@ macro_rules! impl_cache {
         K: core::borrow::Borrow<Q>,
         Q: core::hash::Hash + Eq + ?Sized,
       {
-        if self.is_closed.load(Ordering::SeqCst) {
-          return None;
-        }
+        let (index, conflict) = self.0.key_to_hash.build_key(key);
 
-        let (index, conflict) = self.key_to_hash.build_key(key);
+        self.0.get_buf.push(index);
 
-        self.get_buf.push(index);
-
-        match self.store.get(&index, conflict) {
+        match self.0.store.get(&index, conflict) {
           None => {
-            self.metrics.add(MetricType::Miss, index, 1);
+            self.0.metrics.add(MetricType::Miss, index, 1);
             None
           }
           Some(v) => {
-            self.metrics.add(MetricType::Hit, index, 1);
+            self.0.metrics.add(MetricType::Hit, index, 1);
             Some(v)
           }
         }
@@ -247,21 +242,17 @@ macro_rules! impl_cache {
         K: core::borrow::Borrow<Q>,
         Q: core::hash::Hash + Eq + ?Sized,
       {
-        if self.is_closed.load(Ordering::SeqCst) {
-          return None;
-        }
+        let (index, conflict) = self.0.key_to_hash.build_key(key);
 
-        let (index, conflict) = self.key_to_hash.build_key(key);
+        self.0.get_buf.push(index);
 
-        self.get_buf.push(index);
-
-        match self.store.get_mut(&index, conflict) {
+        match self.0.store.get_mut(&index, conflict) {
           None => {
-            self.metrics.add(MetricType::Miss, index, 1);
+            self.0.metrics.add(MetricType::Miss, index, 1);
             None
           }
           Some(v) => {
-            self.metrics.add(MetricType::Hit, index, 1);
+            self.0.metrics.add(MetricType::Hit, index, 1);
             Some(v)
           }
         }
@@ -274,37 +265,45 @@ macro_rules! impl_cache {
         K: core::borrow::Borrow<Q>,
         Q: core::hash::Hash + Eq + ?Sized,
       {
-        let (index, conflict) = self.key_to_hash.build_key(key);
+        let (index, conflict) = self.0.key_to_hash.build_key(key);
         self
+          .0
           .store
           .get(&index, conflict)
-          .and_then(|_| self.store.expiration(&index).map(|time| time.get_ttl()))
+          .and_then(|_| self.0.store.expiration(&index).map(|time| time.get_ttl()))
       }
 
       /// `max_cost` returns the max cost of the cache.
       #[cfg_attr(not(tarpaulin), inline(always))]
       pub fn max_cost(&self) -> i64 {
-        self.policy.max_cost()
+        self.0.policy.max_cost()
       }
 
       /// `update_max_cost` updates the maxCost of an existing cache.
       #[cfg_attr(not(tarpaulin), inline(always))]
       pub fn update_max_cost(&self, max_cost: i64) {
-        self.policy.update_max_cost(max_cost)
+        self.0.policy.update_max_cost(max_cost)
       }
 
       /// Returns the number of items in the Cache
       #[cfg_attr(not(tarpaulin), inline(always))]
       pub fn len(&self) -> usize {
-        self.store.len()
+        self.0.store.len()
       }
 
       /// Returns true if the cache is empty
       #[cfg_attr(not(tarpaulin), inline(always))]
       pub fn is_empty(&self) -> bool {
-        self.store.len() == 0
+        self.0.store.len() == 0
       }
 
+      /// Eager store write. Returns the new `Item` to enqueue along with the
+      /// prior value (for Update). The caller is responsible for firing
+      /// `CacheCallback::on_exit(prev)` — but NOT while holding an insert
+      /// permit. User callbacks that re-enter the cache would otherwise
+      /// block on `insert_sem.acquire()` indefinitely under a small
+      /// `buffer_size`. See `try_insert_in` in `src/cache/sync.rs` and
+      /// `src/cache/async.rs` for the exact firing points.
       #[cfg_attr(not(tarpaulin), inline(always))]
       fn try_update(
         &self,
@@ -313,19 +312,38 @@ macro_rules! impl_cache {
         cost: i64,
         ttl: Duration,
         only_update: bool,
-      ) -> Result<Option<(u64, $item<V>)>, CacheError> {
+      ) -> Result<Option<(u64, $item<V>, Option<V>)>, CacheError> {
         let expiration = if ttl.is_zero() {
           Time::now()
         } else {
           Time::now_with_expiration(ttl)
         };
 
-        let (index, conflict) = self.key_to_hash.build_key(&key);
+        let (index, conflict) = self.0.key_to_hash.build_key(&key);
 
         // cost is eventually updated. The expiration must also be immediately updated
         // to prevent items from being prematurely removed from the map.
-        let external_cost = if cost == 0 { self.coster.cost(&val) } else { 0 };
-        match self.store.try_update(index, val, conflict, expiration)? {
+        let external_cost = if cost == 0 {
+          self.0.coster.cost(&val)
+        } else {
+          0
+        };
+        // Capture the clear generation BEFORE the eager store write. If a
+        // clear() observes a higher generation by the time the processor
+        // admits this item, the processor treats it as stale and removes the
+        // store entry (if any) instead of admitting to policy. Acquire
+        // ordering pairs with the Release-ordered fetch_add in the Clear
+        // handler so a captured "pre-clear" generation is guaranteed to be
+        // less than the post-clear value.
+        let captured_gen = self
+          .0
+          .clear_generation
+          .load(std::sync::atomic::Ordering::Acquire);
+        match self
+          .0
+          .store
+          .try_update(index, val, conflict, expiration, captured_gen)?
+        {
           UpdateResult::NotExist(v) => {
             if only_update {
               Ok(None)
@@ -334,11 +352,25 @@ macro_rules! impl_cache {
               // The background processor still runs policy admission; if rejected
               // it removes the item from the store.
               // try_insert returns None when a concurrent insert beat us and the
-              // validator/conflict blocked the write; in that case skip policy.
-              match self.store.try_insert(index, v, conflict, expiration)? {
+              // validator/conflict blocked the write (or when a post-clear row
+              // already occupies this key and our captured generation is
+              // stale — the store refuses in that case); skip policy.
+              match self
+                .0
+                .store
+                .try_insert(index, v, conflict, expiration, captured_gen)?
+              {
                 Some(version) => Ok(Some((
                   index,
-                  $item::new(index, conflict, cost + external_cost, expiration, version),
+                  $item::new(
+                    index,
+                    conflict,
+                    cost + external_cost,
+                    expiration,
+                    version,
+                    captured_gen,
+                  ),
+                  None,
                 ))),
                 None => Ok(None),
               }
@@ -347,9 +379,32 @@ macro_rules! impl_cache {
           // Key already exists but the validator or conflict hash blocked the update.
           // The store is unchanged; no New item should be queued.
           UpdateResult::Reject(_) | UpdateResult::Conflict(_) => Ok(None),
-          UpdateResult::Update(v) => {
-            self.callback.on_exit(Some(v));
-            Ok(Some((index, $item::update(index, cost, external_cost))))
+          // A clear raced with this caller: the existing row was written
+          // under a later generation than we captured, and the store refused
+          // to clobber it. The post-clear row belongs to a different writer
+          // who will admit it through their own Item — we have nothing to
+          // enqueue and must not fire `on_exit`.
+          UpdateResult::Stale(_) => Ok(None),
+          UpdateResult::Update(v, version) => {
+            // `on_exit(Some(v))` is intentionally NOT fired here. The
+            // caller fires it after the insert permit is released (or
+            // transferred to the channel) so a user callback that
+            // re-enters the cache cannot deadlock on a permit the outer
+            // call still holds. See `try_insert_in` for the firing
+            // points.
+            Ok(Some((
+              index,
+              $item::update(
+                index,
+                conflict,
+                cost,
+                external_cost,
+                expiration,
+                version,
+                captured_gen,
+              ),
+              Some(v),
+            )))
           }
         }
       }
@@ -368,35 +423,6 @@ macro_rules! impl_cache {
     {
       fn as_ref(&self) -> &$cache<K, V, KH, C, U, CB, S> {
         self
-      }
-    }
-
-    impl<K, V, KH, C, U, CB, S> Clone for $cache<K, V, KH, C, U, CB, S>
-    where
-      K: Hash + Eq,
-      V: Send + Sync + 'static,
-      KH: KeyBuilder<Key = K>,
-      C: Coster<Value = V>,
-      U: UpdateValidator<Value = V>,
-      CB: CacheCallback<Value = V>,
-      S: BuildHasher + Clone + 'static,
-    {
-      fn clone(&self) -> Self {
-        Self {
-          store: self.store.clone(),
-          policy: self.policy.clone(),
-          get_buf: self.get_buf.clone(),
-          insert_buf_tx: self.insert_buf_tx.clone(),
-          stop_tx: self.stop_tx.clone(),
-          clear_tx: self.clear_tx.clone(),
-          callback: self.callback.clone(),
-          key_to_hash: self.key_to_hash.clone(),
-          is_closed: self.is_closed.clone(),
-          close_lock: self.close_lock.clone(),
-          coster: self.coster.clone(),
-          metrics: self.metrics.clone(),
-          _marker: self._marker,
-        }
       }
     }
   };
@@ -420,16 +446,65 @@ macro_rules! impl_cache_processor {
             cost,
             expiration,
             version,
+            generation,
             ..
           } => {
+            // A `clear()` may have run between the caller's eager store
+            // write and this admission. If so, the eager write either was
+            // wiped by `store.clear()` already or is stale state that must
+            // not be admitted to policy. In either case: remove any matching
+            // entry from the store and skip admission. Acquire pairs with
+            // the Release-ordered fetch_add in the Clear handler.
+            let current_gen = self
+              .clear_generation
+              .load(std::sync::atomic::Ordering::Acquire);
+            if generation != current_gen {
+              if let Some(sitem) = self.store.try_remove_if_version(&key, conflict, version)? {
+                self.callback.on_exit(Some(sitem.value.into_inner()));
+              }
+              return Ok(());
+            }
+
+            // Gate policy admission on "store still holds our eager row at
+            // this exact version". The insert buffer is MPSC and the eager
+            // `store.try_insert` / `store.try_remove` happen outside the
+            // channel's ordering guarantee — a concurrent `remove()` can
+            // therefore land its Item::Delete (or even overlap with a later
+            // insert's Item::New) in the queue ahead of our Item::New, in
+            // which case our eager row has already been deleted by the time
+            // this handler runs. Admitting to policy anyway would create a
+            // ghost: policy tracks the key, but no store row exists to serve
+            // reads or be evicted — so the entry permanently escapes the
+            // cost/eviction accounting and can silently break max_cost.
+            if !self.store.contains_version(&key, conflict, version) {
+              return Ok(());
+            }
+
             let cost = self.calculate_internal_cost(cost);
-            let (victim_sets, added) = self.policy.add(key, cost);
-            if added {
+            // The four `AddOutcome` variants correspond to genuinely different
+            // next actions; the old `(Option<Vec>, bool)` return collapsed
+            // `UpdatedExisting` and the rejection paths, which forced a
+            // separate `policy.contains` probe to avoid tearing down a fresh
+            // store row on a same-key reinsert race. See `policy::AddOutcome`.
+            let (admitted, rejected, victims) = match self.policy.add(key, cost) {
+              AddOutcome::Admitted { victims } => (true, false, victims),
+              AddOutcome::UpdatedExisting => {
+                // Policy already held an entry for this key; its cost has
+                // been updated in place. The caller's eager store row is
+                // the current value, so leave it alone. A stale pending
+                // Item::Delete for the previous version (if any) is
+                // handled by the Delete branch's `contains_key` gate.
+                (false, false, Vec::new())
+              }
+              AddOutcome::RejectedByCost => (false, true, Vec::new()),
+              AddOutcome::RejectedBySampling { victims } => (false, true, victims),
+            };
+
+            if admitted {
               self.track_admission(key);
-            } else {
-              // Item was eagerly inserted into the store; remove it now that
-              // the policy has rejected it. Use gen guard to avoid evicting
-              // a newer value written after this New item was queued.
+            } else if rejected {
+              // Undo the caller's eager write. Version-gated so a concurrent
+              // reinsert that landed a newer value survives.
               if let Some(sitem) = self.store.try_remove_if_version(&key, conflict, version)? {
                 self.callback.on_reject(CrateItem {
                   val: Some(sitem.value.into_inner()),
@@ -438,22 +513,41 @@ macro_rules! impl_cache_processor {
                   cost,
                   exp: expiration,
                 });
+                // Ghost-entry cleanup. `policy.add`'s `cost > max_cost`
+                // branch returns before the `costs.update` check, so
+                // `RejectedByCost` for a key that was already in policy
+                // leaves that entry untouched. If this rejection was the
+                // rollback of a same-key remove+reinsert race ([Delete,
+                // New] order where the Delete's `contains_key` gate saw
+                // our eager row and skipped `policy.remove`), policy now
+                // tracks a key whose store row we just removed — a ghost
+                // that corrupts cost accounting until a future insert of
+                // the same key lands. If the store has no row at this
+                // index after the rollback, the only way policy still
+                // contains it is that ghost, so wipe it. The processor
+                // is single-threaded, so nothing else has mutated policy
+                // since we last touched it.
+                //
+                // Pass conflict=0 ("any row at this index") rather than
+                // our own conflict. Policy is keyed by index alone, so a
+                // live row at the same index but a different conflict
+                // (index collision between distinct keys) already owns
+                // the shared policy entry; wiping policy would strand it.
+                if !self.store.contains_key(&key, 0) {
+                  self.policy.remove(&key);
+                }
               }
             }
 
-            if let Some(victims) = victim_sets {
-              for victim in victims {
-                let sitem = self.store.try_remove(&victim.key, 0)?;
-                if let Some(sitem) = sitem {
-                  let item = CrateItem {
-                    index: victim.key,
-                    val: Some(sitem.value.into_inner()),
-                    cost: victim.cost,
-                    conflict: sitem.conflict,
-                    exp: sitem.expiration,
-                  };
-                  self.on_evict(item);
-                }
+            for victim in victims {
+              if let Some(sitem) = self.store.try_remove(&victim.key, 0)? {
+                self.on_evict(CrateItem {
+                  index: victim.key,
+                  val: Some(sitem.value.into_inner()),
+                  cost: victim.cost,
+                  conflict: sitem.conflict,
+                  exp: sitem.expiration,
+                });
               }
             }
 
@@ -461,17 +555,187 @@ macro_rules! impl_cache_processor {
           }
           $item::Update {
             key,
+            conflict,
             cost,
             external_cost,
+            expiration,
+            version,
+            generation,
           } => {
+            // A `clear()` after the eager store update (but before this
+            // admission) has already wiped policy state; applying the
+            // captured cost now would either resurrect a nonexistent entry
+            // or corrupt a post-clear admission's cost accounting.
+            //
+            // The store's generation-stamp gate refuses any stale caller
+            // whose captured generation is less than an existing row's —
+            // so a pre-clear writer cannot overwrite a post-clear row.
+            // The remaining path into this stale-gen arm is a pre-clear
+            // writer whose eager `store.try_update` committed BEFORE the
+            // Clear handler wiped the store. In that case the wipe already
+            // removed the row; the `try_remove_if_version` below is
+            // defensive and normally a no-op.
+            let current_gen = self
+              .clear_generation
+              .load(std::sync::atomic::Ordering::Acquire);
+            if generation != current_gen {
+              if let Some(sitem) = self.store.try_remove_if_version(&key, conflict, version)? {
+                self.callback.on_exit(Some(sitem.value.into_inner()));
+                if !self.store.contains_key(&key, 0) {
+                  self.policy.remove(&key);
+                }
+              }
+              return Ok(());
+            }
+            // Gate on "our eager write is still the live version at this
+            // (key, conflict)". If a later writer has since bumped the
+            // version, they own the row and will handle its policy
+            // accounting (via their own Item::Update / Item::New);
+            // touching policy or store here would corrupt their bookkeep-
+            // ing. Symmetric to the `contains_version` gate in Item::New.
+            if !self.store.contains_version(&key, conflict, version) {
+              return Ok(());
+            }
             let cost = self.calculate_internal_cost(cost) + external_cost;
-            self.policy.update(&key, cost);
+            if self.policy.update(&key, cost) {
+              return Ok(());
+            }
+            // Policy doesn't track this key yet. Two writers raced on the
+            // same key: our eager `store.try_update` was actually the
+            // FIRST write (caller-side) but `try_update` took the
+            // UpdateResult::Update branch because a concurrent
+            // `try_insert` happened to land between our read and our
+            // store access — OR, more commonly, our Item::New for this
+            // row's predecessor was skipped by its `contains_version`
+            // gate because we bumped the version in the gap. Either way,
+            // the store holds our row and the key is absent from policy:
+            // an orphan unless we admit it ourselves. Treat this like a
+            // fresh admission — mirroring Item::New's branches so that
+            // rejections roll back the row (same `try_remove_if_version`
+            // + ghost-entry cleanup) and admissions track victims.
+            let (admitted, rejected, victims) = match self.policy.add(key, cost) {
+              AddOutcome::Admitted { victims } => (true, false, victims),
+              // A racing handler just admitted our key between our
+              // `update` probe and our `add`. Policy now tracks it; the
+              // cost is what that handler set, not necessarily ours, but
+              // that's the same outcome concurrent updates have always
+              // produced (one wins) and is self-consistent with the live
+              // store row.
+              AddOutcome::UpdatedExisting => (true, false, Vec::new()),
+              AddOutcome::RejectedByCost => (false, true, Vec::new()),
+              AddOutcome::RejectedBySampling { victims } => (false, true, victims),
+            };
+            if admitted {
+              self.track_admission(key);
+            } else if rejected {
+              if let Some(sitem) = self.store.try_remove_if_version(&key, conflict, version)? {
+                self.callback.on_reject(CrateItem {
+                  val: Some(sitem.value.into_inner()),
+                  index: key,
+                  conflict,
+                  cost,
+                  exp: expiration,
+                });
+                // Ghost-entry cleanup: same rationale as Item::New's
+                // rejection branch. `policy.add`'s cost>max_cost path
+                // returns before touching an existing entry, so a prior
+                // Delete that skipped cleanup could have left a stale
+                // policy entry that only the store-is-empty check can
+                // catch. conflict=0 ("any row at this index") to respect
+                // index collisions between distinct keys.
+                if !self.store.contains_key(&key, 0) {
+                  self.policy.remove(&key);
+                }
+              }
+            }
+            for victim in victims {
+              if let Some(sitem) = self.store.try_remove(&victim.key, 0)? {
+                self.on_evict(CrateItem {
+                  index: victim.key,
+                  val: Some(sitem.value.into_inner()),
+                  cost: victim.cost,
+                  conflict: sitem.conflict,
+                  exp: sitem.expiration,
+                });
+              }
+            }
 
             Ok(())
           }
-          $item::Delete { key, conflict } => {
-            self.policy.remove(&key); // deals with metrics updates.
-            if let Some(sitem) = self.store.try_remove(&key, conflict)? {
+          $item::Delete {
+            key,
+            conflict,
+            generation,
+            version,
+          } => {
+            // Same reason as Update: if a `clear()` landed between the
+            // eager `store.try_remove` and this handler, policy was wiped
+            // and a post-clear insert may already be live. Skip both the
+            // policy removal and the follow-up store sweep so the new
+            // entry is preserved.
+            let current_gen = self
+              .clear_generation
+              .load(std::sync::atomic::Ordering::Acquire);
+            if generation != current_gen {
+              // Policy-ghost cleanup, symmetric to the Update stale arm.
+              // The caller's eager `store.try_remove` already wiped a
+              // row (version != 0 means the remove actually removed
+              // something). A post-clear insert at the same key may
+              // already have been admitted to policy between clear and
+              // this handler. If the store is now empty at this index,
+              // any surviving policy entry is that orphan; wipe it.
+              // version == 0 means the eager remove was a no-op, so no
+              // row was torn down and policy must not be touched (a
+              // live post-clear admission would own it). conflict=0
+              // for the same reason as the Update arm: policy is
+              // keyed by index alone, so a live row under a different
+              // conflict still owns the shared entry.
+              if version != 0 && !self.store.contains_key(&key, 0) {
+                self.policy.remove(&key);
+              }
+              return Ok(());
+            }
+            // `try_remove` only enqueues Item::Delete when the eager remove
+            // actually removed a row, so `version` is always a real store
+            // version here (store versions start at 1; 0 is the reserved
+            // "no row" sentinel). The zero check remains as defense in
+            // depth against future callers that might synthesize a Delete
+            // without an eager remove — touching policy then would risk
+            // orphaning a concurrent admission outside policy accounting.
+            if version == 0 {
+              return Ok(());
+            }
+            // Gate `policy.remove` on the store being empty at this index. In
+            // the normal case (no racing reinsert) the caller's eager
+            // `store.try_remove` left the index absent, so this is true and we
+            // clean up policy. But if a concurrent `insert()` landed a newer
+            // row between the caller's remove and this handler, and that new
+            // Item::New was processed before us, the New handler already
+            // refreshed the policy entry in-place (via
+            // `AddOutcome::UpdatedExisting`) to reflect the fresh admission.
+            // Wiping policy now would orphan that fresh row outside
+            // cost/eviction accounting — a ghost store row.
+            //
+            // The gate passes conflict=0 to ask "does the store hold ANY row
+            // at this index", not "at this (index, conflict)". Policy is
+            // keyed by index alone, so an index collision between distinct
+            // keys (different conflicts) shares a single policy entry.
+            // Checking with our own conflict would miss a post-remove insert
+            // at a different conflict: `contains_key(&key, C_A)` would return
+            // false even though the store now holds a row at this index
+            // (conflict C_B) that the New handler already merged into the
+            // shared policy entry via UpdatedExisting. We'd then wipe policy
+            // and strand C_B as a ghost.
+            if !self.store.contains_key(&key, 0) {
+              self.policy.remove(&key); // deals with metrics updates.
+            }
+            // Version-guarded removal: the eager remove already took
+            // whatever was there at the caller's `try_remove`. If a
+            // concurrent insert has since landed a new value at the same
+            // (key, conflict) under a different version, leaving it alone
+            // is the correct outcome — removing by (key, conflict) alone
+            // would destroy that fresh data.
+            if let Some(sitem) = self.store.try_remove_if_version(&key, conflict, version)? {
               self.callback.on_exit(Some(sitem.value.into_inner()));
             }
 
@@ -481,6 +745,46 @@ macro_rules! impl_cache_processor {
             wg.done();
             Ok(())
           }
+          $item::Clear(wg) => {
+            // Ordered-clear barrier. Items enqueued before this marker have
+            // already been processed above; items enqueued after will be
+            // processed against the freshly cleared state, so callers that
+            // run `insert()` after `clear()` returns never see their writes
+            // drained as part of the clear.
+            //
+            // Wipe store/policy/metrics/start_ts FIRST, then bump the
+            // generation. If the bump happened first there would be a
+            // window between the bump and `store.clear()` where a
+            // concurrent `try_update` could load the NEW generation,
+            // write a row the wipe is about to erase, and enqueue an
+            // `Item::New` whose generation matches current — the
+            // processor would then admit a key that no longer exists in
+            // the store. By bumping AFTER the wipe, any eager write
+            // racing with this handler captured the OLD generation and
+            // its `Item::New` becomes stale: the New handler's
+            // `try_remove_if_version` cleans up whatever ghost row it
+            // may have left (nothing, usually — the wipe ate it). The
+            // bump still happens before `wg.done()`, so by the time
+            // `clear()` returns to its caller, the new generation is
+            // visible to any subsequent insert. Release ordering pairs
+            // with `try_update`'s Acquire load.
+            self.store.clear();
+            self.policy.clear();
+            self.metrics.clear();
+            self.start_ts.clear();
+            self
+              .clear_generation
+              .fetch_add(1, std::sync::atomic::Ordering::Release);
+            wg.done();
+            Ok(())
+          }
+          // Async-only catch-all for `Item::Close`: the async select! loop
+          // intercepts Close before calling `handle_item`, so this arm is
+          // dead at runtime. It keeps the match exhaustive when the macro
+          // is instantiated for async's `Item` (which has a Close variant
+          // sync's does not).
+          #[allow(unreachable_patterns)]
+          _ => Ok(()),
         }
       }
 
@@ -530,8 +834,7 @@ macro_rules! impl_cache_processor {
 #[cfg(feature = "async")]
 macro_rules! impl_async_cache {
   ($cache: ident, $builder: ident, $item: ident) => {
-    use crate::store::UpdateResult;
-    use crate::{ValueRef, ValueRefMut};
+    use crate::{ValueRef, ValueRefMut, store::UpdateResult};
 
     impl<K, V, KH, C, U, CB, S> $cache<K, V, KH, C, U, CB, S>
     where
@@ -550,21 +853,17 @@ macro_rules! impl_async_cache {
         K: core::borrow::Borrow<Q>,
         Q: core::hash::Hash + Eq + ?Sized,
       {
-        if self.is_closed.load(Ordering::SeqCst) {
-          return None;
-        }
+        let (index, conflict) = self.0.key_to_hash.build_key(key);
 
-        let (index, conflict) = self.key_to_hash.build_key(key);
+        self.0.get_buf.push(index).await;
 
-        self.get_buf.push(index).await;
-
-        match self.store.get(&index, conflict) {
+        match self.0.store.get(&index, conflict) {
           None => {
-            self.metrics.add(MetricType::Miss, index, 1);
+            self.0.metrics.add(MetricType::Miss, index, 1);
             None
           }
           Some(v) => {
-            self.metrics.add(MetricType::Hit, index, 1);
+            self.0.metrics.add(MetricType::Hit, index, 1);
             Some(v)
           }
         }
@@ -577,21 +876,17 @@ macro_rules! impl_async_cache {
         K: core::borrow::Borrow<Q>,
         Q: core::hash::Hash + Eq + ?Sized,
       {
-        if self.is_closed.load(Ordering::SeqCst) {
-          return None;
-        }
+        let (index, conflict) = self.0.key_to_hash.build_key(key);
 
-        let (index, conflict) = self.key_to_hash.build_key(key);
+        self.0.get_buf.push(index).await;
 
-        self.get_buf.push(index).await;
-
-        match self.store.get_mut(&index, conflict) {
+        match self.0.store.get_mut(&index, conflict) {
           None => {
-            self.metrics.add(MetricType::Miss, index, 1);
+            self.0.metrics.add(MetricType::Miss, index, 1);
             None
           }
           Some(v) => {
-            self.metrics.add(MetricType::Hit, index, 1);
+            self.0.metrics.add(MetricType::Hit, index, 1);
             Some(v)
           }
         }
@@ -604,37 +899,45 @@ macro_rules! impl_async_cache {
         K: core::borrow::Borrow<Q>,
         Q: core::hash::Hash + Eq + ?Sized,
       {
-        let (index, conflict) = self.key_to_hash.build_key(key);
+        let (index, conflict) = self.0.key_to_hash.build_key(key);
         self
+          .0
           .store
           .get(&index, conflict)
-          .and_then(|_| self.store.expiration(&index).map(|time| time.get_ttl()))
+          .and_then(|_| self.0.store.expiration(&index).map(|time| time.get_ttl()))
       }
 
       /// `max_cost` returns the max cost of the cache.
       #[cfg_attr(not(tarpaulin), inline(always))]
       pub fn max_cost(&self) -> i64 {
-        self.policy.max_cost()
+        self.0.policy.max_cost()
       }
 
       /// `update_max_cost` updates the maxCost of an existing cache.
       #[cfg_attr(not(tarpaulin), inline(always))]
       pub fn update_max_cost(&self, max_cost: i64) {
-        self.policy.update_max_cost(max_cost)
+        self.0.policy.update_max_cost(max_cost)
       }
 
       /// Returns the number of items in the Cache
       #[cfg_attr(not(tarpaulin), inline(always))]
       pub fn len(&self) -> usize {
-        self.store.len()
+        self.0.store.len()
       }
 
       /// Returns true if the cache is empty
       #[cfg_attr(not(tarpaulin), inline(always))]
       pub fn is_empty(&self) -> bool {
-        self.store.len() == 0
+        self.0.store.len() == 0
       }
 
+      /// Eager store write. Returns the new `Item` to enqueue along with the
+      /// prior value (for Update). The caller is responsible for firing
+      /// `CacheCallback::on_exit(prev)` — but NOT while holding an insert
+      /// permit. User callbacks that re-enter the cache would otherwise
+      /// block on `insert_sem.acquire()` indefinitely under a small
+      /// `buffer_size`. See `try_insert_in` in `src/cache/sync.rs` and
+      /// `src/cache/async.rs` for the exact firing points.
       #[cfg_attr(not(tarpaulin), inline(always))]
       fn try_update(
         &self,
@@ -643,19 +946,38 @@ macro_rules! impl_async_cache {
         cost: i64,
         ttl: Duration,
         only_update: bool,
-      ) -> Result<Option<(u64, $item<V>)>, CacheError> {
+      ) -> Result<Option<(u64, $item<V>, Option<V>)>, CacheError> {
         let expiration = if ttl.is_zero() {
           Time::now()
         } else {
           Time::now_with_expiration(ttl)
         };
 
-        let (index, conflict) = self.key_to_hash.build_key(&key);
+        let (index, conflict) = self.0.key_to_hash.build_key(&key);
 
         // cost is eventually updated. The expiration must also be immediately updated
         // to prevent items from being prematurely removed from the map.
-        let external_cost = if cost == 0 { self.coster.cost(&val) } else { 0 };
-        match self.store.try_update(index, val, conflict, expiration)? {
+        let external_cost = if cost == 0 {
+          self.0.coster.cost(&val)
+        } else {
+          0
+        };
+        // Capture the clear generation BEFORE the eager store write. If a
+        // clear() observes a higher generation by the time the processor
+        // admits this item, the processor treats it as stale and removes the
+        // store entry (if any) instead of admitting to policy. Acquire
+        // ordering pairs with the Release-ordered fetch_add in the Clear
+        // handler so a captured "pre-clear" generation is guaranteed to be
+        // less than the post-clear value.
+        let captured_gen = self
+          .0
+          .clear_generation
+          .load(std::sync::atomic::Ordering::Acquire);
+        match self
+          .0
+          .store
+          .try_update(index, val, conflict, expiration, captured_gen)?
+        {
           UpdateResult::NotExist(v) => {
             if only_update {
               Ok(None)
@@ -664,11 +986,25 @@ macro_rules! impl_async_cache {
               // The background processor still runs policy admission; if rejected
               // it removes the item from the store.
               // try_insert returns None when a concurrent insert beat us and the
-              // validator/conflict blocked the write; in that case skip policy.
-              match self.store.try_insert(index, v, conflict, expiration)? {
+              // validator/conflict blocked the write (or when a post-clear row
+              // already occupies this key and our captured generation is
+              // stale — the store refuses in that case); skip policy.
+              match self
+                .0
+                .store
+                .try_insert(index, v, conflict, expiration, captured_gen)?
+              {
                 Some(version) => Ok(Some((
                   index,
-                  $item::new(index, conflict, cost + external_cost, expiration, version),
+                  $item::new(
+                    index,
+                    conflict,
+                    cost + external_cost,
+                    expiration,
+                    version,
+                    captured_gen,
+                  ),
+                  None,
                 ))),
                 None => Ok(None),
               }
@@ -677,9 +1013,32 @@ macro_rules! impl_async_cache {
           // Key already exists but the validator or conflict hash blocked the update.
           // The store is unchanged; no New item should be queued.
           UpdateResult::Reject(_) | UpdateResult::Conflict(_) => Ok(None),
-          UpdateResult::Update(v) => {
-            self.callback.on_exit(Some(v));
-            Ok(Some((index, $item::update(index, cost, external_cost))))
+          // A clear raced with this caller: the existing row was written
+          // under a later generation than we captured, and the store refused
+          // to clobber it. The post-clear row belongs to a different writer
+          // who will admit it through their own Item — we have nothing to
+          // enqueue and must not fire `on_exit`.
+          UpdateResult::Stale(_) => Ok(None),
+          UpdateResult::Update(v, version) => {
+            // `on_exit(Some(v))` is intentionally NOT fired here. The
+            // caller fires it after the insert permit is released (or
+            // transferred to the channel) so a user callback that
+            // re-enters the cache cannot deadlock on a permit the outer
+            // call still holds. See `try_insert_in` for the firing
+            // points.
+            Ok(Some((
+              index,
+              $item::update(
+                index,
+                conflict,
+                cost,
+                external_cost,
+                expiration,
+                version,
+                captured_gen,
+              ),
+              Some(v),
+            )))
           }
         }
       }
@@ -698,82 +1057,6 @@ macro_rules! impl_async_cache {
     {
       fn as_ref(&self) -> &$cache<K, V, KH, C, U, CB, S> {
         self
-      }
-    }
-
-    impl<K, V, KH, C, U, CB, S> Clone for $cache<K, V, KH, C, U, CB, S>
-    where
-      K: Hash + Eq,
-      V: Send + Sync + 'static,
-      KH: KeyBuilder<Key = K>,
-      C: Coster<Value = V>,
-      U: UpdateValidator<Value = V>,
-      CB: CacheCallback<Value = V>,
-      S: BuildHasher + Clone + 'static,
-    {
-      fn clone(&self) -> Self {
-        Self {
-          store: self.store.clone(),
-          policy: self.policy.clone(),
-          get_buf: self.get_buf.clone(),
-          insert_buf_tx: self.insert_buf_tx.clone(),
-          stop_tx: self.stop_tx.clone(),
-          clear_tx: self.clear_tx.clone(),
-          callback: self.callback.clone(),
-          key_to_hash: self.key_to_hash.clone(),
-          is_closed: self.is_closed.clone(),
-          close_lock: self.close_lock.clone(),
-          coster: self.coster.clone(),
-          metrics: self.metrics.clone(),
-          _marker: self._marker,
-        }
-      }
-    }
-  };
-}
-
-macro_rules! impl_cache_cleaner {
-  ($cleaner: ident, $processor: ident, $item: ident) => {
-    impl<'a, V, U, CB, S> $cleaner<'a, V, U, CB, S>
-    where
-      V: Send + Sync + 'static,
-      U: UpdateValidator<Value = V>,
-      CB: CacheCallback<Value = V>,
-      S: BuildHasher + Clone + 'static + Send,
-    {
-      #[cfg_attr(not(tarpaulin), inline(always))]
-      fn new(processor: &'a mut $processor<V, U, CB, S>) -> Self {
-        Self { processor }
-      }
-
-      #[cfg_attr(not(tarpaulin), inline(always))]
-      fn handle_item(&mut self, item: $item<V>) {
-        match item {
-          // The value was eagerly inserted into the store. Explicitly remove it here
-          // so that items inserted after the caller's store.clear() (but before this
-          // drain completes) are also cleaned up, preventing policy/store divergence.
-          $item::New {
-            key,
-            conflict,
-            version,
-            ..
-          } => {
-            if let Ok(Some(sitem)) = self
-              .processor
-              .store
-              .try_remove_if_version(&key, conflict, version)
-            {
-              self
-                .processor
-                .callback
-                .on_exit(Some(sitem.value.into_inner()));
-            }
-          }
-          $item::Delete { .. } | $item::Update { .. } => {}
-          $item::Wait(wg) => {
-            let _ = wg.done();
-          }
-        }
       }
     }
   };

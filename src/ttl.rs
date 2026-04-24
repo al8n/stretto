@@ -1,8 +1,10 @@
 use parking_lot::RwLock;
-use std::collections::{HashMap, hash_map::RandomState};
-use std::hash::BuildHasher;
-use std::ops::{Deref, DerefMut};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+  collections::{HashMap, hash_map::RandomState},
+  hash::BuildHasher,
+  ops::{Deref, DerefMut},
+  time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use crate::CacheError;
 

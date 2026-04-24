@@ -165,10 +165,11 @@ impl Bloom {
 #[cfg(test)]
 mod test {
   use crate::bbloom::Bloom;
-  use rand::RngExt;
-  use rand::distr::Alphanumeric;
-  use std::collections::hash_map::DefaultHasher;
-  use std::hash::{Hash, Hasher};
+  use rand::{RngExt, distr::Alphanumeric};
+  use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+  };
 
   const N: usize = 1 << 16;
 

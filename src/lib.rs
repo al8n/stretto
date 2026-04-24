@@ -19,6 +19,8 @@ mod metrics;
 #[allow(dead_code)]
 mod policy;
 mod ring;
+#[cfg(any(feature = "sync", feature = "async"))]
+mod semaphore;
 mod sketch;
 mod store;
 mod ttl;
@@ -27,9 +29,29 @@ pub(crate) mod utils;
 #[cfg(feature = "async")]
 #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 pub(crate) mod axync {
-  pub(crate) use async_channel::{Receiver, RecvError, Sender, bounded, unbounded};
-  pub(crate) use futures::select;
-  pub(crate) type WaitGroup = wg::future::WaitGroup;
+  pub(crate) use async_channel::{Receiver, RecvError, Sender, TrySendError, bounded, unbounded};
+  pub(crate) use futures::{channel::oneshot, select};
+  pub(crate) use wg::future::WaitGroup as AsyncWaitGroup;
+
+  /// Signaling half of a one-shot barrier used by `Item::Wait` / `Item::Clear`.
+  ///
+  /// Wraps `oneshot::Sender<()>` so the shared processor handler can call
+  /// `.done()` with the same shape as the sync path's `wg::WaitGroup::done`.
+  /// Dropping the waiter without calling `done` still wakes the receiver
+  /// (they observe `Err(Canceled)`), which the caller treats as "signaled".
+  pub(crate) struct Waiter(oneshot::Sender<()>);
+
+  impl Waiter {
+    pub(crate) fn new() -> (Self, oneshot::Receiver<()>) {
+      let (tx, rx) = oneshot::channel();
+      (Waiter(tx), rx)
+    }
+
+    pub(crate) fn done(self) {
+      let _ = self.0.send(());
+    }
+  }
+
   pub(crate) fn stop_channel() -> (Sender<()>, Receiver<()>) {
     bounded(1)
   }
@@ -49,12 +71,12 @@ pub use agnostic_lite::smol::SmolRuntime;
 #[cfg(feature = "sync")]
 #[cfg_attr(docsrs, doc(cfg(feature = "sync")))]
 pub(crate) mod sync {
-  pub(crate) use crossbeam_channel::{Receiver, Sender, bounded, select, unbounded};
-  pub(crate) use std::thread::{JoinHandle, spawn};
-  pub(crate) use std::time::Instant;
+  pub(crate) use crossbeam_channel::{Receiver, Sender, bounded, select};
+  pub(crate) use std::{
+    thread::{JoinHandle, spawn},
+    time::Instant,
+  };
 
-  pub(crate) type UnboundedSender<T> = Sender<T>;
-  pub(crate) type UnboundedReceiver<T> = Receiver<T>;
   pub(crate) type WaitGroup = wg::WaitGroup;
 
   pub(crate) fn stop_channel() -> (Sender<()>, Receiver<()>) {
@@ -73,9 +95,11 @@ pub use utils::{ValueRef, ValueRefMut};
 
 use crate::ttl::Time;
 use seahash::SeaHasher;
-use std::fmt::{Debug, Formatter};
-use std::hash::{BuildHasher, BuildHasherDefault, Hash, Hasher};
-use std::marker::PhantomData;
+use std::{
+  fmt::{Debug, Formatter},
+  hash::{BuildHasher, BuildHasherDefault, Hash, Hasher},
+  marker::PhantomData,
+};
 
 /// Item is the parameter when Cache reject, evict value,
 pub struct Item<V> {

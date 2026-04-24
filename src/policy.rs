@@ -24,8 +24,7 @@ const DEFAULT_SAMPLES: usize = 5;
 
 macro_rules! impl_policy {
   ($policy: ident) => {
-    use crate::policy::DEFAULT_SAMPLES;
-    use crate::policy::PolicyPair;
+    use crate::policy::{AddOutcome, DEFAULT_SAMPLES, PolicyPair};
 
     impl<S: BuildHasher + Clone + 'static> $policy<S> {
       #[cfg_attr(not(tarpaulin), inline(always))]
@@ -34,35 +33,28 @@ macro_rules! impl_policy {
         self.inner.lock().set_metrics(metrics);
       }
 
-      pub fn add(&self, key: u64, cost: i64) -> (Option<Vec<PolicyPair>>, bool) {
+      pub fn add(&self, key: u64, cost: i64) -> AddOutcome {
         let mut inner = self.inner.lock();
         let max_cost = inner.costs.get_max_cost();
 
-        // cannot ad an item bigger than entire cache
         if cost > max_cost {
-          return (None, false);
+          return AddOutcome::RejectedByCost;
         }
 
-        // no need to go any further if the item is already in the cache
         if inner.costs.update(&key, cost) {
-          // an update does not count as an addition, so return false.
-          return (None, false);
+          return AddOutcome::UpdatedExisting;
         }
 
-        // If the execution reaches this point, the key doesn't exist in the cache.
-        // Calculate the remaining room in the cache (usually bytes).
         let mut room = inner.costs.room_left(cost);
         if room >= 0 {
-          // There's enough room in the cache to store the new item without
-          // overflowing. Do that now and stop here.
           inner.costs.increment(key, cost);
           self.metrics.add(MetricType::CostAdd, key, cost as u64);
-          return (None, true);
+          return AddOutcome::Admitted {
+            victims: Vec::new(),
+          };
         }
 
-        // inc_hits is the hit count for the incoming item
         let inc_hits = inner.admit.estimate(key);
-        // sample is the eviction candidate pool to be filled via random sampling.
         // TODO: perhaps we should use a min heap here. Right now our time
         // complexity is N for finding the min. Min heap should bring it down to
         // O(lg N). We try to use std::collections::BinaryHeap, but it is very slower.
@@ -70,17 +62,12 @@ macro_rules! impl_policy {
         let mut sample = Vec::with_capacity(DEFAULT_SAMPLES);
         let mut victims = Vec::new();
 
-        // Delete victims until there's enough space or a minKey is found that has
-        // more hits than incoming item.
         while room < 0 {
-          // fill up empty slots in sample
           sample = inner.costs.fill_sample(sample);
 
-          // find minimally used item in sample
           let (mut min_key, mut min_hits, mut min_id, mut min_cost) = (0u64, i64::MAX, 0, 0i64);
 
           sample.iter().enumerate().for_each(|(idx, pair)| {
-            // Look up hit count for sample key.
             let hits = inner.admit.estimate(pair.key);
             if hits < min_hits {
               min_key = pair.key;
@@ -90,13 +77,11 @@ macro_rules! impl_policy {
             }
           });
 
-          // If the incoming item isn't worth keeping in the policy, reject.
           if inc_hits < min_hits {
             self.metrics.add(MetricType::RejectSets, key, 1);
-            return (Some(victims), false);
+            return AddOutcome::RejectedBySampling { victims };
           }
 
-          // Delete the victim from metadata.
           inner.costs.remove(&min_key).map(|cost| {
             self
               .metrics
@@ -104,11 +89,9 @@ macro_rules! impl_policy {
             self.metrics.add(MetricType::KeyEvict, min_key, 1);
           });
 
-          // Delete the victim from sample.
           let new_len = sample.len() - 1;
           sample[min_id] = sample[new_len];
           sample.drain(new_len..);
-          // store victim in evicted victims slice
           victims.push(PolicyPair::new(min_key, min_cost));
 
           room = inner.costs.room_left(cost);
@@ -116,7 +99,7 @@ macro_rules! impl_policy {
 
         inner.costs.increment(key, cost);
         self.metrics.add(MetricType::CostAdd, key, cost as u64);
-        (Some(victims), true)
+        AddOutcome::Admitted { victims }
       }
 
       #[cfg_attr(not(tarpaulin), inline(always))]
@@ -140,10 +123,18 @@ macro_rules! impl_policy {
         inner.costs.get_max_cost() - inner.costs.used
       }
 
+      /// Updates an existing key's cost. Returns `true` if the key was
+      /// present in policy (and its cost was updated), `false` if the key
+      /// wasn't tracked. The Update handler needs this distinction to
+      /// recover from the MPSC race where our Item::New was skipped by the
+      /// `contains_version` gate (a later writer bumped the version before
+      /// the New was admitted), leaving our row live in the store but the
+      /// key absent from policy. Returning `false` here signals that the
+      /// caller must fall through to `policy.add` to admit the row.
       #[cfg_attr(not(tarpaulin), inline(always))]
-      pub fn update(&self, k: &u64, cost: i64) {
+      pub fn update(&self, k: &u64, cost: i64) -> bool {
         let mut inner = self.inner.lock();
-        inner.costs.update(k, cost);
+        inner.costs.update(k, cost)
       }
 
       #[cfg_attr(not(tarpaulin), inline(always))]
@@ -194,6 +185,30 @@ pub(crate) use r#async::AsyncLFUPolicy;
 pub(crate) struct PolicyInner<S = RandomState> {
   admit: TinyLFU,
   costs: SampledLFU<S>,
+}
+
+/// Outcome of `LFUPolicy::add`.
+///
+/// `policy.add` can end in four distinct states that callers need to
+/// disambiguate (e.g. to decide whether to roll back an eager store write).
+/// Returning them as a tagged enum avoids the previous `(Option<Vec>, bool)`
+/// encoding that collapsed "key already tracked — cost updated" and "rejected"
+/// into the same shape and forced callers to probe `policy.contains` to tell
+/// them apart.
+pub(crate) enum AddOutcome {
+  /// Fresh admission. `victims` lists keys evicted from policy metadata to
+  /// make room; callers must mirror these removals in the store.
+  Admitted { victims: Vec<PolicyPair> },
+  /// The key was already tracked; its cost was updated in place. The caller
+  /// should leave its eager store write intact — `policy.add` treated it as a
+  /// cost update, not a fresh admission.
+  UpdatedExisting,
+  /// Rejected because `cost > max_cost`. No policy or store state changed.
+  RejectedByCost,
+  /// Sampled eviction could not admit the new key. `victims` lists any
+  /// partial evictions that already happened before the admission lost and
+  /// must still be mirrored in the store.
+  RejectedBySampling { victims: Vec<PolicyPair> },
 }
 
 #[derive(Copy, Clone, Debug, Default)]

@@ -1,14 +1,19 @@
-use crate::ttl::{ExpirationMap, Time};
-use crate::utils::{SharedValue, ValueRef, ValueRefMut, change_lifetime_const};
-use crate::{CacheError, DefaultUpdateValidator, Item as CrateItem, UpdateValidator};
+use crate::{
+  CacheError, DefaultUpdateValidator, Item as CrateItem, UpdateValidator,
+  ttl::{ExpirationMap, Time},
+  utils::{SharedValue, ValueRef, ValueRefMut, change_lifetime_const},
+};
 use parking_lot::RwLock;
-use std::collections::HashMap;
-use std::collections::hash_map::RandomState;
-use std::fmt::{Debug, Formatter};
-use std::hash::BuildHasher;
-use std::mem;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+  collections::{HashMap, hash_map::RandomState},
+  fmt::{Debug, Formatter},
+  hash::BuildHasher,
+  mem,
+  sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+  },
+};
 
 const NUM_OF_SHARDS: usize = 256;
 
@@ -16,6 +21,11 @@ pub(crate) struct StoreItem<V> {
   pub(crate) key: u64,
   pub(crate) conflict: u64,
   pub(crate) version: u64,
+  /// Clear-generation stamp captured by the writer that last wrote this row.
+  /// Pre-clear callers whose captured generation is lower than this row's
+  /// generation are refused at the store level, so a stale writer cannot
+  /// clobber a post-clear insert/update. See `try_insert`/`try_update`.
+  pub(crate) generation: u64,
   pub(crate) value: SharedValue<V>,
   pub(crate) expiration: Time,
 }
@@ -26,6 +36,7 @@ impl<V> Debug for StoreItem<V> {
       .field("key", &self.key)
       .field("conflict", &self.conflict)
       .field("version", &self.version)
+      .field("generation", &self.generation)
       .field("expiration", &self.expiration)
       .finish()
   }
@@ -65,7 +76,11 @@ impl<V: Send + Sync + 'static, U: UpdateValidator<Value = V>> ShardedMap<V, U> {
       em,
       store_item_size: size,
       validator,
-      version: AtomicU64::new(0),
+      // Versions start at 1 so 0 is reserved as a "no row" sentinel used by
+      // Item::Delete (when the eager remove found nothing) and by the
+      // EagerInsertGuard armed check. If this were 0, the first inserted
+      // row would legitimately have version 0 and collide with the sentinel.
+      version: AtomicU64::new(1),
     }
   }
 }
@@ -92,7 +107,8 @@ impl<
       em,
       store_item_size: size,
       validator,
-      version: AtomicU64::new(0),
+      // See `new` for why this starts at 1.
+      version: AtomicU64::new(1),
     }
   }
 
@@ -146,6 +162,7 @@ impl<
     val: V,
     conflict: u64,
     expiration: Time,
+    generation: u64,
   ) -> Result<Option<u64>, CacheError> {
     let mut data = self.shards[(key as usize) % NUM_OF_SHARDS].write();
 
@@ -159,6 +176,15 @@ impl<
         // The item existed already. We need to check the conflict key and reject the
         // update if they do not match. Only after that the expiration map is updated.
         if conflict != 0 && (conflict != sitem.conflict) {
+          return Ok(None);
+        }
+
+        // Stale-writer refusal: the existing row was written under a later
+        // clear generation than this caller captured. Allowing the overwrite
+        // would destroy a legitimate post-clear row on behalf of a pre-clear
+        // writer that was scheduled-out across `clear()`. Refuse cleanly so
+        // the caller enqueues nothing and the post-clear row is preserved.
+        if sitem.generation > generation {
           return Ok(None);
         }
 
@@ -179,6 +205,7 @@ impl<
         key,
         conflict,
         version,
+        generation,
         value: SharedValue::new(val),
         expiration,
       },
@@ -193,6 +220,7 @@ impl<
     mut val: V,
     conflict: u64,
     expiration: Time,
+    generation: u64,
   ) -> Result<UpdateResult<V>, CacheError> {
     let mut data = self.shards[(key as usize) % NUM_OF_SHARDS].write();
     match data.get_mut(&key) {
@@ -200,6 +228,14 @@ impl<
       Some(item) => {
         if conflict != 0 && (conflict != item.conflict) {
           return Ok(UpdateResult::Conflict(val));
+        }
+
+        // Stale-writer refusal. See `try_insert` for the full rationale. A
+        // pre-clear caller that resumes after clear+reinsert must not be
+        // allowed to overwrite the post-clear row in place — doing so would
+        // destroy the new row and leave the processor reaping stale state.
+        if item.generation > generation {
+          return Ok(UpdateResult::Stale(val));
         }
 
         if !self.validator.should_update(item.value.get(), &val) {
@@ -211,14 +247,50 @@ impl<
           .try_update(key, conflict, item.expiration, expiration)?;
         mem::swap(&mut val, item.value.get_mut());
         item.expiration = expiration;
-        item.version = self.version.fetch_add(1, Ordering::Relaxed);
-        Ok(UpdateResult::Update(val))
+        let new_version = self.version.fetch_add(1, Ordering::Relaxed);
+        item.version = new_version;
+        item.generation = generation;
+        Ok(UpdateResult::Update(val, new_version))
       }
     }
   }
 
   pub fn len(&self) -> usize {
     self.shards.iter().map(|l| l.read().len()).sum()
+  }
+
+  /// Returns true iff the store currently holds a live row at `(key, conflict)`
+  /// whose version exactly matches `version`. Used by the New handler to gate
+  /// policy admission: a concurrent Delete from a different producer can land
+  /// in the MPSC insert buffer before the matching New even though the caller-
+  /// side eager insert happened first, and without this check the New would
+  /// add to policy a key whose store row has already been deleted — leaving a
+  /// ghost admission outside both store and eviction accounting.
+  pub fn contains_version(&self, key: &u64, conflict: u64, version: u64) -> bool {
+    let data = self.shards[(*key as usize) % NUM_OF_SHARDS].read();
+    match data.get(key) {
+      Some(item) => {
+        if conflict != 0 && conflict != item.conflict {
+          return false;
+        }
+        item.version == version
+      }
+      None => false,
+    }
+  }
+
+  /// Returns true iff the store currently holds *any* live row at
+  /// `(key, conflict)`, regardless of version. Used by the Delete handler to
+  /// distinguish "caller removed the last row" from "a newer insert has since
+  /// re-admitted the key" — in the latter case the policy entry already
+  /// reflects the new row (the New handler updated it instead of re-adding)
+  /// and wiping it now would orphan the fresh admission outside accounting.
+  pub fn contains_key(&self, key: &u64, conflict: u64) -> bool {
+    let data = self.shards[(*key as usize) % NUM_OF_SHARDS].read();
+    match data.get(key) {
+      Some(item) => conflict == 0 || conflict == item.conflict,
+      None => false,
+    }
   }
 
   pub fn try_remove(&self, key: &u64, conflict: u64) -> Result<Option<StoreItem<V>>, CacheError> {
@@ -228,6 +300,39 @@ impl<
       None => Ok(None),
       Some(item) => {
         if conflict != 0 && (conflict != item.conflict) {
+          return Ok(None);
+        }
+
+        if !item.expiration.is_zero() {
+          self.em.try_remove(key, item.expiration)?;
+        }
+
+        Ok(data.remove(key))
+      }
+    }
+  }
+
+  /// Caller-gated remove: refuses to destroy a row whose generation is later
+  /// than the caller's captured generation. Used by the public `remove` paths
+  /// so a pre-clear caller that resumes after `clear()` and a post-clear
+  /// reinsert cannot delete the fresh row. `Ok(None)` is returned for both
+  /// "no row present" and "stale writer refused" — the caller treats both as
+  /// "nothing to enqueue."
+  pub fn try_remove_if_not_stale(
+    &self,
+    key: &u64,
+    conflict: u64,
+    generation: u64,
+  ) -> Result<Option<StoreItem<V>>, CacheError> {
+    let mut data = self.shards[(*key as usize) % NUM_OF_SHARDS].write();
+
+    match data.get(key) {
+      None => Ok(None),
+      Some(item) => {
+        if conflict != 0 && (conflict != item.conflict) {
+          return Ok(None);
+        }
+        if item.generation > generation {
           return Ok(None);
         }
 
@@ -385,7 +490,15 @@ pub(crate) enum UpdateResult<V: Send + Sync + 'static> {
   NotExist(V),
   Reject(V),
   Conflict(V),
-  Update(V),
+  /// The existing row was stamped with a later clear generation than the
+  /// caller captured. The update is refused so a pre-clear writer cannot
+  /// clobber a post-clear row. Carries the value back so the caller can
+  /// drop or forward it as needed.
+  Stale(V),
+  /// The update committed. Carries the previous value and the new version
+  /// assigned to the store entry — callers need the version to scope a
+  /// cancellation rollback to the row they just wrote.
+  Update(V, u64),
 }
 
 #[cfg(test)]
@@ -395,18 +508,20 @@ impl<V: Send + Sync + 'static> UpdateResult<V> {
       UpdateResult::NotExist(v) => v,
       UpdateResult::Reject(v) => v,
       UpdateResult::Conflict(v) => v,
-      UpdateResult::Update(v) => v,
+      UpdateResult::Stale(v) => v,
+      UpdateResult::Update(v, _) => v,
     }
   }
 }
 
 #[cfg(test)]
 mod test {
-  use crate::store::{ShardedMap, StoreItem};
-  use crate::ttl::Time;
-  use crate::utils::SharedValue;
-  use std::sync::Arc;
-  use std::time::Duration;
+  use crate::{
+    store::{ShardedMap, StoreItem, UpdateResult},
+    ttl::Time,
+    utils::SharedValue,
+  };
+  use std::{sync::Arc, time::Duration};
 
   #[test]
   fn test_store_item_debug() {
@@ -414,6 +529,7 @@ mod test {
       key: 0,
       conflict: 0,
       version: 0,
+      generation: 0,
       value: SharedValue::new(3),
       expiration: Time::now(),
     };
@@ -430,7 +546,7 @@ mod test {
   fn test_store_set_get() {
     let s: ShardedMap<u64> = ShardedMap::new();
 
-    s.try_insert(1, 2, 0, Time::now()).unwrap();
+    s.try_insert(1, 2, 0, Time::now(), 0).unwrap();
     let val = s.get(&1, 0).unwrap();
     assert_eq!(&2, val.value());
     val.release();
@@ -449,7 +565,7 @@ mod test {
     let s1 = s.clone();
 
     std::thread::spawn(move || {
-      s.try_insert(1, 2, 0, Time::now()).unwrap();
+      s.try_insert(1, 2, 0, Time::now(), 0).unwrap();
     });
 
     loop {
@@ -469,7 +585,7 @@ mod test {
     let s1 = s.clone();
 
     std::thread::spawn(move || {
-      s.try_insert(1, 2, 0, Time::now()).unwrap();
+      s.try_insert(1, 2, 0, Time::now(), 0).unwrap();
       loop {
         match s.get(&1, 0) {
           None => continue,
@@ -504,7 +620,7 @@ mod test {
   fn test_store_remove() {
     let s: ShardedMap<u64> = ShardedMap::new();
 
-    s.try_insert(1, 2, 0, Time::now()).unwrap();
+    s.try_insert(1, 2, 0, Time::now(), 0).unwrap();
     assert_eq!(s.try_remove(&1, 0).unwrap().unwrap().value.into_inner(), 2);
     let v = s.get(&1, 0);
     assert!(v.is_none());
@@ -514,18 +630,18 @@ mod test {
   #[test]
   fn test_store_update() {
     let s = ShardedMap::new();
-    s.try_insert(1, 1, 0, Time::now()).unwrap();
-    let v = s.try_update(1, 2, 0, Time::now()).unwrap();
+    s.try_insert(1, 1, 0, Time::now(), 0).unwrap();
+    let v = s.try_update(1, 2, 0, Time::now(), 0).unwrap();
     assert_eq!(v.into_inner(), 1);
 
     assert_eq!(s.get(&1, 0).unwrap().read(), 2);
 
-    let v = s.try_update(1, 3, 0, Time::now()).unwrap();
+    let v = s.try_update(1, 3, 0, Time::now(), 0).unwrap();
     assert_eq!(v.into_inner(), 2);
 
     assert_eq!(s.get(&1, 0).unwrap().read(), 3);
 
-    let v = s.try_update(2, 2, 0, Time::now()).unwrap();
+    let v = s.try_update(2, 2, 0, Time::now(), 0).unwrap();
     assert_eq!(v.into_inner(), 2);
     let v = s.get(&2, 0);
     assert!(v.is_none());
@@ -535,7 +651,7 @@ mod test {
   fn test_store_expiration() {
     let exp = Time::now_with_expiration(Duration::from_secs(1));
     let s = ShardedMap::new();
-    s.try_insert(1, 1, 0, exp).unwrap();
+    s.try_insert(1, 1, 0, exp, 0).unwrap();
 
     assert_eq!(s.get(&1, 0).unwrap().read(), 1);
 
@@ -560,6 +676,7 @@ mod test {
         key: 1,
         conflict: 0,
         version: 0,
+        generation: 0,
         value: SharedValue::new(1),
         expiration: Time::now(),
       },
@@ -567,10 +684,10 @@ mod test {
     drop(data1);
     assert!(s.get(&1, 1).is_none());
 
-    s.try_insert(1, 2, 1, Time::now()).unwrap();
+    s.try_insert(1, 2, 1, Time::now(), 0).unwrap();
     assert_ne!(s.get(&1, 0).unwrap().read(), 2);
 
-    let v = s.try_update(1, 2, 1, Time::now()).unwrap();
+    let v = s.try_update(1, 2, 1, Time::now(), 0).unwrap();
     assert_eq!(v.into_inner(), 2);
     assert_ne!(s.get(&1, 0).unwrap().read(), 2);
 
@@ -582,7 +699,7 @@ mod test {
   fn test_store_get_mut_conflict_and_expired() {
     // conflict mismatch
     let s: ShardedMap<u64> = ShardedMap::new();
-    s.try_insert(1, 2, 7, Time::now()).unwrap();
+    s.try_insert(1, 2, 7, Time::now(), 0).unwrap();
     assert!(s.get_mut(&1, 9).is_none());
     // matching conflict works
     assert_eq!(s.get_mut(&1, 7).unwrap().read(), 2);
@@ -591,15 +708,33 @@ mod test {
     let past = Time::now_with_expiration(Duration::from_millis(1));
     std::thread::sleep(Duration::from_millis(10));
     let s2: ShardedMap<u64> = ShardedMap::new();
-    s2.try_insert(2, 2, 0, past).unwrap();
+    s2.try_insert(2, 2, 0, past, 0).unwrap();
     assert!(s2.get_mut(&2, 0).is_none());
+  }
+
+  // Regression guard for the version=0 sentinel invariant. Item::Delete uses
+  // version=0 to mean "eager remove found no row" and EagerInsertGuard's
+  // `armed = !is_update && version != 0` check relies on the first real
+  // inserted version being non-zero. If the counter started at 0, the first
+  // `try_insert` would legitimately return 0, collide with the sentinel,
+  // disable the cancellation rollback for that first insert, and let the
+  // Delete handler misinterpret a real row's version as "no row". Keep
+  // this invariant or fix both consumers.
+  #[test]
+  fn test_store_version_starts_at_one() {
+    let s: ShardedMap<u64> = ShardedMap::new();
+    let version = s.try_insert(1, 1, 0, Time::now(), 0).unwrap().unwrap();
+    assert!(
+      version >= 1,
+      "first store version must be >= 1; version=0 is the reserved sentinel"
+    );
   }
 
   #[test]
   fn test_store_try_remove_if_version() {
     let s: ShardedMap<u64> = ShardedMap::new();
     let exp = Time::now_with_expiration(Duration::from_secs(60));
-    let version = s.try_insert(10, 20, 7, exp).unwrap().unwrap();
+    let version = s.try_insert(10, 20, 7, exp, 0).unwrap().unwrap();
 
     // conflict mismatch returns None
     assert!(
@@ -619,5 +754,61 @@ mod test {
     let removed = s.try_remove_if_version(&10, 7, version).unwrap().unwrap();
     assert_eq!(removed.value.into_inner(), 20);
     assert!(s.get(&10, 7).is_none());
+  }
+
+  // Regression guard for the clear-generation race: a pre-clear writer (with
+  // a lower captured generation) must not be able to overwrite or delete a
+  // row written by a post-clear writer. The store refuses the mutation so
+  // no stale Item ever leaves the caller.
+  #[test]
+  fn test_store_generation_stamp_refuses_stale_writer() {
+    let s: ShardedMap<u64> = ShardedMap::new();
+
+    // Post-clear writer stamps the row with generation=5.
+    let version = s.try_insert(1, 100, 0, Time::now(), 5).unwrap().unwrap();
+
+    // Pre-clear writer (captured generation=3) tries to update — refused.
+    let result = s.try_update(1, 999, 0, Time::now(), 3).unwrap();
+    assert!(matches!(result, UpdateResult::Stale(_)));
+    assert_eq!(result.into_inner(), 999);
+    // Row is untouched: same version, same value, same generation.
+    let row_value = s.get(&1, 0).unwrap().read();
+    assert_eq!(row_value, 100);
+
+    // Same caller's try_insert is also refused (returns None) so the new row
+    // cannot clobber the post-clear row.
+    let inserted = s.try_insert(1, 888, 0, Time::now(), 3).unwrap();
+    assert!(inserted.is_none());
+    assert_eq!(s.get(&1, 0).unwrap().read(), 100);
+
+    // Stale remove is refused too.
+    let removed = s.try_remove_if_not_stale(&1, 0, 3).unwrap();
+    assert!(removed.is_none());
+    assert_eq!(s.get(&1, 0).unwrap().read(), 100);
+
+    // Post-clear writer at the same generation succeeds.
+    let result = s.try_update(1, 200, 0, Time::now(), 5).unwrap();
+    assert!(matches!(result, UpdateResult::Update(_, v) if v != version));
+    assert_eq!(s.get(&1, 0).unwrap().read(), 200);
+
+    // A later-generation writer can always proceed.
+    let result = s.try_update(1, 300, 0, Time::now(), 9).unwrap();
+    assert!(matches!(result, UpdateResult::Update(_, _)));
+    assert_eq!(s.get(&1, 0).unwrap().read(), 300);
+  }
+
+  #[test]
+  fn test_store_try_remove_if_not_stale() {
+    let s: ShardedMap<u64> = ShardedMap::new();
+    s.try_insert(10, 20, 0, Time::now(), 5).unwrap();
+
+    // Stale caller — refused.
+    assert!(s.try_remove_if_not_stale(&10, 0, 3).unwrap().is_none());
+    assert!(s.get(&10, 0).is_some());
+
+    // Same-or-newer generation — removes.
+    let removed = s.try_remove_if_not_stale(&10, 0, 5).unwrap().unwrap();
+    assert_eq!(removed.value.into_inner(), 20);
+    assert!(s.get(&10, 0).is_none());
   }
 }

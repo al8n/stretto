@@ -1,9 +1,12 @@
-use crate::histogram::Histogram;
-use crate::utils::vec_to_array;
-use std::collections::BTreeMap;
-use std::fmt::{Debug, Display, Formatter};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use crate::{histogram::Histogram, utils::vec_to_array};
+use std::{
+  collections::BTreeMap,
+  fmt::{Debug, Display, Formatter},
+  sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+  },
+};
 
 const HISTOGRAM_BOUND_SIZE: usize = 16;
 
@@ -489,8 +492,7 @@ fn new_histogram_bound() -> Vec<f64> {
 
 #[cfg(test)]
 mod test {
-  use crate::Metrics;
-  use crate::metrics::MetricsInner;
+  use crate::{Metrics, metrics::MetricsInner};
 
   #[test]
   fn test_metrics() {

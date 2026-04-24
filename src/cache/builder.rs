@@ -1,12 +1,14 @@
-use crate::cache::{DEFAULT_CLEANUP_DURATION, DEFAULT_INSERT_BUF_SIZE};
 use crate::{
   CacheCallback, Coster, DefaultCacheCallback, DefaultCoster, DefaultKeyBuilder,
   DefaultUpdateValidator, KeyBuilder, UpdateValidator,
+  cache::{DEFAULT_CLEANUP_DURATION, DEFAULT_INSERT_BUF_SIZE},
 };
-use std::collections::hash_map::RandomState;
-use std::hash::{BuildHasher, Hash};
-use std::marker::PhantomData;
-use std::time::Duration;
+use std::{
+  collections::hash_map::RandomState,
+  hash::{BuildHasher, Hash},
+  marker::PhantomData,
+  time::Duration,
+};
 
 use super::DEFAULT_BUFFER_ITEMS;
 

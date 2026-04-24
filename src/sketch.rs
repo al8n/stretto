@@ -4,11 +4,12 @@
 //!
 //! I claim no additional copyright over the original implementation.
 use crate::error::CacheError;
-use rand::RngExt;
-use rand::{SeedableRng, rngs::StdRng};
-use std::fmt::{Debug, Formatter};
-use std::ops::{Index, IndexMut};
-use std::time::{SystemTime, UNIX_EPOCH};
+use rand::{RngExt, SeedableRng, rngs::StdRng};
+use std::{
+  fmt::{Debug, Formatter},
+  ops::{Index, IndexMut},
+  time::{SystemTime, UNIX_EPOCH},
+};
 
 const DEPTH: usize = 4;
 

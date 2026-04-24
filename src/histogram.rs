@@ -1,7 +1,11 @@
 use atomic::Atomic;
-use std::fmt::{Display, Formatter};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::{
+  fmt::{Display, Formatter},
+  sync::{
+    Arc,
+    atomic::{AtomicI64, Ordering},
+  },
+};
 
 const MAXI64: i64 = i64::MAX;
 

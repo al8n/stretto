@@ -1,5 +1,7 @@
-use crate::metrics::Metrics;
-use crate::policy::{SampledLFU, TinyLFU};
+use crate::{
+  metrics::Metrics,
+  policy::{SampledLFU, TinyLFU},
+};
 use std::collections::hash_map::RandomState;
 
 use std::time::Duration;
@@ -9,9 +11,8 @@ static WAIT: Duration = Duration::from_millis(100);
 #[cfg(feature = "sync")]
 mod sync_test {
   use super::*;
-  use crate::policy::LFUPolicy;
-  use std::sync::Arc;
-  use std::thread::sleep;
+  use crate::policy::{AddOutcome, LFUPolicy};
+  use std::{sync::Arc, thread::sleep};
 
   #[test]
   fn test_policy() {
@@ -61,9 +62,7 @@ mod sync_test {
   #[test]
   fn test_policy_add() {
     let p = LFUPolicy::new(1000, 100).unwrap();
-    let (victims, added) = p.add(1, 101);
-    assert!(victims.is_none());
-    assert!(!added);
+    assert!(matches!(p.add(1, 101), AddOutcome::RejectedByCost));
 
     let mut inner = p.inner.lock();
     inner.costs.increment(1, 1);
@@ -72,21 +71,22 @@ mod sync_test {
     inner.admit.increment(3);
     drop(inner);
 
-    let (victims, added) = p.add(1, 1);
-    assert!(victims.is_none());
-    assert!(!added);
+    assert!(matches!(p.add(1, 1), AddOutcome::UpdatedExisting));
 
-    let (victims, added) = p.add(2, 20);
-    assert!(victims.is_none());
-    assert!(added);
+    assert!(matches!(
+      p.add(2, 20),
+      AddOutcome::Admitted { ref victims } if victims.is_empty()
+    ));
 
-    let (victims, added) = p.add(3, 90);
-    assert!(victims.is_some());
-    assert!(added);
+    assert!(matches!(
+      p.add(3, 90),
+      AddOutcome::Admitted { ref victims } if !victims.is_empty()
+    ));
 
-    let (victims, added) = p.add(4, 20);
-    assert!(victims.is_some());
-    assert!(!added);
+    assert!(matches!(
+      p.add(4, 20),
+      AddOutcome::RejectedBySampling { .. }
+    ));
   }
 
   #[test]
@@ -172,7 +172,7 @@ mod sync_test {
 #[cfg(feature = "async")]
 mod async_test {
   use super::*;
-  use crate::policy::AsyncLFUPolicy;
+  use crate::policy::{AddOutcome, AsyncLFUPolicy};
   use agnostic_lite::tokio::TokioRuntime;
   use std::sync::Arc;
   use tokio::time::sleep;
@@ -228,9 +228,7 @@ mod async_test {
   #[tokio::test]
   async fn test_policy_add() {
     let p = AsyncLFUPolicy::new::<TokioRuntime>(1000, 100).unwrap();
-    let (victims, added) = p.add(1, 101);
-    assert!(victims.is_none());
-    assert!(!added);
+    assert!(matches!(p.add(1, 101), AddOutcome::RejectedByCost));
 
     let mut inner = p.inner.lock();
     inner.costs.increment(1, 1);
@@ -239,21 +237,22 @@ mod async_test {
     inner.admit.increment(3);
     drop(inner);
 
-    let (victims, added) = p.add(1, 1);
-    assert!(victims.is_none());
-    assert!(!added);
+    assert!(matches!(p.add(1, 1), AddOutcome::UpdatedExisting));
 
-    let (victims, added) = p.add(2, 20);
-    assert!(victims.is_none());
-    assert!(added);
+    assert!(matches!(
+      p.add(2, 20),
+      AddOutcome::Admitted { ref victims } if victims.is_empty()
+    ));
 
-    let (victims, added) = p.add(3, 90);
-    assert!(victims.is_some());
-    assert!(added);
+    assert!(matches!(
+      p.add(3, 90),
+      AddOutcome::Admitted { ref victims } if !victims.is_empty()
+    ));
 
-    let (victims, added) = p.add(4, 20);
-    assert!(victims.is_some());
-    assert!(!added);
+    assert!(matches!(
+      p.add(4, 20),
+      AddOutcome::RejectedBySampling { .. }
+    ));
   }
 
   #[tokio::test]

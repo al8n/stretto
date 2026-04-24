@@ -3,6 +3,7 @@ hard_tabs = false
 tab_spaces = 2
 newline_style = "Auto"
 use_small_heuristics = "Default"
+imports_granularity = "Crate"
 reorder_imports = true
 reorder_modules = true
 remove_nested_parens = true

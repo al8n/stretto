@@ -1,12 +1,18 @@
-use crate::policy::PolicyInner;
-use crate::sync::{JoinHandle, Receiver, Sender, select, spawn, stop_channel};
-use crate::{CacheError, MetricType, Metrics};
+use crate::{
+  CacheError, MetricType, Metrics,
+  policy::PolicyInner,
+  sync::{JoinHandle, Receiver, Sender, select, spawn, stop_channel},
+};
 use crossbeam_channel::{RecvError, bounded};
 use parking_lot::Mutex;
-use std::collections::hash_map::RandomState;
-use std::hash::BuildHasher;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+  collections::hash_map::RandomState,
+  hash::BuildHasher,
+  sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+  },
+};
 
 pub(crate) struct LFUPolicy<S = RandomState> {
   pub(crate) inner: Arc<Mutex<PolicyInner<S>>>,
