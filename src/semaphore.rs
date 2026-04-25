@@ -69,11 +69,19 @@ impl SyncSemaphore {
   }
 
   /// Non-blocking acquire. Returns `true` on success.
+  ///
+  /// `closed` is read AFTER taking the lock. Combined with `close` taking
+  /// the same lock around its `closed.store`, this means a close that
+  /// races try_acquire either lands fully before our lock acquisition (we
+  /// observe closed=true and reject) or fully after we drop the lock (we
+  /// took the permit before the close point — semantically a "prior"
+  /// acquire, which the documented "reject future acquires" contract
+  /// allows).
   pub(crate) fn try_acquire(&self) -> bool {
+    let mut guard = self.permits.lock();
     if self.closed.load(Ordering::Acquire) {
       return false;
     }
-    let mut guard = self.permits.lock();
     if *guard > 0 {
       *guard -= 1;
       true
@@ -99,15 +107,20 @@ impl SyncSemaphore {
   /// that would otherwise never be released; closing the semaphore wakes
   /// every blocked acquirer with `SemaphoreClosed` so callers can fall
   /// through their `acquire().is_err()` branch rather than hang.
+  ///
+  /// The `closed` store happens UNDER the permits lock so that
+  /// `try_acquire`/`acquire` (which read `closed` after locking) cannot
+  /// witness an old `closed=false` while their lock acquisition
+  /// happens-after this close — without that, a try_acquire could grab
+  /// the lock, see `closed=false` (because the store has not been
+  /// published through the mutex), and consume a permit after the
+  /// documented "reject future acquires" point. Holding the lock around
+  /// the store also keeps the prior "waiters parked before notify"
+  /// guarantee for the Condvar wake.
   pub(crate) fn close(&self) {
+    let guard = self.permits.lock();
     self.closed.store(true, Ordering::Release);
-    // Grabbing the lock briefly ensures waiters that have already checked
-    // `closed` and decided to wait are parked on the Condvar by the time we
-    // notify — no "missed wake" under the standard Mutex+Condvar pattern.
-    // Use `drop(...)` rather than `let _ = ...` so clippy's
-    // `let_underscore_lock` lint (which correctly flags accidental
-    // early-drop footguns) recognizes the intent.
-    drop(self.permits.lock());
+    drop(guard);
     self.cv.notify_all();
   }
 }
@@ -147,7 +160,9 @@ impl AsyncSemaphore {
         return Err(SemaphoreClosed);
       }
       // Optimistic fast path: try to claim a permit without listening.
-      if self.try_claim() {
+      // `claim_unless_closed` re-checks `closed` after a successful CAS,
+      // so a close racing the claim cannot smuggle a permit out.
+      if self.claim_unless_closed() {
         return Ok(());
       }
       // Register for notification BEFORE re-checking, so a concurrent
@@ -157,7 +172,7 @@ impl AsyncSemaphore {
       if self.closed.load(Ordering::Acquire) {
         return Err(SemaphoreClosed);
       }
-      if self.try_claim() {
+      if self.claim_unless_closed() {
         return Ok(());
       }
       listener.await;
@@ -175,7 +190,7 @@ impl AsyncSemaphore {
     if self.closed.load(Ordering::Acquire) {
       return false;
     }
-    self.try_claim()
+    self.claim_unless_closed()
   }
 
   fn try_claim(&self) -> bool {
@@ -196,6 +211,25 @@ impl AsyncSemaphore {
     false
   }
 
+  /// `try_claim` plus a post-claim re-check of `closed`. If a concurrent
+  /// `close` happens to land between an outer pre-check and the CAS, this
+  /// rolls the permit back via `release` so we honor the documented
+  /// "reject future acquires" contract instead of silently consuming a
+  /// permit on a closed semaphore. The released permit is harmless on a
+  /// closed semaphore — every subsequent `acquire`/`try_acquire` reads
+  /// `closed=true` first and returns `Err`/`false` without ever
+  /// inspecting the permit count.
+  fn claim_unless_closed(&self) -> bool {
+    if !self.try_claim() {
+      return false;
+    }
+    if self.closed.load(Ordering::Acquire) {
+      self.release();
+      return false;
+    }
+    true
+  }
+
   /// Return one permit to the pool and notify at most one waiter.
   pub(crate) fn release(&self) {
     self.permits.fetch_add(1, Ordering::Release);
@@ -206,6 +240,12 @@ impl AsyncSemaphore {
   ///
   /// Called by the async processor's RAII drop-guard on exit, including
   /// panic-unwind. See `SyncSemaphore::close` for the same reasoning.
+  ///
+  /// Acquirers serialize the `closed` check with the CAS via
+  /// `claim_unless_closed`: if a concurrent claim wins the CAS just before
+  /// we set `closed=true`, that caller observes the post-claim
+  /// `closed=true` re-check and rolls the permit back. So at most one
+  /// claim slipping through this race is contained.
   pub(crate) fn close(&self) {
     self.closed.store(true, Ordering::Release);
     // Notify every listener so each one re-enters `acquire` and observes

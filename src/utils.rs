@@ -142,7 +142,7 @@ impl<'a, V> ValueRefMut<'a, V> {
     self.release();
   }
 
-  /// Drop self, release the inner `RwLockReadGuard`, which is the same as `drop()`
+  /// Drop self, release the inner `RwLockWriteGuard`, which is the same as `drop()`
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn release(self) {
     drop(self)
@@ -157,7 +157,7 @@ impl<V: Clone> ValueRefMut<'_, V> {
 }
 
 impl<V: Copy> ValueRefMut<'_, V> {
-  /// Read the inner value and drop the inner `RwLockReadGuard`.
+  /// Read the inner value and drop the inner `RwLockWriteGuard`.
   pub fn read(self) -> V {
     let v = *self.guard;
     drop(self);
