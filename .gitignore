@@ -19,3 +19,6 @@ benches/bin
 
 benches/mock/mock-generator
 benches/ristretto-go/ristretto-go
+
+**.claude/
+cache-trace/

@@ -3,20 +3,18 @@
 </div>
 <div align="center">
 
-Stretto is a pure Rust implementation for https://github.com/dgraph-io/ristretto. 
-
 A high performance thread-safe memory-bound Rust cache.
 
-English | [简体中文](README-zh_hans.md)
+Stretto is a pure Rust implementation of <https://github.com/dgraph-io/ristretto>.
 
-[<img alt="github" src="https://img.shields.io/badge/GITHUB-al8n/Stretto-8da0cb?style=for-the-badge&logo=Github" height="22">][Github-url]
+[<img alt="github" src="https://img.shields.io/badge/github-al8n/stretto-8da0cb?style=for-the-badge&logo=Github" height="22">][Github-url]
+<img alt="LoC" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Fal8n%2F327b2a8aef9003246e45c6e47fe63937%2Fraw%2Fstretto" height="22">
 [<img alt="Build" src="https://img.shields.io/github/actions/workflow/status/al8n/stretto/ci.yml?logo=Github-Actions&style=for-the-badge" height="22">][CI-url]
-[<img alt="codecov" src="https://img.shields.io/codecov/c/gh/al8n/stretto?style=for-the-badge&token=P175Q03Q1L&logo=codecov" height="22">][codecov-url]
+[<img alt="codecov" src="https://img.shields.io/codecov/c/gh/al8n/stretto?style=for-the-badge&token=6R3QFWRWHL&logo=codecov" height="22">][codecov-url]
 
 [<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-stretto-66c2a5?style=for-the-badge&labelColor=555555&logo=data:image/svg+xml;base64,PHN2ZyByb2xlPSJpbWciIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgdmlld0JveD0iMCAwIDUxMiA1MTIiPjxwYXRoIGZpbGw9IiNmNWY1ZjUiIGQ9Ik00ODguNiAyNTAuMkwzOTIgMjE0VjEwNS41YzAtMTUtOS4zLTI4LjQtMjMuNC0zMy43bC0xMDAtMzcuNWMtOC4xLTMuMS0xNy4xLTMuMS0yNS4zIDBsLTEwMCAzNy41Yy0xNC4xIDUuMy0yMy40IDE4LjctMjMuNCAzMy43VjIxNGwtOTYuNiAzNi4yQzkuMyAyNTUuNSAwIDI2OC45IDAgMjgzLjlWMzk0YzAgMTMuNiA3LjcgMjYuMSAxOS45IDMyLjJsMTAwIDUwYzEwLjEgNS4xIDIyLjEgNS4xIDMyLjIgMGwxMDMuOS01MiAxMDMuOSA1MmMxMC4xIDUuMSAyMi4xIDUuMSAzMi4yIDBsMTAwLTUwYzEyLjItNi4xIDE5LjktMTguNiAxOS45LTMyLjJWMjgzLjljMC0xNS05LjMtMjguNC0yMy40LTMzLjd6TTM1OCAyMTQuOGwtODUgMzEuOXYtNjguMmw4NS0zN3Y3My4zek0xNTQgMTA0LjFsMTAyLTM4LjIgMTAyIDM4LjJ2LjZsLTEwMiA0MS40LTEwMi00MS40di0uNnptODQgMjkxLjFsLTg1IDQyLjV2LTc5LjFsODUtMzguOHY3NS40em0wLTExMmwtMTAyIDQxLjQtMTAyLTQxLjR2LS42bDEwMi0zOC4yIDEwMiAzOC4ydi42em0yNDAgMTEybC04NSA0Mi41di03OS4xbDg1LTM4Ljh2NzUuNHptMC0xMTJsLTEwMiA0MS40LTEwMi00MS40di0uNmwxMDItMzguMiAxMDIgMzguMnYuNnoiPjwvcGF0aD48L3N2Zz4K" height="20">][doc-url]
 [<img alt="crates.io" src="https://img.shields.io/crates/v/stretto?style=for-the-badge&logo=data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iaXNvLTg4NTktMSI/Pg0KPCEtLSBHZW5lcmF0b3I6IEFkb2JlIElsbHVzdHJhdG9yIDE5LjAuMCwgU1ZHIEV4cG9ydCBQbHVnLUluIC4gU1ZHIFZlcnNpb246IDYuMDAgQnVpbGQgMCkgIC0tPg0KPHN2ZyB2ZXJzaW9uPSIxLjEiIGlkPSJMYXllcl8xIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB4PSIwcHgiIHk9IjBweCINCgkgdmlld0JveD0iMCAwIDUxMiA1MTIiIHhtbDpzcGFjZT0icHJlc2VydmUiPg0KPGc+DQoJPGc+DQoJCTxwYXRoIGQ9Ik0yNTYsMEwzMS41MjgsMTEyLjIzNnYyODcuNTI4TDI1Niw1MTJsMjI0LjQ3Mi0xMTIuMjM2VjExMi4yMzZMMjU2LDB6IE0yMzQuMjc3LDQ1Mi41NjRMNzQuOTc0LDM3Mi45MTNWMTYwLjgxDQoJCQlsMTU5LjMwMyw3OS42NTFWNDUyLjU2NHogTTEwMS44MjYsMTI1LjY2MkwyNTYsNDguNTc2bDE1NC4xNzQsNzcuMDg3TDI1NiwyMDIuNzQ5TDEwMS44MjYsMTI1LjY2MnogTTQzNy4wMjYsMzcyLjkxMw0KCQkJbC0xNTkuMzAzLDc5LjY1MVYyNDAuNDYxbDE1OS4zMDMtNzkuNjUxVjM3Mi45MTN6IiBmaWxsPSIjRkZGIi8+DQoJPC9nPg0KPC9nPg0KPGc+DQo8L2c+DQo8Zz4NCjwvZz4NCjxnPg0KPC9nPg0KPGc+DQo8L2c+DQo8Zz4NCjwvZz4NCjxnPg0KPC9nPg0KPGc+DQo8L2c+DQo8Zz4NCjwvZz4NCjxnPg0KPC9nPg0KPGc+DQo8L2c+DQo8Zz4NCjwvZz4NCjxnPg0KPC9nPg0KPGc+DQo8L2c+DQo8Zz4NCjwvZz4NCjxnPg0KPC9nPg0KPC9zdmc+DQo=" height="22">][crates-url]
 [<img alt="crates.io" src="https://img.shields.io/crates/d/stretto?color=critical&logo=data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBzdGFuZGFsb25lPSJubyI/PjwhRE9DVFlQRSBzdmcgUFVCTElDICItLy9XM0MvL0RURCBTVkcgMS4xLy9FTiIgImh0dHA6Ly93d3cudzMub3JnL0dyYXBoaWNzL1NWRy8xLjEvRFREL3N2ZzExLmR0ZCI+PHN2ZyB0PSIxNjQ1MTE3MzMyOTU5IiBjbGFzcz0iaWNvbiIgdmlld0JveD0iMCAwIDEwMjQgMTAyNCIgdmVyc2lvbj0iMS4xIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHAtaWQ9IjM0MjEiIGRhdGEtc3BtLWFuY2hvci1pZD0iYTMxM3guNzc4MTA2OS4wLmkzIiB3aWR0aD0iNDgiIGhlaWdodD0iNDgiIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIj48ZGVmcz48c3R5bGUgdHlwZT0idGV4dC9jc3MiPjwvc3R5bGU+PC9kZWZzPjxwYXRoIGQ9Ik00NjkuMzEyIDU3MC4yNHYtMjU2aDg1LjM3NnYyNTZoMTI4TDUxMiA3NTYuMjg4IDM0MS4zMTIgNTcwLjI0aDEyOHpNMTAyNCA2NDAuMTI4QzEwMjQgNzgyLjkxMiA5MTkuODcyIDg5NiA3ODcuNjQ4IDg5NmgtNTEyQzEyMy45MDQgODk2IDAgNzYxLjYgMCA1OTcuNTA0IDAgNDUxLjk2OCA5NC42NTYgMzMxLjUyIDIyNi40MzIgMzAyLjk3NiAyODQuMTYgMTk1LjQ1NiAzOTEuODA4IDEyOCA1MTIgMTI4YzE1Mi4zMiAwIDI4Mi4xMTIgMTA4LjQxNiAzMjMuMzkyIDI2MS4xMkM5NDEuODg4IDQxMy40NCAxMDI0IDUxOS4wNCAxMDI0IDY0MC4xOTJ6IG0tMjU5LjItMjA1LjMxMmMtMjQuNDQ4LTEyOS4wMjQtMTI4Ljg5Ni0yMjIuNzItMjUyLjgtMjIyLjcyLTk3LjI4IDAtMTgzLjA0IDU3LjM0NC0yMjQuNjQgMTQ3LjQ1NmwtOS4yOCAyMC4yMjQtMjAuOTI4IDIuOTQ0Yy0xMDMuMzYgMTQuNC0xNzguMzY4IDEwNC4zMi0xNzguMzY4IDIxNC43MiAwIDExNy45NTIgODguODMyIDIxNC40IDE5Ni45MjggMjE0LjRoNTEyYzg4LjMyIDAgMTU3LjUwNC03NS4xMzYgMTU3LjUwNC0xNzEuNzEyIDAtODguMDY0LTY1LjkyLTE2NC45MjgtMTQ0Ljk2LTE3MS43NzZsLTI5LjUwNC0yLjU2LTUuODg4LTMwLjk3NnoiIGZpbGw9IiNmZmZmZmYiIHAtaWQ9IjM0MjIiIGRhdGEtc3BtLWFuY2hvci1pZD0iYTMxM3guNzc4MTA2OS4wLmkwIiBjbGFzcz0iIj48L3BhdGg+PC9zdmc+&style=for-the-badge" height="22">][crates-url]
-
 <img alt="license" src="https://img.shields.io/badge/License-Apache%202.0/MIT-blue.svg?style=for-the-badge&fontColor=white&logoColor=f5c076&logo=data:image/svg+xml;base64,PCFET0NUWVBFIHN2ZyBQVUJMSUMgIi0vL1czQy8vRFREIFNWRyAxLjEvL0VOIiAiaHR0cDovL3d3dy53My5vcmcvR3JhcGhpY3MvU1ZHLzEuMS9EVEQvc3ZnMTEuZHRkIj4KDTwhLS0gVXBsb2FkZWQgdG86IFNWRyBSZXBvLCB3d3cuc3ZncmVwby5jb20sIFRyYW5zZm9ybWVkIGJ5OiBTVkcgUmVwbyBNaXhlciBUb29scyAtLT4KPHN2ZyBmaWxsPSIjZmZmZmZmIiBoZWlnaHQ9IjgwMHB4IiB3aWR0aD0iODAwcHgiIHZlcnNpb249IjEuMSIgaWQ9IkNhcGFfMSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB4bWxuczp4bGluaz0iaHR0cDovL3d3dy53My5vcmcvMTk5OS94bGluayIgdmlld0JveD0iMCAwIDI3Ni43MTUgMjc2LjcxNSIgeG1sOnNwYWNlPSJwcmVzZXJ2ZSIgc3Ryb2tlPSIjZmZmZmZmIj4KDTxnIGlkPSJTVkdSZXBvX2JnQ2FycmllciIgc3Ryb2tlLXdpZHRoPSIwIi8+Cg08ZyBpZD0iU1ZHUmVwb190cmFjZXJDYXJyaWVyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KDTxnIGlkPSJTVkdSZXBvX2ljb25DYXJyaWVyIj4gPGc+IDxwYXRoIGQ9Ik0xMzguMzU3LDBDNjIuMDY2LDAsMCw2Mi4wNjYsMCwxMzguMzU3czYyLjA2NiwxMzguMzU3LDEzOC4zNTcsMTM4LjM1N3MxMzguMzU3LTYyLjA2NiwxMzguMzU3LTEzOC4zNTcgUzIxNC42NDgsMCwxMzguMzU3LDB6IE0xMzguMzU3LDI1OC43MTVDNzEuOTkyLDI1OC43MTUsMTgsMjA0LjcyMywxOCwxMzguMzU3UzcxLjk5MiwxOCwxMzguMzU3LDE4IHMxMjAuMzU3LDUzLjk5MiwxMjAuMzU3LDEyMC4zNTdTMjA0LjcyMywyNTguNzE1LDEzOC4zNTcsMjU4LjcxNXoiLz4gPHBhdGggZD0iTTE5NC43OTgsMTYwLjkwM2MtNC4xODgtMi42NzctOS43NTMtMS40NTQtMTIuNDMyLDIuNzMyYy04LjY5NCwxMy41OTMtMjMuNTAzLDIxLjcwOC0zOS42MTQsMjEuNzA4IGMtMjUuOTA4LDAtNDYuOTg1LTIxLjA3OC00Ni45ODUtNDYuOTg2czIxLjA3Ny00Ni45ODYsNDYuOTg1LTQ2Ljk4NmMxNS42MzMsMCwzMC4yLDcuNzQ3LDM4Ljk2OCwyMC43MjMgYzIuNzgyLDQuMTE3LDguMzc1LDUuMjAxLDEyLjQ5NiwyLjQxOGM0LjExOC0yLjc4Miw1LjIwMS04LjM3NywyLjQxOC0xMi40OTZjLTEyLjExOC0xNy45MzctMzIuMjYyLTI4LjY0NS01My44ODItMjguNjQ1IGMtMzUuODMzLDAtNjQuOTg1LDI5LjE1Mi02NC45ODUsNjQuOTg2czI5LjE1Miw2NC45ODYsNjQuOTg1LDY0Ljk4NmMyMi4yODEsMCw0Mi43NTktMTEuMjE4LDU0Ljc3OC0zMC4wMDkgQzIwMC4yMDgsMTY5LjE0NywxOTguOTg1LDE2My41ODIsMTk0Ljc5OCwxNjAuOTAzeiIvPiA8L2c+IDwvZz4KDTwvc3ZnPg==" height="22">
 
 
@@ -32,6 +30,7 @@ English | [简体中文](README-zh_hans.md)
 * **High Hit Ratios** - with Dgraph's developers unique admission/eviction policy pairing, Ristretto's performance is best in class.
     * **Eviction: SampledLFU** - on par with exact LRU and better performance on Search and Database traces.
     * **Admission: TinyLFU** - extra performance with little memory overhead (12 bits per counter).
+* **Designed for Database Workloads** - on OLTP-style traces with small working sets and strong frequency skew, Stretto keeps the hot set far better than general-purpose caches (see [Benchmarks](#benchmarks)).
 * **Fast Throughput** - use a variety of techniques for managing contention and the result is excellent throughput.
 * **Cost-Based Eviction** - any large new item deemed valuable can evict multiple smaller items (cost could be anything).
 * **Fully Concurrent** - you can use as many threads as you want with little throughput degradation.
@@ -42,6 +41,7 @@ English | [简体中文](README-zh_hans.md)
 
 - [Features](#features)
 - [Table of Contents](#table-of-contents)
+- [Benchmarks](#benchmarks)
 - [Installation](#installation)
 - [Related](#related)
 - [Usage](#usage)
@@ -63,139 +63,82 @@ English | [简体中文](README-zh_hans.md)
 - [Acknowledgements](#acknowledgements)
 - [License](#license)
 
+## Benchmarks
+
+Hit ratios produced by [mokabench](https://github.com/moka-rs/mokabench) against the [ARC trace](https://github.com/moka-rs/cache-trace) suite, 16 concurrent clients. Compared against [QuickCache](https://crates.io/crates/quick_cache) 0.6, [TinyUFO](https://crates.io/crates/TinyUFO) 0.8 and [Moka](https://crates.io/crates/moka) 0.12. Higher is better; **bold** marks the leader for each row.
+
+### S3 trace
+
+| Capacity | QuickCache | Stretto | Stretto Async¹ | TinyUFO | Moka Sync | Moka Async | Moka Segmented(8) |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+|   100,000 | **12.84%** | 12.20% | 3.04% |  2.82% | 10.39% | 10.50% | 10.09% |
+|   400,000 |    42.27%  | 38.31% | 3.05% | 20.25% | 40.96% | 41.17% | **42.32%** |
+|   800,000 |    68.33%  | 67.06% | 3.04% | 62.08% | 66.21% | 67.49% | **70.10%** |
+
+### DS1 trace
+
+| Capacity | QuickCache | Stretto | Stretto Async¹ | TinyUFO | Moka Sync | Moka Async | Moka Segmented(8) |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1,000,000 | **15.11%** | 13.94% | 0.75% |  3.34% | 12.75% | 12.91% | 14.78% |
+| 4,000,000 |    44.41%  | 39.51% | 0.75% | 24.68% | 38.42% | 44.29% | **45.19%** |
+| 8,000,000 | **69.30%** | 52.11% | 0.74% | 53.25% | 63.84% | 67.58% | 67.35% |
+
+### OLTP trace
+
+Stretto is designed for database workloads. OLTP has a tight working set with strong frequency skew — exactly the access pattern admission-based LFU was built for. At small capacities where the hot set has to be actively filtered, Stretto leads every competitor by 8–27 percentage points. As capacity grows past the working set, simpler policies catch up.
+
+| Capacity | QuickCache | Stretto | Stretto Async¹ | TinyUFO | Moka Sync | Moka Async | Moka Segmented(8) |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+|    256 | 22.37% | **53.34%** | 42.48% | 16.67% | 26.25% | 25.41% | 28.73% |
+|    512 | 28.74% | **51.23%** | 42.53% | 20.59% | 32.61% | 31.94% | 33.34% |
+|  1,000 | 35.10% | **50.40%** | 42.41% | 26.53% | 37.93% | 37.39% | 37.50% |
+|  2,000 | 41.52% | **50.73%** | 42.27% | 34.80% | 42.89% | 42.34% | 42.71% |
+|  4,000 | 47.74% | **51.87%** | 42.52% | 43.42% | 48.18% | 46.53% | 48.32% |
+|  8,000 | **55.37%** | 52.18% | 42.05% | 51.71% | 53.67% | 53.49% | 54.40% |
+
+¹ `Stretto Async` is `stretto::AsyncCache` with Tokio. The measurements above use 16 concurrent tokio tasks, which starves Stretto's internal policy-processor task and inflates the insert drop rate — hit ratios collapse on heavy traces. At lower concurrency (1–4 clients) the async cache tracks the sync cache closely. See [#37](https://github.com/al8n/stretto/issues/37) follow-up for the scaling work.
+
+### Reproducing
+
+```bash
+git clone --recursive https://github.com/moka-rs/mokabench.git
+cd mokabench/cache-trace/arc && zstd -d S3.lis.zst DS1.lis.zst OLTP.lis.zst && cd ../..
+cargo run --release --features "stretto,quick_cache,tiny-ufo" -- -f s3,ds1,oltp -n 16
+```
+
 ## Installation
+
 - Use Cache.
-```toml
-[dependencies]
-stretto = "0.8"
-```
-or
-```toml 
-[dependencies]
-stretto = { version = "0.8", features = ["sync"] }
-```
 
+    ```toml
+    [dependencies]
+    stretto = "0.9"
+    ```
 
-- Use AsyncCache
-```toml 
-[dependencies]
-stretto = { version = "0.8", features = ["async"] }
-```
+- Use AsyncCache with tokio
 
-- Use both Cache and AsyncCache
-```toml 
-[dependencies]
-stretto = { version = "0.8", features = ["full"] }
-```
+    ```toml
+    [dependencies]
+    stretto = { version = "0.9", features = ["tokio"] }
+    ```
 
-## Related
-If you want some basic caches implementation(no_std), please see https://crates.io/crates/caches.
+- Use AsyncCache with smol
+
+    ```toml
+    [dependencies]
+    stretto = { version = "0.9", features = ["smol"] }
+    ```
 
 ## Usage
+
 ### Example
-#### Sync
-```rust
-use std::time::Duration;
-use stretto::Cache;
 
-fn main() {
-    let c = Cache::new(12960, 1e6 as i64).unwrap();
+See [examples](./examples/) folder for more details:
 
-    // set a value with a cost of 1
-    c.insert("a", "a", 1);
-    // set a value with a cost of 1 and ttl
-    c.insert_with_ttl("b", "b", 1, Duration::from_secs(3));
+- [sync](./examples/sync.rs): Use stretto's cache in sync environment
+- [tokio](./examples/tokio.rs): Use stretto's cache with tokio async runtime
+- [smol](./examples/smol.rs): Use stretto's cache with smol async runtime
 
-    // wait for value to pass through buffers
-    c.wait().unwrap();
-
-    // when we get the value, we will get a ValueRef, which contains a RwLockReadGuard
-    // so when we finish use this value, we must release the ValueRef
-    let v = c.get(&"a").unwrap();
-    assert_eq!(v.value(), &"a");
-    v.release();
-
-    // lock will be auto released when out of scope
-    {
-        // when we get the value, we will get a ValueRef, which contains a RwLockWriteGuard
-        // so when we finish use this value, we must release the ValueRefMut
-        let mut v = c.get_mut(&"a").unwrap();
-        v.write("aa");
-        assert_eq!(v.value(), &"aa");
-        // release the value
-    }
-
-    // if you just want to do one operation
-    let v = c.get_mut(&"a").unwrap();
-    v.write_once("aaa");
-
-    let v = c.get(&"a").unwrap();
-    assert_eq!(v.value(), &"aaa");
-    v.release();
-
-    // clear the cache
-    c.clear().unwrap();
-    // wait all the operations are finished
-    c.wait().unwrap();
-    assert!(c.get(&"a").is_none());
-}
-```
-
-#### Async
-Stretto support runtime agnostic `AsyncCache`, the only thing you need to do is passing a `spawner` when building the `AsyncCache`.
-
-```rust
-use std::time::Duration;
-use stretto::AsyncCache;
-
-#[tokio::main]
-async fn main() {
-    // In this example, we use tokio runtime, so we pass tokio::spawn when constructing AsyncCache
-    let c: AsyncCache<&str, &str> = AsyncCache::new(12960, 1e6 as i64, tokio::spawn).unwrap();
-
-    // set a value with a cost of 1
-    c.insert("a", "a", 1).await;
-
-    // set a value with a cost of 1 and ttl
-    c.insert_with_ttl("b", "b", 1, Duration::from_secs(3)).await;
-
-    // wait for value to pass through buffers
-    c.wait().await.unwrap();
-
-    // when we get the value, we will get a ValueRef, which contains a RwLockReadGuard
-    // so when we finish use this value, we must release the ValueRef
-    let v = c.get(&"a").unwrap();
-    assert_eq!(v.value(), &"a");
-    // release the value
-    v.release(); // or drop(v)
-
-    // lock will be auto released when out of scope
-    {
-        // when we get the value, we will get a ValueRef, which contains a RwLockWriteGuard
-        // so when we finish use this value, we must release the ValueRefMut
-        let mut v = c.get_mut(&"a").unwrap();
-        v.write("aa");
-        assert_eq!(v.value(), &"aa");
-        // release the value
-    }
-
-    // if you just want to do one operation
-    let v = c.get_mut(&"a").unwrap();
-    v.write_once("aaa");
-
-    let v = c.get(&"a").unwrap();
-    println!("{}", v);
-    assert_eq!(v.value(), &"aaa");
-    v.release();
-
-    // clear the cache
-    c.clear().await.unwrap();
-    // wait all the operations are finished
-    c.wait().await.unwrap();
-
-    assert!(c.get(&"a").is_none());
-}
-```
 ### Config 
 The `CacheBuilder` struct is used when creating Cache instances if you want to customize the Cache settings.
 
@@ -215,7 +158,7 @@ For example, if you expect each item to have a cost of 1 and `max_cost` is 100, 
 
 #### key_builder
 
-```rust
+```rust,ignore
 pub trait KeyBuilder {
     type Key: Hash + Eq + ?Sized;
 
@@ -266,8 +209,9 @@ Metrics is true when you want real-time logging of a variety of stats. The reaso
 
 #### ignore_internal_cost
 
-Set to true indicates to the cache that the cost of internally storing the value should be ignored. This is useful when the 
-cost passed to set is not using bytes as units. Keep in mind that setting this to true will increase the memory usage.
+Defaults to `true`: each insert is charged only the caller-supplied cost, so `max_cost` behaves as an entry budget when you pass `1` per insert.
+
+Set to `false` when `max_cost` represents a byte budget and you need each stored item to also account for ~56 bytes of per-entry bookkeeping (key, conflict, version, value wrapper, time).
 
 #### cleanup_duration
 
@@ -289,7 +233,7 @@ this trait is for you to check if the value should be updated.
 
 #### callback
 
-```rust
+```rust,ignore
 pub trait CacheCallback: Send + Sync + 'static {
     type Value: Send + Sync + 'static;
 

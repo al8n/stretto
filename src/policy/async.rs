@@ -1,155 +1,116 @@
-use crate::axync::{select, stop_channel, unbounded, Receiver, RecvError, Sender};
-use crate::policy::PolicyInner;
-use crate::{CacheError, MetricType, Metrics};
-use futures::future::{BoxFuture, FutureExt};
+use crate::{
+  CacheError, MetricType, Metrics,
+  axync::{Receiver, Sender, select, unbounded},
+  policy::PolicyInner,
+};
+use agnostic_lite::RuntimeLite;
+use futures::future::FutureExt;
 use parking_lot::Mutex;
-use std::collections::hash_map::RandomState;
-use std::hash::BuildHasher;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::{collections::hash_map::RandomState, hash::BuildHasher, sync::Arc};
 
 pub(crate) struct AsyncLFUPolicy<S = RandomState> {
-    pub(crate) inner: Arc<Mutex<PolicyInner<S>>>,
-    pub(crate) items_tx: Sender<Vec<u64>>,
-    pub(crate) stop_tx: Sender<()>,
-    pub(crate) is_closed: AtomicBool,
-    pub(crate) metrics: Arc<Metrics>,
+  pub(crate) inner: Arc<Mutex<PolicyInner<S>>>,
+  pub(crate) items_tx: Sender<Vec<u64>>,
+  pub(crate) metrics: Arc<Metrics>,
 }
 
 impl AsyncLFUPolicy {
-    #[inline]
-    pub(crate) fn new<SP, R>(ctrs: usize, max_cost: i64, spawner: SP) -> Result<Self, CacheError>
-    where
-        SP: Fn(BoxFuture<'static, ()>) -> R + Send + Sync + 'static,
-    {
-        Self::with_hasher(ctrs, max_cost, RandomState::new(), spawner)
-    }
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub(crate) fn new<RT: RuntimeLite>(
+    ctrs: usize,
+    max_cost: i64,
+    stop_rx: Receiver<()>,
+  ) -> Result<Self, CacheError> {
+    Self::with_hasher::<RT>(ctrs, max_cost, RandomState::new(), stop_rx)
+  }
 }
 
 impl<S: BuildHasher + Clone + 'static + Send> AsyncLFUPolicy<S> {
-    #[inline]
-    pub fn with_hasher<SP, R>(
-        ctrs: usize,
-        max_cost: i64,
-        hasher: S,
-        spawner: SP,
-    ) -> Result<Self, CacheError>
-    where
-        SP: Fn(BoxFuture<'static, ()>) -> R + Send + Sync + 'static,
-    {
-        let inner = PolicyInner::with_hasher(ctrs, max_cost, hasher)?;
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub fn with_hasher<RT: RuntimeLite>(
+    ctrs: usize,
+    max_cost: i64,
+    hasher: S,
+    stop_rx: Receiver<()>,
+  ) -> Result<Self, CacheError> {
+    let inner = PolicyInner::with_hasher(ctrs, max_cost, hasher)?;
 
-        let (items_tx, items_rx) = unbounded();
-        let (stop_tx, stop_rx) = stop_channel();
+    let (items_tx, items_rx) = unbounded();
 
-        PolicyProcessor::new(inner.clone(), items_rx, stop_rx).spawn(Box::new(move |fut| {
-            spawner(fut);
-        }));
+    PolicyProcessor::new(inner.clone(), items_rx, stop_rx).spawn::<RT>();
 
-        let this = Self {
-            inner,
-            items_tx,
-            stop_tx,
-            is_closed: AtomicBool::new(false),
-            metrics: Arc::new(Metrics::new()),
-        };
+    let this = Self {
+      inner,
+      items_tx,
+      metrics: Arc::new(Metrics::new()),
+    };
 
-        Ok(this)
+    Ok(this)
+  }
+
+  pub fn push(&self, keys: Vec<u64>) -> Option<Vec<u64>> {
+    let num_of_keys = keys.len() as u64;
+    if num_of_keys == 0 {
+      return Some(keys);
     }
-
-    pub async fn push(&self, keys: Vec<u64>) -> Result<bool, CacheError> {
-        if self.is_closed.load(Ordering::SeqCst) {
-            return Ok(false);
-        }
-        let num_of_keys = keys.len() as u64;
-        if num_of_keys == 0 {
-            return Ok(true);
-        }
-        let first = keys[0];
-
-        select! {
-            rst =  self.items_tx.send(keys).fuse() => rst.map(|_| {
-                self.metrics.add(MetricType::KeepGets, first, num_of_keys);
-                true
-            })
-            .map_err(|e| {
-                self.metrics.add(MetricType::DropGets, first, num_of_keys);
-                CacheError::SendError(format!("sending on a disconnected channel, msg: {:?}", e))
-            }),
-            default => {
-                self.metrics.add(MetricType::DropGets, first, num_of_keys);
-                Ok(false)
-            }
-        }
+    let first = keys[0];
+    match self.items_tx.try_send(keys) {
+      Ok(_) => {
+        self.metrics.add(MetricType::KeepGets, first, num_of_keys);
+        None
+      }
+      Err(err) => {
+        self.metrics.add(MetricType::DropGets, first, num_of_keys);
+        Some(err.into_inner())
+      }
     }
-
-    #[inline]
-    pub async fn close(&self) -> Result<(), CacheError> {
-        if self.is_closed.load(Ordering::SeqCst) {
-            return Ok(());
-        }
-
-        // block until the Processor thread returns.
-        self.stop_tx
-            .send(())
-            .await
-            .map_err(|e| CacheError::SendError(format!("{}", e)))?;
-        self.is_closed.store(true, Ordering::SeqCst);
-        Ok(())
-    }
+  }
 }
 
 pub(crate) struct PolicyProcessor<S> {
-    inner: Arc<Mutex<PolicyInner<S>>>,
-    items_rx: Receiver<Vec<u64>>,
-    stop_rx: Receiver<()>,
+  inner: Arc<Mutex<PolicyInner<S>>>,
+  items_rx: Receiver<Vec<u64>>,
+  stop_rx: Receiver<()>,
 }
 
 impl<S: BuildHasher + Clone + 'static + Send> PolicyProcessor<S> {
-    #[inline]
-    fn new(
-        inner: Arc<Mutex<PolicyInner<S>>>,
-        items_rx: Receiver<Vec<u64>>,
-        stop_rx: Receiver<()>,
-    ) -> Self {
-        Self {
-            inner,
-            items_rx,
-            stop_rx,
-        }
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  fn new(
+    inner: Arc<Mutex<PolicyInner<S>>>,
+    items_rx: Receiver<Vec<u64>>,
+    stop_rx: Receiver<()>,
+  ) -> Self {
+    Self {
+      inner,
+      items_rx,
+      stop_rx,
     }
+  }
 
-    #[inline]
-    fn spawn(self, spawner: Box<dyn Fn(BoxFuture<'static, ()>) + Send + Sync>) {
-        (spawner)(Box::pin(async move {
-            loop {
-                select! {
-                    items = self.items_rx.recv().fuse() => self.handle_items(items),
-                    _ = self.stop_rx.recv().fuse() => {
-                        drop(self);
-                        return;
-                    },
-                }
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  fn spawn<RT: RuntimeLite>(self) {
+    RT::spawn_detach(async move {
+      loop {
+        select! {
+          items = self.items_rx.recv().fuse() => {
+            if let Ok(items) = items {
+              self.handle_items(items);
+            } else {
+              // Channel closed, so no more items will be received. Exit the loop.
+              return;
             }
-        }))
-    }
-
-    // TODO: None handle
-    #[inline]
-    fn handle_items(&self, items: Result<Vec<u64>, RecvError>) {
-        match items {
-            Ok(items) => {
-                let mut inner = self.inner.lock();
-                inner.admit.increments(items);
-            }
-            Err(_) => {
-                // error!("policy processor error")
-            }
+          },
+          _ = self.stop_rx.recv().fuse() => return,
         }
-    }
+      }
+    });
+  }
+
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  fn handle_items(&self, items: Vec<u64>) {
+    let mut inner = self.inner.lock();
+    inner.admit.increments(items);
+  }
 }
-
-unsafe impl<S: BuildHasher + Clone + 'static + Send> Send for PolicyProcessor<S> {}
-unsafe impl<S: BuildHasher + Clone + 'static + Send + Sync> Sync for PolicyProcessor<S> {}
 
 impl_policy!(AsyncLFUPolicy);
