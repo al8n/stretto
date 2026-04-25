@@ -157,7 +157,7 @@ impl CacheCallback for TestCallbackDropUpdates {
 mod sync_test {
   use super::*;
   use crate::{
-    Cache, CacheBuilder, DefaultCacheCallback, DefaultCoster, DefaultKeyBuilder,
+    Cache, CacheBuilder, CacheError, DefaultCacheCallback, DefaultCoster, DefaultKeyBuilder,
     DefaultUpdateValidator, TransparentKeyBuilder, UpdateValidator, cache::sync::Item,
   };
   use crossbeam_channel::{bounded, select};
@@ -3715,6 +3715,184 @@ mod sync_test {
       -1,
       "policy cost ledger must show no charge for the removed key",
     );
+  }
+
+  #[test]
+  fn test_sync_clear_from_coster_returns_error() {
+    // Regression for clear()'s `insert_permit_held()` branch: a Coster
+    // that re-enters via `clear()` is running inside the outer insert's
+    // permit-held window, so a blocking `insert_sem.acquire()` would
+    // self-deadlock. The branch must return a `ChannelError` instead.
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AOrd};
+
+    struct ClearCoster {
+      armed: Arc<AtomicBool>,
+      fired: Arc<AtomicU64>,
+      cache: parking_lot::Mutex<
+        Option<
+          Arc<
+            Cache<
+              u64,
+              u64,
+              TransparentKeyBuilder<u64>,
+              ClearCoster,
+              DefaultUpdateValidator<u64>,
+              DefaultCacheCallback<u64>,
+            >,
+          >,
+        >,
+      >,
+      observed_err: parking_lot::Mutex<Option<CacheError>>,
+    }
+    impl Coster for ClearCoster {
+      type Value = u64;
+      fn cost(&self, _v: &u64) -> i64 {
+        if self.armed.swap(false, AOrd::AcqRel) {
+          self.fired.fetch_add(1, AOrd::Relaxed);
+          let cache_ref = self.cache.lock().clone();
+          if let Some(c) = cache_ref {
+            let err = c.clear().expect_err(
+              "re-entrant clear() from Coster must return a ChannelError, not deadlock",
+            );
+            *self.observed_err.lock() = Some(err);
+          }
+        }
+        1
+      }
+    }
+
+    let armed = Arc::new(AtomicBool::new(false));
+    let fired = Arc::new(AtomicU64::new(0));
+    let c: Cache<
+      u64,
+      u64,
+      TransparentKeyBuilder<u64>,
+      ClearCoster,
+      DefaultUpdateValidator<u64>,
+      DefaultCacheCallback<u64>,
+    > = CacheBuilder::new_with_key_builder(1000, 1000, TransparentKeyBuilder::default())
+      .set_coster(ClearCoster {
+        armed: armed.clone(),
+        fired: fired.clone(),
+        cache: parking_lot::Mutex::new(None),
+        observed_err: parking_lot::Mutex::new(None),
+      })
+      .set_buffer_size(1)
+      .set_ignore_internal_cost(true)
+      .finalize()
+      .unwrap();
+
+    assert!(c.insert(1u64, 100u64, 1));
+    c.wait().unwrap();
+
+    let c_arc = Arc::new(c);
+    *c_arc.0.coster.cache.lock() = Some(c_arc.clone());
+
+    armed.store(true, AOrd::Release);
+    let _ = c_arc.insert(1u64, 999u64, 0);
+    c_arc.wait().unwrap();
+
+    assert_eq!(fired.load(AOrd::Relaxed), 1);
+    let observed = c_arc.0.coster.observed_err.lock();
+    assert!(
+      matches!(observed.as_ref(), Some(CacheError::ChannelError(_))),
+      "re-entrant clear must surface ChannelError, got {:?}",
+      *observed
+    );
+    drop(observed);
+    assert!(
+      c_arc.get(&1u64).is_some(),
+      "key 1 must remain — re-entrant clear was rejected, not honored"
+    );
+
+    *c_arc.0.coster.cache.lock() = None;
+  }
+
+  #[test]
+  fn test_sync_wait_from_coster_returns_error() {
+    // Regression for wait()'s `insert_permit_held()` branch: same shape
+    // as the clear() variant. A blocking permit acquire from inside the
+    // outer insert's permit-held window would self-deadlock; the branch
+    // must return a ChannelError instead.
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AOrd};
+
+    struct WaitCoster {
+      armed: Arc<AtomicBool>,
+      fired: Arc<AtomicU64>,
+      cache: parking_lot::Mutex<
+        Option<
+          Arc<
+            Cache<
+              u64,
+              u64,
+              TransparentKeyBuilder<u64>,
+              WaitCoster,
+              DefaultUpdateValidator<u64>,
+              DefaultCacheCallback<u64>,
+            >,
+          >,
+        >,
+      >,
+      observed_err: parking_lot::Mutex<Option<CacheError>>,
+    }
+    impl Coster for WaitCoster {
+      type Value = u64;
+      fn cost(&self, _v: &u64) -> i64 {
+        if self.armed.swap(false, AOrd::AcqRel) {
+          self.fired.fetch_add(1, AOrd::Relaxed);
+          let cache_ref = self.cache.lock().clone();
+          if let Some(c) = cache_ref {
+            let err = c
+              .wait()
+              .expect_err("re-entrant wait() from Coster must return an error, not deadlock");
+            *self.observed_err.lock() = Some(err);
+          }
+        }
+        1
+      }
+    }
+
+    let armed = Arc::new(AtomicBool::new(false));
+    let fired = Arc::new(AtomicU64::new(0));
+    let c: Cache<
+      u64,
+      u64,
+      TransparentKeyBuilder<u64>,
+      WaitCoster,
+      DefaultUpdateValidator<u64>,
+      DefaultCacheCallback<u64>,
+    > = CacheBuilder::new_with_key_builder(1000, 1000, TransparentKeyBuilder::default())
+      .set_coster(WaitCoster {
+        armed: armed.clone(),
+        fired: fired.clone(),
+        cache: parking_lot::Mutex::new(None),
+        observed_err: parking_lot::Mutex::new(None),
+      })
+      .set_buffer_size(1)
+      .set_ignore_internal_cost(true)
+      .finalize()
+      .unwrap();
+
+    assert!(c.insert(1u64, 100u64, 1));
+    c.wait().unwrap();
+
+    let c_arc = Arc::new(c);
+    *c_arc.0.coster.cache.lock() = Some(c_arc.clone());
+
+    armed.store(true, AOrd::Release);
+    let _ = c_arc.insert(1u64, 999u64, 0);
+    c_arc.wait().unwrap();
+
+    assert_eq!(fired.load(AOrd::Relaxed), 1);
+    let observed = c_arc.0.coster.observed_err.lock();
+    assert!(
+      matches!(observed.as_ref(), Some(CacheError::ChannelError(_))),
+      "re-entrant wait must surface ChannelError, got {:?}",
+      *observed
+    );
+    drop(observed);
+
+    *c_arc.0.coster.cache.lock() = None;
   }
 
   #[test]

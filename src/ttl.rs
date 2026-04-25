@@ -293,4 +293,63 @@ mod expiration_map_tests {
     assert!(remaining.contains_key(&(base + 10)));
     assert_eq!(remaining.len(), 1);
   }
+
+  #[test]
+  fn time_get_ttl_zero_when_expired() {
+    let t = Time::now_with_expiration(Duration::from_millis(1));
+    std::thread::sleep(Duration::from_millis(20));
+    assert_eq!(t.get_ttl(), Duration::ZERO);
+  }
+
+  #[test]
+  fn time_get_ttl_max_when_zero_duration() {
+    assert_eq!(Time::now().get_ttl(), Duration::MAX);
+  }
+
+  #[test]
+  fn bucket_deref_and_deref_mut() {
+    let mut b: Bucket = Bucket::with_hasher(RandomState::new());
+    // DerefMut: insert through the deref
+    let m: &mut HashMap<u64, u64, _> = &mut b;
+    m.insert(7, 70);
+    // Deref: read through the deref
+    let m: &HashMap<u64, u64, _> = &b;
+    assert_eq!(m.get(&7), Some(&70));
+  }
+
+  #[test]
+  fn try_update_same_bucket_is_noop() {
+    let em = ExpirationMap::new();
+    let exp = Time::now_with_expiration(Duration::from_secs(60));
+    em.try_insert(1, 100, exp).unwrap();
+    // Same exp ⇒ same bucket ⇒ early return without touching the map.
+    em.try_update(1, 100, exp, exp).unwrap();
+    let m = em.buckets.read();
+    assert_eq!(m.len(), 1);
+  }
+
+  #[test]
+  fn try_update_into_existing_bucket() {
+    let em = ExpirationMap::new();
+    // Both keys land in the same future bucket so the second try_update
+    // exercises the `Some(bucket)` branch when migrating into it.
+    let exp_old = Time::now_with_expiration(Duration::from_secs(1));
+    let exp_new = Time::now_with_expiration(Duration::from_secs(60));
+    em.try_insert(1, 100, exp_old).unwrap();
+    em.try_insert(2, 200, exp_new).unwrap();
+    em.try_update(1, 100, exp_old, exp_new).unwrap();
+
+    let m = em.buckets.read();
+    let bucket = m.get(&storage_bucket(exp_new)).unwrap();
+    assert_eq!(bucket.map.get(&1), Some(&100));
+    assert_eq!(bucket.map.get(&2), Some(&200));
+  }
+
+  #[test]
+  fn try_update_zero_zero_is_noop() {
+    let em = ExpirationMap::new();
+    let zero = Time::now();
+    em.try_update(1, 100, zero, zero).unwrap();
+    assert!(em.buckets.read().is_empty());
+  }
 }

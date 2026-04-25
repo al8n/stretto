@@ -341,6 +341,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn async_try_acquire_after_close_returns_false() {
+      let s = AsyncSemaphore::new(5);
+      s.close();
+      assert!(!s.try_acquire());
+    }
+
+    #[tokio::test]
+    async fn async_acquire_after_close_returns_err() {
+      let s = AsyncSemaphore::new(5);
+      s.close();
+      assert_eq!(s.acquire().await, Err(SemaphoreClosed));
+    }
+
+    #[tokio::test]
     async fn async_dropped_acquire_does_not_consume() {
       // Cancellation-safety check: dropping the future before it resolves
       // must not leak a permit.

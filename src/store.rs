@@ -831,4 +831,100 @@ mod test {
     assert_eq!(removed.value, 20);
     assert!(s.get(&10, 0).is_none());
   }
+
+  #[test]
+  fn test_store_try_remove_if_not_stale_conflict_mismatch() {
+    let s: ShardedMap<u64> = ShardedMap::new();
+    s.try_insert(10, 20, 7, Time::now(), 5).unwrap();
+    // conflict mismatch ⇒ refused, row stays.
+    assert!(s.try_remove_if_not_stale(&10, 9, 5).unwrap().is_none());
+    assert!(s.get(&10, 7).is_some());
+  }
+
+  #[test]
+  fn test_store_try_remove_if_version_with_expiration() {
+    let s: ShardedMap<u64> = ShardedMap::new();
+    let exp = Time::now_with_expiration(Duration::from_secs(60));
+    let version = s.try_insert(10, 20, 0, exp, 0).unwrap().unwrap();
+    let removed = s.try_remove_if_version(&10, 0, version).unwrap().unwrap();
+    assert_eq!(removed.value, 20);
+    assert!(s.expiration(&10).is_none());
+  }
+
+  #[test]
+  fn test_store_try_remove_with_expiration_clears_em() {
+    let s: ShardedMap<u64> = ShardedMap::new();
+    let exp = Time::now_with_expiration(Duration::from_secs(60));
+    s.try_insert(10, 20, 0, exp, 0).unwrap();
+    s.try_remove(&10, 0).unwrap();
+    assert!(s.expiration(&10).is_none());
+  }
+
+  #[test]
+  fn test_store_contains_version_conflict_mismatch() {
+    let s: ShardedMap<u64> = ShardedMap::new();
+    let version = s.try_insert(1, 100, 7, Time::now(), 0).unwrap().unwrap();
+    // conflict mismatch ⇒ false even with the right version.
+    assert!(!s.contains_version(&1, 9, version));
+    // matching conflict + version ⇒ true.
+    assert!(s.contains_version(&1, 7, version));
+    // missing key ⇒ false.
+    assert!(!s.contains_version(&999, 0, version));
+  }
+
+  #[test]
+  fn test_store_contains_key_conflict_and_missing() {
+    let s: ShardedMap<u64> = ShardedMap::new();
+    s.try_insert(1, 100, 7, Time::now(), 0).unwrap();
+    assert!(s.contains_key(&1, 0));
+    assert!(s.contains_key(&1, 7));
+    assert!(!s.contains_key(&1, 9));
+    assert!(!s.contains_key(&999, 0));
+  }
+
+  #[test]
+  fn test_store_try_insert_conflict_mismatch_returns_none() {
+    let s: ShardedMap<u64> = ShardedMap::new();
+    s.try_insert(1, 100, 7, Time::now(), 0).unwrap();
+    // existing row has conflict=7, caller provides conflict=9 ⇒ rejected.
+    let result = s.try_insert(1, 200, 9, Time::now(), 0).unwrap();
+    assert!(result.is_none());
+    assert_eq!(s.get(&1, 7).unwrap().read(), 100);
+  }
+
+  #[test]
+  fn test_store_try_insert_rejected_by_validator() {
+    use crate::{UpdateValidator, ttl::ExpirationMap};
+    struct RejectAll;
+    impl UpdateValidator for RejectAll {
+      type Value = u64;
+      fn should_update(&self, _prev: &u64, _curr: &u64) -> bool {
+        false
+      }
+    }
+    let s: ShardedMap<u64, RejectAll> = ShardedMap::with_validator(ExpirationMap::new(), RejectAll);
+    s.try_insert(1, 100, 0, Time::now(), 0).unwrap();
+    // Validator returns false ⇒ try_insert refuses the update with Ok(None).
+    let result = s.try_insert(1, 200, 0, Time::now(), 0).unwrap();
+    assert!(result.is_none());
+    assert_eq!(s.get(&1, 0).unwrap().read(), 100);
+
+    // try_update is also refused: returns UpdateResult::Reject(val).
+    let result = s.try_update(1, 999, 0, Time::now(), 0).unwrap();
+    assert!(matches!(result, UpdateResult::Reject(_)));
+    assert_eq!(result.into_inner(), 999);
+    assert_eq!(s.get(&1, 0).unwrap().read(), 100);
+  }
+
+  #[test]
+  fn test_store_clear_drains_values() {
+    let s: ShardedMap<u64> = ShardedMap::new();
+    s.try_insert(1, 100, 0, Time::now(), 0).unwrap();
+    s.try_insert(2, 200, 0, Time::now(), 0).unwrap();
+    let drained = s.clear();
+    assert_eq!(drained.len(), 2);
+    assert!(s.get(&1, 0).is_none());
+    assert!(s.get(&2, 0).is_none());
+    assert_eq!(s.len(), 0);
+  }
 }
