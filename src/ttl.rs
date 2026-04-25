@@ -232,11 +232,15 @@ impl<S: BuildHasher + Clone + 'static> ExpirationMap<S> {
   pub fn hasher(&self) -> S {
     self.hasher.clone()
   }
+
+  /// Wipe all buckets. Used by `ShardedMap::clear` so that buckets created
+  /// before a cache-level `clear()` cannot outlive their rows and then
+  /// incorrectly delete fresh post-clear entries at the same key when the
+  /// cleanup ticker later catches up.
+  pub fn clear(&self) {
+    self.buckets.write().clear();
+  }
 }
-
-unsafe impl<S: BuildHasher + Clone + 'static> Send for ExpirationMap<S> {}
-
-unsafe impl<S: BuildHasher + Clone + 'static> Sync for ExpirationMap<S> {}
 
 #[cfg(test)]
 mod expiration_map_tests {

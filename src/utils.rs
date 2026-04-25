@@ -15,40 +15,42 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-use crate::store::StoreItem;
-use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
+use crate::ttl::Time;
+use parking_lot::{MappedRwLockReadGuard, MappedRwLockWriteGuard};
 use std::{
-  cell::UnsafeCell,
-  collections::{HashMap, hash_map::RandomState},
   fmt::{Debug, Display, Formatter},
-  hash::BuildHasher,
   time::Duration,
 };
 
 /// ValueRef is returned when invoking `get` method of the Cache.
-/// It contains a `RwLockReadGuard` and a value reference.
-pub struct ValueRef<'a, V, S = RandomState> {
-  _guard: RwLockReadGuard<'a, HashMap<u64, StoreItem<V>, S>>,
-  val: &'a StoreItem<V>,
+/// It wraps a `parking_lot::MappedRwLockReadGuard` projected directly to the
+/// inner value, so the shard read lock is held for the lifetime of the ref.
+///
+/// Auto-trait inheritance follows `parking_lot`'s `GuardMarker`:
+/// - **Without** the `send_guard` feature (default), the marker is
+///   `GuardNoSend` (a `*mut ()`), which makes `ValueRef` neither `Send`
+///   nor `Sync`. This is the right default for `parking_lot`, whose
+///   `RwLock` permits same-thread read-guard → write-guard upgrades —
+///   sending a guard across threads would break that invariant.
+/// - **With** the `send_guard` feature, `parking_lot` switches the marker
+///   to `GuardSend`, and `ValueRef` becomes `Send` (and `Sync` when `V` is)
+///   automatically. Enabling that feature opts the whole `RwLock` family
+///   out of guard upgrades — see the `parking_lot` docs for the trade-offs.
+pub struct ValueRef<'a, V> {
+  guard: MappedRwLockReadGuard<'a, V>,
+  expiration: Time,
 }
 
-unsafe impl<V: Send, S: BuildHasher> Send for ValueRef<'_, V, S> {}
-
-unsafe impl<V: Send + Sync, S: BuildHasher> Sync for ValueRef<'_, V, S> {}
-
-impl<'a, V, S: BuildHasher> ValueRef<'a, V, S> {
+impl<'a, V> ValueRef<'a, V> {
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub(crate) fn new(
-    guard: RwLockReadGuard<'a, HashMap<u64, StoreItem<V>, S>>,
-    val: &'a StoreItem<V>,
-  ) -> Self {
-    Self { _guard: guard, val }
+  pub(crate) fn new(guard: MappedRwLockReadGuard<'a, V>, expiration: Time) -> Self {
+    Self { guard, expiration }
   }
 
   /// Get the reference of the inner value.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn value(&self) -> &V {
-    self.val.value.get()
+    &self.guard
   }
 
   /// Drop self, release the inner `RwLockReadGuard`, which is the same as `drop()`
@@ -60,11 +62,11 @@ impl<'a, V, S: BuildHasher> ValueRef<'a, V, S> {
   /// Get the expiration time.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn ttl(&self) -> Duration {
-    self.val.expiration.get_ttl()
+    self.expiration.get_ttl()
   }
 }
 
-impl<V: Copy, S: BuildHasher> ValueRef<'_, V, S> {
+impl<V: Copy> ValueRef<'_, V> {
   /// Get the value and drop the inner RwLockReadGuard.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn read(self) -> V {
@@ -74,66 +76,69 @@ impl<V: Copy, S: BuildHasher> ValueRef<'_, V, S> {
   }
 }
 
-impl<V, S: BuildHasher> AsRef<V> for ValueRef<'_, V, S> {
+impl<V> AsRef<V> for ValueRef<'_, V> {
   fn as_ref(&self) -> &V {
     self.value()
   }
 }
 
-impl<V: Debug, S: BuildHasher> Debug for ValueRef<'_, V, S> {
+impl<V: Debug> Debug for ValueRef<'_, V> {
   fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-    write!(f, "{:?}", self.val)
+    f.debug_struct("ValueRef")
+      .field("value", self.value())
+      .field("expiration", &self.expiration)
+      .finish()
   }
 }
 
-impl<V: Display, S: BuildHasher> Display for ValueRef<'_, V, S> {
+impl<V: Display> Display for ValueRef<'_, V> {
   fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
     write!(f, "{}", self.value())
   }
 }
 
 /// ValueRefMut is returned when invoking `get_mut` method of the Cache.
-/// It contains a `RwLockWriteGuard` and a mutable value reference.
-pub struct ValueRefMut<'a, V, S = RandomState> {
-  _guard: RwLockWriteGuard<'a, HashMap<u64, StoreItem<V>, S>>,
-  val: &'a mut V,
+/// It wraps a `parking_lot::MappedRwLockWriteGuard` projected directly to
+/// the inner value, so the shard write lock is held for the lifetime of
+/// the ref.
+///
+/// Auto-trait inheritance follows `parking_lot`'s `GuardMarker`, exactly
+/// as documented on [`ValueRef`]: by default the wrapped guard is
+/// neither `Send` nor `Sync`; enabling the `send_guard` feature flips
+/// the marker to `GuardSend` and `ValueRefMut` inherits the stronger
+/// auto-traits.
+pub struct ValueRefMut<'a, V> {
+  guard: MappedRwLockWriteGuard<'a, V>,
 }
 
-unsafe impl<V: Send, S: BuildHasher> Send for ValueRefMut<'_, V, S> {}
-
-unsafe impl<V: Send + Sync, S: BuildHasher> Sync for ValueRefMut<'_, V, S> {}
-
-impl<'a, V, S: BuildHasher> ValueRefMut<'a, V, S> {
+impl<'a, V> ValueRefMut<'a, V> {
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub(crate) fn new(
-    guard: RwLockWriteGuard<'a, HashMap<u64, StoreItem<V>, S>>,
-    val: &'a mut V,
-  ) -> Self {
-    Self { _guard: guard, val }
+  pub(crate) fn new(guard: MappedRwLockWriteGuard<'a, V>) -> Self {
+    Self { guard }
   }
 
   /// Get the reference of the inner value.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn value(&self) -> &V {
-    self.val
+    &self.guard
   }
 
   /// Get the mutable reference of the inner value.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn value_mut(&mut self) -> &mut V {
-    self.val
+    &mut self.guard
   }
 
   /// Set the value
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn write(&mut self, val: V) {
-    *self.val = val
+    *self.guard = val
   }
 
   /// Set the value, and release the inner `RwLockWriteGuard` automatically
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn write_once(self, val: V) {
-    *self.val = val;
+  pub fn write_once(mut self, val: V) {
+    *self.guard = val;
     self.release();
   }
 
@@ -144,91 +149,43 @@ impl<'a, V, S: BuildHasher> ValueRefMut<'a, V, S> {
   }
 }
 
-impl<V: Clone, S: BuildHasher> ValueRefMut<'_, V, S> {
+impl<V: Clone> ValueRefMut<'_, V> {
   /// Clone the inner value
   pub fn clone_inner(&self) -> V {
-    self.val.clone()
+    (*self.guard).clone()
   }
 }
 
-impl<V: Copy, S: BuildHasher> ValueRefMut<'_, V, S> {
+impl<V: Copy> ValueRefMut<'_, V> {
   /// Read the inner value and drop the inner `RwLockReadGuard`.
   pub fn read(self) -> V {
-    let v = *self.val;
+    let v = *self.guard;
     drop(self);
     v
   }
 }
 
-impl<V: Debug, S: BuildHasher> Debug for ValueRefMut<'_, V, S> {
+impl<V: Debug> Debug for ValueRefMut<'_, V> {
   fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-    write!(f, "{:?}", self.val)
+    write!(f, "{:?}", &*self.guard)
   }
 }
 
-impl<V: Display, S: BuildHasher> Display for ValueRefMut<'_, V, S> {
+impl<V: Display> Display for ValueRefMut<'_, V> {
   fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-    write!(f, "{}", self.val)
+    write!(f, "{}", &*self.guard)
   }
 }
 
-impl<V, S: BuildHasher> AsRef<V> for ValueRefMut<'_, V, S> {
+impl<V> AsRef<V> for ValueRefMut<'_, V> {
   fn as_ref(&self) -> &V {
     self.value()
   }
 }
 
-impl<V, S: BuildHasher> AsMut<V> for ValueRefMut<'_, V, S> {
+impl<V> AsMut<V> for ValueRefMut<'_, V> {
   fn as_mut(&mut self) -> &mut V {
     self.value_mut()
-  }
-}
-
-#[repr(transparent)]
-pub struct SharedValue<T> {
-  value: UnsafeCell<T>,
-}
-
-impl<T: Clone> Clone for SharedValue<T> {
-  fn clone(&self) -> Self {
-    let inner = self.get().clone();
-
-    Self {
-      value: UnsafeCell::new(inner),
-    }
-  }
-}
-
-unsafe impl<T: Send> Send for SharedValue<T> {}
-
-unsafe impl<T: Sync> Sync for SharedValue<T> {}
-
-impl<T> SharedValue<T> {
-  /// Create a new `SharedValue<T>`
-  pub const fn new(value: T) -> Self {
-    Self {
-      value: UnsafeCell::new(value),
-    }
-  }
-
-  /// Get a shared reference to `T`
-  pub fn get(&self) -> &T {
-    unsafe { &*self.value.get() }
-  }
-
-  /// Get an unique reference to `T`
-  pub fn get_mut(&mut self) -> &mut T {
-    unsafe { &mut *self.value.get() }
-  }
-
-  /// Unwraps the value
-  pub fn into_inner(self) -> T {
-    self.value.into_inner()
-  }
-
-  /// Get a mutable raw pointer to the underlying value
-  pub(crate) fn as_ptr(&self) -> *mut T {
-    self.value.get()
   }
 }
 
@@ -237,23 +194,10 @@ pub(crate) fn vec_to_array<T, const N: usize>(v: Vec<T>) -> [T; N] {
     .unwrap_or_else(|v: Vec<T>| panic!("Expected a Vec of length {} but it was {}", N, v.len()))
 }
 
-/// # Safety
-///
-/// Requires that you ensure the reference does not become invalid.
-/// The object has to outlive the reference.
-pub(crate) unsafe fn change_lifetime_const<'b, T>(x: &T) -> &'b T {
-  unsafe { &*(x as *const T) }
-}
-
 #[cfg(test)]
 mod test {
-  use crate::utils::{
-    // SharedNonNull,
-    SharedValue,
-    change_lifetime_const,
-  };
   use crate::{ValueRef, ValueRefMut, store::StoreItem, ttl::Time};
-  use parking_lot::RwLock;
+  use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
   use std::collections::HashMap;
 
   #[test]
@@ -266,7 +210,7 @@ mod test {
         conflict: 0,
         version: 0,
         generation: 0,
-        value: SharedValue::new(3),
+        value: 3,
         expiration: Time::now(),
       },
     );
@@ -277,16 +221,16 @@ mod test {
         conflict: 0,
         version: 0,
         generation: 0,
-        value: SharedValue::new(3),
+        value: 3,
         expiration: Time::now(),
       },
     );
     let lm = RwLock::new(m);
 
     let l = lm.read();
-    let item = l.get(&1).unwrap();
-    let v = unsafe { change_lifetime_const(item) };
-    let vr = ValueRef::new(l, v);
+    let expiration = l.get(&1).unwrap().expiration;
+    let mapped = RwLockReadGuard::map(l, |m| &m.get(&1).unwrap().value);
+    let vr = ValueRef::new(mapped, expiration);
     assert_eq!(vr.as_ref(), &3);
     eprintln!("{}", vr);
     eprintln!("{:?}", vr);
@@ -302,7 +246,7 @@ mod test {
         conflict: 0,
         version: 0,
         generation: 0,
-        value: SharedValue::new(3),
+        value: 3,
         expiration: Time::now(),
       },
     );
@@ -313,15 +257,15 @@ mod test {
         conflict: 0,
         version: 0,
         generation: 0,
-        value: SharedValue::new(3),
+        value: 3,
         expiration: Time::now(),
       },
     );
     let lm = RwLock::new(m);
 
     let l = lm.write();
-    let v = unsafe { &mut *l.get(&1).unwrap().value.as_ptr() };
-    let mut vr = ValueRefMut::new(l, v);
+    let mapped = RwLockWriteGuard::map(l, |m| &mut m.get_mut(&1).unwrap().value);
+    let mut vr = ValueRefMut::new(mapped);
     assert_eq!(vr.as_ref(), &3);
     assert_eq!(vr.as_mut(), &mut 3);
     assert_eq!(vr.value(), &3);
@@ -330,28 +274,4 @@ mod test {
     eprintln!("{:?}", vr);
     vr.write_once(4);
   }
-
-  #[test]
-  fn test_shared_value() {
-    let sv = SharedValue::new(3);
-    assert_eq!(sv.get(), &3);
-  }
-
-  #[test]
-  fn test_shared_value_clone() {
-    let sv = SharedValue::new(42u32);
-    let cloned = sv.clone();
-    assert_eq!(cloned.get(), &42u32);
-  }
-
-  // #[test]
-  // fn test_shared_non_null() {
-  //     let snn = SharedNonNull::new(&mut 3);
-  //     let r = unsafe { snn.as_ref() };
-  //     assert_eq!(r, &3);
-  //     let snn1 = snn;
-  //     unsafe {
-  //         assert_eq!(snn1.as_ref(), &3);
-  //     }
-  // }
 }

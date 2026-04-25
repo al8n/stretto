@@ -766,7 +766,7 @@ where
     // admission outside policy accounting (bypassing max_cost).
     if let Some(prev) = prev {
       let prev_version = prev.version;
-      self.0.callback.on_exit(Some(prev.value.into_inner()));
+      self.0.callback.on_exit(Some(prev.value));
 
       // The version we just removed is stamped on the Item so a concurrent
       // reinsert at the same (key, conflict) under a newer version survives
@@ -945,7 +945,7 @@ where
                 .try_remove_if_version(&index, item_conflict, item_version)
             {
               self.0.callback.on_reject(CrateItem {
-                val: Some(sitem.value.into_inner()),
+                val: Some(sitem.value),
                 index,
                 conflict: item_conflict,
                 cost: item_cost,
@@ -1129,7 +1129,7 @@ where
           .try_remove_if_version(&self.index, self.conflict, self.version)
       {
         self.callback.on_reject(CrateItem {
-          val: Some(sitem.value.into_inner()),
+          val: Some(sitem.value),
           index: self.index,
           conflict: self.conflict,
           cost: self.cost,
@@ -1188,7 +1188,7 @@ where
             .try_remove_if_version(&self.index, self.conflict, self.version)
         {
           self.callback.on_reject(CrateItem {
-            val: Some(sitem.value.into_inner()),
+            val: Some(sitem.value),
             index: self.index,
             conflict: self.conflict,
             cost: self.reconcile_cost,
@@ -1205,7 +1205,7 @@ where
         if let Ok(Some(sitem)) = self.store.try_remove(&victim.key, 0) {
           self.callback.on_evict(CrateItem {
             index: victim.key,
-            val: Some(sitem.value.into_inner()),
+            val: Some(sitem.value),
             cost: victim.cost,
             conflict: sitem.conflict,
             exp: sitem.expiration,
@@ -1372,9 +1372,9 @@ where
   CB: CacheCallback<Value = V>,
   S: BuildHasher + Clone + 'static + Send,
 {
-  /// `get` returns a `Option<ValueRef<V, SS>>` (if any) representing whether the
+  /// `get` returns a `Option<ValueRef<V>>` (if any) representing whether the
   /// value was found or not.
-  pub async fn get<Q>(&self, key: &Q) -> Option<ValueRef<'_, V, S>>
+  pub async fn get<Q>(&self, key: &Q) -> Option<ValueRef<'_, V>>
   where
     K: core::borrow::Borrow<Q>,
     Q: core::hash::Hash + Eq + ?Sized,
@@ -1395,9 +1395,9 @@ where
     }
   }
 
-  /// `get_mut` returns a `Option<ValueRefMut<V, SS>>` (if any) representing whether the
+  /// `get_mut` returns a `Option<ValueRefMut<V>>` (if any) representing whether the
   /// value was found or not.
-  pub async fn get_mut<Q>(&self, key: &Q) -> Option<ValueRefMut<'_, V, S>>
+  pub async fn get_mut<Q>(&self, key: &Q) -> Option<ValueRefMut<'_, V>>
   where
     K: core::borrow::Borrow<Q>,
     Q: core::hash::Hash + Eq + ?Sized,

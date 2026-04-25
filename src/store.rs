@@ -1,9 +1,9 @@
 use crate::{
   CacheError, DefaultUpdateValidator, Item as CrateItem, UpdateValidator,
   ttl::{ExpirationMap, Time},
-  utils::{SharedValue, ValueRef, ValueRefMut, change_lifetime_const},
+  utils::{ValueRef, ValueRefMut},
 };
-use parking_lot::RwLock;
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::{
   collections::{HashMap, hash_map::RandomState},
   fmt::{Debug, Formatter},
@@ -26,7 +26,7 @@ pub(crate) struct StoreItem<V> {
   /// generation are refused at the store level, so a stale writer cannot
   /// clobber a post-clear insert/update. See `try_insert`/`try_update`.
   pub(crate) generation: u64,
-  pub(crate) value: SharedValue<V>,
+  pub(crate) value: V,
   pub(crate) expiration: Time,
 }
 
@@ -112,48 +112,49 @@ impl<
     }
   }
 
-  pub fn get(&self, key: &u64, conflict: u64) -> Option<ValueRef<'_, V, SS>> {
+  pub fn get(&self, key: &u64, conflict: u64) -> Option<ValueRef<'_, V>> {
     let data = self.shards[(*key as usize) % NUM_OF_SHARDS].read();
 
-    if let Some(item) = data.get(key) {
-      if conflict != 0 && (conflict != item.conflict) {
-        return None;
+    let expiration = match data.get(key) {
+      Some(item) => {
+        if conflict != 0 && (conflict != item.conflict) {
+          return None;
+        }
+        // Handle expired items
+        if !item.expiration.is_zero() && item.expiration.is_expired() {
+          return None;
+        }
+        item.expiration
       }
+      None => return None,
+    };
 
-      // Handle expired items
-      if !item.expiration.is_zero() && item.expiration.is_expired() {
-        return None;
-      }
-
-      unsafe {
-        let vptr = change_lifetime_const(item);
-        Some(ValueRef::new(data, vptr))
-      }
-    } else {
-      None
-    }
+    // Project the read guard to the inner value. The lock is still held, so
+    // the second lookup in the closure cannot fail — but `try_map` returns a
+    // Result and we propagate `None` defensively.
+    let mapped = RwLockReadGuard::try_map(data, |m| m.get(key).map(|item| &item.value)).ok()?;
+    Some(ValueRef::new(mapped, expiration))
   }
 
-  pub fn get_mut(&self, key: &u64, conflict: u64) -> Option<ValueRefMut<'_, V, SS>> {
+  pub fn get_mut(&self, key: &u64, conflict: u64) -> Option<ValueRefMut<'_, V>> {
     let data = self.shards[(*key as usize) % NUM_OF_SHARDS].write();
 
-    if let Some(item) = data.get(key) {
-      if conflict != 0 && (conflict != item.conflict) {
-        return None;
+    match data.get(key) {
+      Some(item) => {
+        if conflict != 0 && (conflict != item.conflict) {
+          return None;
+        }
+        // Handle expired items
+        if !item.expiration.is_zero() && item.expiration.is_expired() {
+          return None;
+        }
       }
-
-      // Handle expired items
-      if !item.expiration.is_zero() && item.expiration.is_expired() {
-        return None;
-      }
-
-      unsafe {
-        let vptr = &mut *item.value.as_ptr();
-        Some(ValueRefMut::new(data, vptr))
-      }
-    } else {
-      None
+      None => return None,
     }
+
+    let mapped =
+      RwLockWriteGuard::try_map(data, |m| m.get_mut(key).map(|item| &mut item.value)).ok()?;
+    Some(ValueRefMut::new(mapped))
   }
 
   pub fn try_insert(
@@ -188,7 +189,7 @@ impl<
           return Ok(None);
         }
 
-        if !self.validator.should_update(sitem.value.get(), &val) {
+        if !self.validator.should_update(&sitem.value, &val) {
           return Ok(None);
         }
 
@@ -206,7 +207,7 @@ impl<
         conflict,
         version,
         generation,
-        value: SharedValue::new(val),
+        value: val,
         expiration,
       },
     );
@@ -238,14 +239,14 @@ impl<
           return Ok(UpdateResult::Stale(val));
         }
 
-        if !self.validator.should_update(item.value.get(), &val) {
+        if !self.validator.should_update(&item.value, &val) {
           return Ok(UpdateResult::Reject(val));
         }
 
         self
           .em
           .try_update(key, conflict, item.expiration, expiration)?;
-        mem::swap(&mut val, item.value.get_mut());
+        mem::swap(&mut val, &mut item.value);
         item.expiration = expiration;
         let new_version = self.version.fetch_add(1, Ordering::Relaxed);
         item.version = new_version;
@@ -393,16 +394,20 @@ impl<
         .map_or(Vec::with_capacity(0), |m| {
           m.iter()
                     // Sanity check. Verify that the store agrees that this key is expired.
+                    // `!t.is_zero()` gate: a zero-TTL row is "never expires"; without
+                    // the gate, `is_expired()` returns true unconditionally (elapsed
+                    // is always >= 0), so the store row would be destroyed any time
+                    // a stale bucket happened to name this key.
                     .filter_map(|(k, v)| {
                         self.expiration(k)
                             .and_then(|t| {
-                                if t.is_expired() {
+                                if !t.is_zero() && t.is_expired() {
                                     let cost = policy.cost(k);
                                     policy.remove(k);
                                     self.try_remove(k, *v)
                                         .map(|maybe_sitem| {
                                             maybe_sitem.map(|sitem| CrateItem {
-                                                val: Some(sitem.value.into_inner()),
+                                                val: Some(sitem.value),
                                                 index: sitem.key,
                                                 conflict: sitem.conflict,
                                                 cost,
@@ -434,13 +439,15 @@ impl<
       for (k, v) in items.iter() {
         let expiration = self.expiration(k);
         if let Some(t) = expiration {
-          if t.is_expired() {
+          // See the matching `!t.is_zero()` guard in the sync cleanup
+          // above: zero-TTL rows must not be treated as expired.
+          if !t.is_zero() && t.is_expired() {
             let cost = policy.cost(k);
             policy.remove(k);
             let removed_item = self.try_remove(k, *v)?;
             if let Some(sitem) = removed_item {
               removed_items.push(CrateItem {
-                val: Some(sitem.value.into_inner()),
+                val: Some(sitem.value),
                 index: sitem.key,
                 conflict: sitem.conflict,
                 cost,
@@ -455,9 +462,40 @@ impl<
     Ok(removed_items)
   }
 
-  pub fn clear(&self) {
-    // TODO: item call back
-    self.shards.iter().for_each(|shard| shard.write().clear());
+  /// Wipe every shard AND the expiration map, returning the drained values so
+  /// the caller can dispatch `CacheCallback::on_exit` (or equivalent) AFTER
+  /// the rest of the cache state (policy, metrics, `clear_generation`) has
+  /// been reset.
+  ///
+  /// The em wipe is load-bearing: without it, a bucket created by a pre-clear
+  /// TTL insert survives `clear`, and when the cleanup ticker processes that
+  /// bucket later it calls `try_remove(key, stale_conflict)`. For a
+  /// deterministic `KeyBuilder`, a post-clear reinsert of the same key
+  /// produces the same conflict, so the stale bucket entry would match and
+  /// delete the fresh row. See the matching `!t.is_zero()` guards in
+  /// `try_cleanup`/`try_cleanup_async` which close the same hole from the
+  /// other side (zero-TTL rows must not be treated as expired).
+  ///
+  /// Returning values here — instead of firing callbacks in-place — is
+  /// load-bearing on two fronts:
+  ///
+  /// 1. All shard write locks are released before any callback runs, so a
+  ///    callback that re-enters the cache via a shard-lock-taking path
+  ///    (`get`, `len`, `contains_key`, ...) does not self-deadlock on the
+  ///    processor thread (parking_lot RwLocks are not reentrant).
+  /// 2. It lets the caller (the `Item::Clear` handler) run callbacks AFTER
+  ///    bumping `clear_generation`. Otherwise an `on_exit` that re-enters
+  ///    via `insert` captures the pre-bump generation, enqueues an
+  ///    `Item::New` stamped with that stale generation, and the processor
+  ///    then rejects it as stale — silently discarding the user's insert.
+  pub fn clear(&self) -> Vec<V> {
+    let mut drained: Vec<V> = Vec::new();
+    for shard in self.shards.iter() {
+      let mut map = shard.write();
+      drained.extend(map.drain().map(|(_, item)| item.value));
+    }
+    self.em.clear();
+    drained
   }
 
   pub fn hasher(&self) -> ES {
@@ -467,23 +505,6 @@ impl<
   pub fn item_size(&self) -> usize {
     self.store_item_size
   }
-}
-
-unsafe impl<
-  V: Send + Sync + 'static,
-  U: UpdateValidator<Value = V>,
-  SS: BuildHasher,
-  ES: BuildHasher,
-> Send for ShardedMap<V, U, SS, ES>
-{
-}
-unsafe impl<
-  V: Send + Sync + 'static,
-  U: UpdateValidator<Value = V>,
-  SS: BuildHasher,
-  ES: BuildHasher,
-> Sync for ShardedMap<V, U, SS, ES>
-{
 }
 
 pub(crate) enum UpdateResult<V: Send + Sync + 'static> {
@@ -519,7 +540,6 @@ mod test {
   use crate::{
     store::{ShardedMap, StoreItem, UpdateResult},
     ttl::Time,
-    utils::SharedValue,
   };
   use std::{sync::Arc, time::Duration};
 
@@ -530,7 +550,7 @@ mod test {
       conflict: 0,
       version: 0,
       generation: 0,
-      value: SharedValue::new(3),
+      value: 3,
       expiration: Time::now(),
     };
 
@@ -621,7 +641,7 @@ mod test {
     let s: ShardedMap<u64> = ShardedMap::new();
 
     s.try_insert(1, 2, 0, Time::now(), 0).unwrap();
-    assert_eq!(s.try_remove(&1, 0).unwrap().unwrap().value.into_inner(), 2);
+    assert_eq!(s.try_remove(&1, 0).unwrap().unwrap().value, 2);
     let v = s.get(&1, 0);
     assert!(v.is_none());
     assert!(s.try_remove(&2, 0).unwrap().is_none());
@@ -677,7 +697,7 @@ mod test {
         conflict: 0,
         version: 0,
         generation: 0,
-        value: SharedValue::new(1),
+        value: 1,
         expiration: Time::now(),
       },
     );
@@ -752,7 +772,7 @@ mod test {
 
     // matching version + conflict removes
     let removed = s.try_remove_if_version(&10, 7, version).unwrap().unwrap();
-    assert_eq!(removed.value.into_inner(), 20);
+    assert_eq!(removed.value, 20);
     assert!(s.get(&10, 7).is_none());
   }
 
@@ -808,7 +828,7 @@ mod test {
 
     // Same-or-newer generation — removes.
     let removed = s.try_remove_if_not_stale(&10, 0, 5).unwrap().unwrap();
-    assert_eq!(removed.value.into_inner(), 20);
+    assert_eq!(removed.value, 20);
     assert!(s.get(&10, 0).is_none());
   }
 }

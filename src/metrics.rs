@@ -154,72 +154,71 @@ impl Metrics {
     }
   }
 
-  /// Returns the number of Get calls where a value was found for the corresponding key.
+  /// Returns the number of `get` calls that found a value for the key.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn get_hits(&self) -> Option<u64> {
-    self.map(|m| m.get_hits())
+  pub fn hits(&self) -> Option<u64> {
+    self.map(|m| m.hits())
   }
 
-  /// Returns the number of Get calls where a value was not found for the corresponding key.
+  /// Returns the number of `get` calls that did not find a value for the key.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn get_misses(&self) -> Option<u64> {
-    self.map(|m| m.get_misses())
+  pub fn misses(&self) -> Option<u64> {
+    self.map(|m| m.misses())
   }
 
-  /// Returns the total number of Set calls where a new key-value item was added.
+  /// Returns the total number of `insert` calls that added a new entry.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn get_keys_added(&self) -> Option<u64> {
-    self.map(|m| m.get_keys_added())
+  pub fn keys_added(&self) -> Option<u64> {
+    self.map(|m| m.keys_added())
   }
 
-  /// Returns the total number of Set calls where a new key-value item was updated.
+  /// Returns the total number of `insert` calls that updated an existing entry.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn get_keys_updated(&self) -> Option<u64> {
-    self.map(|m| m.get_keys_updated())
+  pub fn keys_updated(&self) -> Option<u64> {
+    self.map(|m| m.keys_updated())
   }
 
   /// Returns the total number of keys evicted.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn get_keys_evicted(&self) -> Option<u64> {
-    self.map(|m| m.get_keys_evicted())
+  pub fn keys_evicted(&self) -> Option<u64> {
+    self.map(|m| m.keys_evicted())
   }
 
-  /// Returns the sum of costs that have been added (successful Set calls).
+  /// Returns the sum of costs that have been added (successful inserts).
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn get_cost_added(&self) -> Option<u64> {
-    self.map(|m| m.get_cost_added())
+  pub fn cost_added(&self) -> Option<u64> {
+    self.map(|m| m.cost_added())
   }
 
   /// Returns the sum of all costs that have been evicted.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn get_cost_evicted(&self) -> Option<u64> {
-    self.map(|m| m.get_cost_evicted())
+  pub fn cost_evicted(&self) -> Option<u64> {
+    self.map(|m| m.cost_evicted())
   }
 
-  /// Returns the number of Set calls that don't make it into internal
-  /// buffers (due to contention or some other reason).
+  /// Returns the number of `insert` calls that did not make it into the
+  /// internal buffers (e.g. due to contention).
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn get_sets_dropped(&self) -> Option<u64> {
-    self.map(|m| m.get_sets_dropped())
+  pub fn sets_dropped(&self) -> Option<u64> {
+    self.map(|m| m.sets_dropped())
   }
 
-  /// Returns the number of Set calls rejected by the policy (TinyLFU).
+  /// Returns the number of `insert` calls rejected by the policy (TinyLFU).
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn get_sets_rejected(&self) -> Option<u64> {
-    self.map(|m| m.get_sets_rejected())
+  pub fn sets_rejected(&self) -> Option<u64> {
+    self.map(|m| m.sets_rejected())
   }
 
-  /// Returns the number of Get counter increments that are dropped
-  /// internally.
+  /// Returns the number of `get` counter increments dropped internally.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn get_gets_dropped(&self) -> Option<u64> {
-    self.map(|m| m.get_gets_dropped())
+  pub fn gets_dropped(&self) -> Option<u64> {
+    self.map(|m| m.gets_dropped())
   }
 
-  /// Returns the number of Get counter increments that are kept.
+  /// Returns the number of `get` counter increments kept.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn get_gets_kept(&self) -> Option<u64> {
-    self.map(|m| m.get_gets_kept())
+  pub fn gets_kept(&self) -> Option<u64> {
+    self.map(|m| m.gets_kept())
   }
 
   /// Ratio is the number of Hits over all accesses (Hits + Misses). This is the
@@ -299,71 +298,70 @@ impl MetricsInner {
     }
   }
 
-  /// Returns the number of Get calls where a value was found for the corresponding key.
+  /// Returns the number of `get` calls that found a value for the key.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn get_hits(&self) -> u64 {
+  pub fn hits(&self) -> u64 {
     self.get(&MetricType::Hit)
   }
 
-  /// Returns the number of Get calls where a value was not found for the corresponding key.
+  /// Returns the number of `get` calls that did not find a value for the key.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn get_misses(&self) -> u64 {
+  pub fn misses(&self) -> u64 {
     self.get(&MetricType::Miss)
   }
 
-  /// Returns the total number of Set calls where a new key-value item was added.
+  /// Returns the total number of `insert` calls that added a new entry.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn get_keys_added(&self) -> u64 {
+  pub fn keys_added(&self) -> u64 {
     self.get(&MetricType::KeyAdd)
   }
 
-  /// Returns the total number of Set calls where a new key-value item was updated.
+  /// Returns the total number of `insert` calls that updated an existing entry.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn get_keys_updated(&self) -> u64 {
+  pub fn keys_updated(&self) -> u64 {
     self.get(&MetricType::KeyUpdate)
   }
 
   /// Returns the total number of keys evicted.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn get_keys_evicted(&self) -> u64 {
+  pub fn keys_evicted(&self) -> u64 {
     self.get(&MetricType::KeyEvict)
   }
 
-  /// Returns the sum of costs that have been added (successful Set calls).
+  /// Returns the sum of costs that have been added (successful inserts).
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn get_cost_added(&self) -> u64 {
+  pub fn cost_added(&self) -> u64 {
     self.get(&MetricType::CostAdd)
   }
 
   /// Returns the sum of all costs that have been evicted.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn get_cost_evicted(&self) -> u64 {
+  pub fn cost_evicted(&self) -> u64 {
     self.get(&MetricType::CostEvict)
   }
 
-  /// Returns the number of Set calls that don't make it into internal
-  /// buffers (due to contention or some other reason).
+  /// Returns the number of `insert` calls that did not make it into the
+  /// internal buffers (e.g. due to contention).
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn get_sets_dropped(&self) -> u64 {
+  pub fn sets_dropped(&self) -> u64 {
     self.get(&MetricType::DropSets)
   }
 
-  /// Returns the number of Set calls rejected by the policy (TinyLFU).
+  /// Returns the number of `insert` calls rejected by the policy (TinyLFU).
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn get_sets_rejected(&self) -> u64 {
+  pub fn sets_rejected(&self) -> u64 {
     self.get(&MetricType::RejectSets)
   }
 
-  /// Returns the number of Get counter increments that are dropped
-  /// internally.
+  /// Returns the number of `get` counter increments dropped internally.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn get_gets_dropped(&self) -> u64 {
+  pub fn gets_dropped(&self) -> u64 {
     self.get(&MetricType::DropGets)
   }
 
-  /// Returns the number of Get counter increments that are kept.
+  /// Returns the number of `get` counter increments kept.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn get_gets_kept(&self) -> u64 {
+  pub fn gets_kept(&self) -> u64 {
     self.get(&MetricType::KeepGets)
   }
 
@@ -371,8 +369,8 @@ impl MetricsInner {
   /// percentage of successful Get calls.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn ratio(&self) -> f64 {
-    let hits = self.get_hits();
-    let misses = self.get_misses();
+    let hits = self.hits();
+    let misses = self.misses();
     if hits == 0 && misses == 0 {
       0.0
     } else {
@@ -498,35 +496,35 @@ mod test {
   fn test_metrics() {
     let m = Metrics::new();
     println!("{}", m);
-    assert!(m.get_hits().is_none());
-    assert!(m.get_misses().is_none());
-    assert!(m.get_keys_added().is_none());
-    assert!(m.get_keys_updated().is_none());
-    assert!(m.get_keys_evicted().is_none());
-    assert!(m.get_sets_dropped().is_none());
-    assert!(m.get_gets_dropped().is_none());
-    assert!(m.get_gets_kept().is_none());
-    assert!(m.get_sets_dropped().is_none());
-    assert!(m.get_sets_rejected().is_none());
-    assert!(m.get_cost_evicted().is_none());
-    assert!(m.get_cost_added().is_none());
+    assert!(m.hits().is_none());
+    assert!(m.misses().is_none());
+    assert!(m.keys_added().is_none());
+    assert!(m.keys_updated().is_none());
+    assert!(m.keys_evicted().is_none());
+    assert!(m.sets_dropped().is_none());
+    assert!(m.gets_dropped().is_none());
+    assert!(m.gets_kept().is_none());
+    assert!(m.sets_dropped().is_none());
+    assert!(m.sets_rejected().is_none());
+    assert!(m.cost_evicted().is_none());
+    assert!(m.cost_added().is_none());
     assert!(m.life_expectancy_seconds().is_none());
     m.track_eviction(10);
     assert!(m.is_noop());
 
     let m = Metrics::new_op();
-    m.get_hits().unwrap();
-    m.get_misses().unwrap();
-    m.get_keys_added().unwrap();
-    m.get_keys_updated().unwrap();
-    m.get_keys_evicted().unwrap();
-    m.get_sets_dropped().unwrap();
-    m.get_gets_dropped().unwrap();
-    m.get_gets_kept().unwrap();
-    m.get_sets_dropped().unwrap();
-    m.get_sets_rejected().unwrap();
-    m.get_cost_evicted().unwrap();
-    m.get_cost_added().unwrap();
+    m.hits().unwrap();
+    m.misses().unwrap();
+    m.keys_added().unwrap();
+    m.keys_updated().unwrap();
+    m.keys_evicted().unwrap();
+    m.sets_dropped().unwrap();
+    m.gets_dropped().unwrap();
+    m.gets_kept().unwrap();
+    m.sets_dropped().unwrap();
+    m.sets_rejected().unwrap();
+    m.cost_evicted().unwrap();
+    m.cost_added().unwrap();
     m.life_expectancy_seconds().unwrap();
     m.track_eviction(10);
     assert!(m.is_op());

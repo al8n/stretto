@@ -78,6 +78,38 @@ pub(crate) mod sync {
 
   pub(crate) type WaitGroup = wg::WaitGroup;
 
+  /// Signaling half of the `Item::Wait` / `Item::Clear` barrier.
+  ///
+  /// Mirrors the async `Waiter` shape: `done(self)` consumes the signal, and
+  /// `Drop` fires `wg.done()` if the explicit call was skipped — so a panic
+  /// during `on_exit` callbacks on the processor still unblocks the caller
+  /// parked on `wg.wait()`. `wg::WaitGroup::done` takes `&self` and has no
+  /// Drop-based signaling of its own, so without this wrapper a callback
+  /// panic would leave `clear()` / `wait()` hung forever.
+  pub(crate) struct Signal(Option<WaitGroup>);
+
+  impl Signal {
+    #[inline]
+    pub(crate) fn new(wg: WaitGroup) -> Self {
+      Self(Some(wg))
+    }
+
+    #[inline]
+    pub(crate) fn done(mut self) {
+      if let Some(wg) = self.0.take() {
+        wg.done();
+      }
+    }
+  }
+
+  impl Drop for Signal {
+    fn drop(&mut self) {
+      if let Some(wg) = self.0.take() {
+        wg.done();
+      }
+    }
+  }
+
   pub(crate) fn stop_channel() -> (Sender<()>, Receiver<()>) {
     bounded(0)
   }

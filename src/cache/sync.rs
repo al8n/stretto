@@ -7,7 +7,9 @@ use crate::{
   ring::RingStripe,
   semaphore::SyncSemaphore,
   store::ShardedMap,
-  sync::{Instant, JoinHandle, Receiver, Sender, WaitGroup, bounded, select, spawn, stop_channel},
+  sync::{
+    Instant, JoinHandle, Receiver, Sender, Signal, WaitGroup, bounded, select, spawn, stop_channel,
+  },
   ttl::{ExpirationMap, Time},
 };
 use crossbeam_channel::{RecvError, TrySendError, tick};
@@ -66,13 +68,18 @@ fn insert_permit_held() -> bool {
 /// subsequent insert. The async cache uses the equivalent `AsyncPermitGuard`
 /// for the same reason (plus cancellation safety, which is irrelevant here).
 ///
-/// Construction also sets the `INSERT_PERMIT_HELD` thread-local, so user-
-/// controlled code that runs during the permit-held window (e.g. `Coster`
-/// or `UpdateValidator` invoked by `try_update`) can be detected if it
-/// re-enters the cache. Drop unconditionally clears the flag.
+/// Construction saves the previous `INSERT_PERMIT_HELD` value and sets it to
+/// true, so user-controlled code that runs during the permit-held window
+/// (e.g. `Coster` or `UpdateValidator` invoked by `try_update`) can be
+/// detected if it re-enters the cache. Drop restores the saved value rather
+/// than unconditionally clearing it — if a nested permit guard existed
+/// simultaneously (re-entrant Coster that re-enters insert), unconditional
+/// clearing would erase the outer guard's "held" state while the outer
+/// call is still inside `try_update`'s user callbacks.
 struct SyncPermitGuard<'a> {
   sem: &'a Arc<SyncSemaphore>,
   held: bool,
+  prev_flag: bool,
 }
 
 impl<'a> SyncPermitGuard<'a> {
@@ -82,8 +89,12 @@ impl<'a> SyncPermitGuard<'a> {
   /// on a permit that the outer call still owns.
   #[inline]
   fn new(sem: &'a Arc<SyncSemaphore>) -> Self {
-    INSERT_PERMIT_HELD.with(|c| c.set(true));
-    Self { sem, held: true }
+    let prev_flag = INSERT_PERMIT_HELD.with(|c| c.replace(true));
+    Self {
+      sem,
+      held: true,
+      prev_flag,
+    }
   }
 
   #[inline]
@@ -94,10 +105,13 @@ impl<'a> SyncPermitGuard<'a> {
 
 impl Drop for SyncPermitGuard<'_> {
   fn drop(&mut self) {
-    // Clear the re-entry flag unconditionally — the guard's lifetime
-    // defines the permit-held window, not whether we still own the
-    // permit (a transferred permit still implies the window is over).
-    INSERT_PERMIT_HELD.with(|c| c.set(false));
+    // Restore the flag to what it was before this guard took ownership.
+    // The outer permit-held window (if any) must survive our drop: a nested
+    // guard constructed from inside an outer Coster/UpdateValidator
+    // re-entry would otherwise clear the outer's window and let further
+    // user code in the OUTER `try_update` path take the blocking acquire
+    // branch — self-deadlock when the permit pool is exhausted.
+    INSERT_PERMIT_HELD.with(|c| c.set(self.prev_flag));
     if self.held {
       self.sem.release();
     }
@@ -376,8 +390,8 @@ pub(crate) enum Item<V> {
     /// (key, conflict) under a different version is preserved.
     version: u64,
   },
-  Wait(WaitGroup),
-  Clear(WaitGroup),
+  Wait(Signal),
+  Clear(Signal),
 }
 
 impl<V> Item<V> {
@@ -698,7 +712,7 @@ where
     }
 
     let wg = WaitGroup::new();
-    let wait = wg.add(1);
+    let wait = Signal::new(wg.add(1));
     match self.0.insert_buf_tx.try_send(Item::Clear(wait)) {
       Ok(()) => {
         // Permit transfers to the processor, which releases it when the
@@ -798,7 +812,7 @@ where
     }
 
     let wg = WaitGroup::new();
-    let wait_item = Item::Wait(wg.add(1));
+    let wait_item = Item::Wait(Signal::new(wg.add(1)));
     match self.0.insert_buf_tx.try_send(wait_item) {
       Ok(()) => {
         wg.wait();
@@ -858,7 +872,7 @@ where
     // admission outside policy accounting (bypassing max_cost).
     if let Some(prev) = prev {
       let prev_version = prev.version;
-      self.0.callback.on_exit(Some(prev.value.into_inner()));
+      self.0.callback.on_exit(Some(prev.value));
 
       // Callback re-entry: if this `try_remove` was called from inside a
       // user `CacheCallback` running on the processor thread, a blocking
@@ -1050,7 +1064,7 @@ where
               .try_remove_if_version(&index, item_conflict, item_version)
           {
             self.0.callback.on_reject(CrateItem {
-              val: Some(sitem.value.into_inner()),
+              val: Some(sitem.value),
               index,
               conflict: item_conflict,
               cost: item_cost,
@@ -1089,14 +1103,14 @@ where
         {
           if !is_update {
             self.0.callback.on_reject(CrateItem {
-              val: Some(sitem.value.into_inner()),
+              val: Some(sitem.value),
               index,
               conflict: item_conflict,
               cost: item_cost,
               exp: item_exp,
             });
           } else {
-            self.0.callback.on_exit(Some(sitem.value.into_inner()));
+            self.0.callback.on_exit(Some(sitem.value));
           }
         }
         if let Some(v) = prev_val {
@@ -1155,7 +1169,7 @@ where
         .try_remove_if_version(&index, conflict, version)
       {
         self.0.callback.on_reject(CrateItem {
-          val: Some(sitem.value.into_inner()),
+          val: Some(sitem.value),
           index,
           conflict,
           cost: reconcile_cost,
@@ -1170,7 +1184,7 @@ where
       if let Ok(Some(sitem)) = self.0.store.try_remove(&victim.key, 0) {
         self.0.callback.on_evict(CrateItem {
           index: victim.key,
-          val: Some(sitem.value.into_inner()),
+          val: Some(sitem.value),
           cost: victim.cost,
           conflict: sitem.conflict,
           exp: sitem.expiration,
@@ -1354,11 +1368,11 @@ where
   C: Coster<Value = V>,
   U: UpdateValidator<Value = V>,
   CB: CacheCallback<Value = V>,
-  S: BuildHasher + Clone + 'static,
+  S: BuildHasher + Clone + 'static + Send,
 {
-  /// `get` returns a `Option<ValueRef<V, SS>>` (if any) representing whether the
+  /// `get` returns a `Option<ValueRef<V>>` (if any) representing whether the
   /// value was found or not.
-  pub fn get<Q>(&self, key: &Q) -> Option<ValueRef<'_, V, S>>
+  pub fn get<Q>(&self, key: &Q) -> Option<ValueRef<'_, V>>
   where
     K: core::borrow::Borrow<Q>,
     Q: core::hash::Hash + Eq + ?Sized,
@@ -1379,9 +1393,9 @@ where
     }
   }
 
-  /// `get_mut` returns a `Option<ValueRefMut<V, SS>>` (if any) representing whether the
+  /// `get_mut` returns a `Option<ValueRefMut<V>>` (if any) representing whether the
   /// value was found or not.
-  pub fn get_mut<Q>(&self, key: &Q) -> Option<ValueRefMut<'_, V, S>>
+  pub fn get_mut<Q>(&self, key: &Q) -> Option<ValueRefMut<'_, V>>
   where
     K: core::borrow::Borrow<Q>,
     Q: core::hash::Hash + Eq + ?Sized,
@@ -1566,5 +1580,52 @@ where
 {
   fn as_ref(&self) -> &Cache<K, V, KH, C, U, CB, S> {
     self
+  }
+}
+
+#[cfg(test)]
+mod permit_guard_tests {
+  use super::*;
+
+  /// Regression: nested `SyncPermitGuard` used to unconditionally clear
+  /// `INSERT_PERMIT_HELD` on drop. When an outer insert held a guard and a
+  /// re-entrant caller (Coster/UpdateValidator) constructed a second guard,
+  /// dropping the inner one cleared the flag while the outer call was still
+  /// inside its permit-held window. Any further re-entry from the outer
+  /// `try_update` (UpdateValidator calling wait/clear/remove) then bypassed
+  /// the fail-fast check and could self-deadlock on blocking acquire.
+  #[test]
+  fn nested_guard_preserves_outer_flag() {
+    let sem = Arc::new(SyncSemaphore::new(4));
+    assert!(!insert_permit_held());
+
+    let outer = SyncPermitGuard::new(&sem);
+    assert!(insert_permit_held(), "outer guard sets flag");
+
+    {
+      let inner = SyncPermitGuard::new(&sem);
+      assert!(insert_permit_held(), "inner guard keeps flag set");
+      drop(inner);
+    }
+    assert!(
+      insert_permit_held(),
+      "dropping inner guard must NOT clear flag while outer guard still lives"
+    );
+
+    drop(outer);
+    assert!(
+      !insert_permit_held(),
+      "dropping outermost guard restores flag to false"
+    );
+  }
+
+  #[test]
+  fn single_guard_clears_flag_on_drop() {
+    let sem = Arc::new(SyncSemaphore::new(1));
+    assert!(!insert_permit_held());
+    let g = SyncPermitGuard::new(&sem);
+    assert!(insert_permit_held());
+    drop(g);
+    assert!(!insert_permit_held());
   }
 }

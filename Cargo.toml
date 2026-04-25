@@ -45,6 +45,7 @@ tokio = ["async", "agnostic-lite/tokio"]
 smol  = ["async", "agnostic-lite/smol"]
 sync = ["crossbeam-channel"]
 serde = ["dep:serde", "dep:serde_json"]
+send_guard = ["parking_lot/send_guard"]
 
 [dependencies]
 atomic = "0.6"

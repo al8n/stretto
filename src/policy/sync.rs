@@ -20,7 +20,7 @@ impl LFUPolicy {
   }
 }
 
-impl<S: BuildHasher + Clone + 'static> LFUPolicy<S> {
+impl<S: BuildHasher + Clone + 'static + Send> LFUPolicy<S> {
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn with_hasher(
     ctrs: usize,
@@ -69,7 +69,7 @@ pub(crate) struct PolicyProcessor<S> {
   stop_rx: Receiver<()>,
 }
 
-impl<S: BuildHasher + Clone + 'static> PolicyProcessor<S> {
+impl<S: BuildHasher + Clone + 'static + Send> PolicyProcessor<S> {
   #[cfg_attr(not(tarpaulin), inline(always))]
   fn new(
     inner: Arc<Mutex<PolicyInner<S>>>,
@@ -108,8 +108,5 @@ impl<S: BuildHasher + Clone + 'static> PolicyProcessor<S> {
     inner.admit.increments(items);
   }
 }
-
-unsafe impl<S: BuildHasher + Clone + 'static> Send for PolicyProcessor<S> {}
-unsafe impl<S: BuildHasher + Clone + 'static> Sync for PolicyProcessor<S> {}
 
 impl_policy!(LFUPolicy);

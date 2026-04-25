@@ -229,7 +229,7 @@ macro_rules! impl_cache_processor {
               .load(std::sync::atomic::Ordering::Acquire);
             if generation != current_gen {
               if let Some(sitem) = self.store.try_remove_if_version(&key, conflict, version)? {
-                self.callback.on_exit(Some(sitem.value.into_inner()));
+                self.callback.on_exit(Some(sitem.value));
               }
               return Ok(());
             }
@@ -276,7 +276,7 @@ macro_rules! impl_cache_processor {
               // reinsert that landed a newer value survives.
               if let Some(sitem) = self.store.try_remove_if_version(&key, conflict, version)? {
                 self.callback.on_reject(CrateItem {
-                  val: Some(sitem.value.into_inner()),
+                  val: Some(sitem.value),
                   index: key,
                   conflict,
                   cost,
@@ -312,7 +312,7 @@ macro_rules! impl_cache_processor {
               if let Some(sitem) = self.store.try_remove(&victim.key, 0)? {
                 self.on_evict(CrateItem {
                   index: victim.key,
-                  val: Some(sitem.value.into_inner()),
+                  val: Some(sitem.value),
                   cost: victim.cost,
                   conflict: sitem.conflict,
                   exp: sitem.expiration,
@@ -349,7 +349,7 @@ macro_rules! impl_cache_processor {
               .load(std::sync::atomic::Ordering::Acquire);
             if generation != current_gen {
               if let Some(sitem) = self.store.try_remove_if_version(&key, conflict, version)? {
-                self.callback.on_exit(Some(sitem.value.into_inner()));
+                self.callback.on_exit(Some(sitem.value));
                 if !self.store.contains_key(&key, 0) {
                   self.policy.remove(&key);
                 }
@@ -399,7 +399,7 @@ macro_rules! impl_cache_processor {
             } else if rejected {
               if let Some(sitem) = self.store.try_remove_if_version(&key, conflict, version)? {
                 self.callback.on_reject(CrateItem {
-                  val: Some(sitem.value.into_inner()),
+                  val: Some(sitem.value),
                   index: key,
                   conflict,
                   cost,
@@ -421,7 +421,7 @@ macro_rules! impl_cache_processor {
               if let Some(sitem) = self.store.try_remove(&victim.key, 0)? {
                 self.on_evict(CrateItem {
                   index: victim.key,
-                  val: Some(sitem.value.into_inner()),
+                  val: Some(sitem.value),
                   cost: victim.cost,
                   conflict: sitem.conflict,
                   exp: sitem.expiration,
@@ -505,7 +505,7 @@ macro_rules! impl_cache_processor {
             // is the correct outcome — removing by (key, conflict) alone
             // would destroy that fresh data.
             if let Some(sitem) = self.store.try_remove_if_version(&key, conflict, version)? {
-              self.callback.on_exit(Some(sitem.value.into_inner()));
+              self.callback.on_exit(Some(sitem.value));
             }
 
             Ok(())
@@ -537,13 +537,27 @@ macro_rules! impl_cache_processor {
             // `clear()` returns to its caller, the new generation is
             // visible to any subsequent insert. Release ordering pairs
             // with `try_update`'s Acquire load.
-            self.store.clear();
+            //
+            // `store.clear()` returns the drained values so we can run
+            // `on_exit` AFTER the generation bump: an `on_exit` that
+            // re-enters the cache via `insert` otherwise captures the
+            // pre-bump generation and enqueues an `Item::New` that the
+            // processor will then reject as stale — silently dropping
+            // the caller's insert. Running callbacks last also means
+            // shard write locks are fully released before any user
+            // code runs, so a callback that calls `get`/`len` on the
+            // processor thread cannot self-deadlock on a shard lock
+            // (parking_lot RwLocks are not reentrant).
+            let drained = self.store.clear();
             self.policy.clear();
             self.metrics.clear();
             self.start_ts.clear();
             self
               .clear_generation
               .fetch_add(1, std::sync::atomic::Ordering::Release);
+            for v in drained {
+              self.callback.on_exit(Some(v));
+            }
             wg.done();
             Ok(())
           }

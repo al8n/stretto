@@ -46,15 +46,40 @@ fn calc_size_by_wrong_positives(num_entries: usize, wrongs: f64) -> EntriesLocs 
 #[repr(C)]
 pub(crate) struct Bloom {
   bitset: Vec<u64>,
-  elem_num: u64,
   size_exp: u64,
   size: u64,
   set_locs: u64,
   shift: u64,
 }
 
+/// Upper bound on the requested bitset size (in bits) before rounding up to
+/// the next power of two. 2^40 bits = 128 GiB — already absurd for a
+/// doorkeeper. The cap exists to keep `get_size`'s doubling loop and the
+/// subsequent `vec![0; size >> 6]` allocation bounded; without it, a tiny
+/// `false_positive_ratio` plus a large `cap` produces `f64::INFINITY` →
+/// `u64::MAX` after the cast, which overflows the loop and aborts the
+/// allocator.
+const MAX_ENTRIES: u64 = 1 << 40;
+
+/// Upper bound on `set_locs` (probes per insert / lookup). Practical Bloom
+/// filters use single-digit values (~7 at the 0.01 false-positive ratio).
+/// 64 is a generous ceiling that still rejects the pathological case where
+/// a large finite `false_positive_ratio` (treated as a literal locs count)
+/// would make `add`/`contains` loop billions of times per call.
+const MAX_LOCS: u64 = 64;
+
 impl Bloom {
   pub fn new(cap: usize, false_positive_ratio: f64) -> Self {
+    // Reject inputs that flow through the FP math into a saturated `entries`
+    // or `locs == 0`. A zero `set_locs` makes `contains()` vacuously return
+    // true (the for-loop body never runs), so the doorkeeper would let
+    // every hash through and silently defeat TinyLFU's admission filter.
+    assert!(
+      false_positive_ratio.is_finite() && false_positive_ratio > 0.0,
+      "false_positive_ratio must be finite and > 0; got {false_positive_ratio}"
+    );
+    let cap = cap.max(1);
+
     let entries_locs = {
       if false_positive_ratio < 1f64 {
         calc_size_by_wrong_positives(cap, false_positive_ratio)
@@ -66,11 +91,26 @@ impl Bloom {
       }
     };
 
+    // Reject saturated derived sizes. After `f64 -> u64` an infinite or
+    // huge intermediate becomes `u64::MAX`, which would otherwise overflow
+    // `get_size`'s doubling loop and trigger an absurd allocation.
+    assert!(
+      entries_locs.entries > 0 && entries_locs.entries <= MAX_ENTRIES,
+      "bloom entries out of range: {} (cap={cap}, ratio={false_positive_ratio}); \
+       max is {MAX_ENTRIES}",
+      entries_locs.entries
+    );
+    assert!(
+      entries_locs.locs > 0 && entries_locs.locs <= MAX_LOCS,
+      "bloom set_locs out of range: {} (ratio={false_positive_ratio}); \
+       max is {MAX_LOCS}",
+      entries_locs.locs
+    );
+
     let size = get_size(entries_locs.entries);
 
     Self {
       bitset: vec![0; (size.size >> 6) as usize],
-      elem_num: 0,
       size: size.size - 1,
       size_exp: size.exp,
       set_locs: entries_locs.locs,
@@ -78,16 +118,9 @@ impl Bloom {
     }
   }
 
-  /// `size` makes Bloom filter with as bitset of size sz.
-  #[cfg_attr(not(tarpaulin), inline(always))]
-  #[allow(dead_code)]
-  pub fn size(&mut self, sz: usize) {
-    self.bitset = vec![0; sz >> 6]
-  }
-
   /// `reset` resets the `Bloom` filter
   pub fn reset(&mut self) {
-    self.bitset.iter_mut().for_each(|v| *v = 0);
+    self.bitset.fill(0);
   }
 
   /// Returns the exp of the size
@@ -99,22 +132,21 @@ impl Bloom {
 
   /// `clear` clear the `Bloom` filter
   pub fn clear(&mut self) {
-    self.bitset.iter_mut().for_each(|v| *v = 0);
+    self.bitset.fill(0);
   }
 
   /// `set` sets the bit[idx] of bitset
   pub fn set(&mut self, idx: usize) {
-    let ptr = (self.bitset.as_mut_ptr() as usize + (idx >> 3)) as *mut u8;
-    unsafe {
-      *ptr |= 1 << (idx % 8);
-    }
+    let word = idx >> 6;
+    let mask = 1u64 << (idx & 63);
+    self.bitset[word] |= mask;
   }
 
   /// `is_set` checks if bit[idx] of bitset is set, returns true/false.
   pub fn is_set(&self, idx: usize) -> bool {
-    let ptr = (self.bitset.as_ptr() as usize + (idx >> 3)) as *const u8;
-    let r = unsafe { *ptr >> (idx % 8) } & 1;
-    r == 1
+    let word = idx >> 6;
+    let mask = 1u64 << (idx & 63);
+    self.bitset[word] & mask != 0
   }
 
   /// `add` adds hash of a key to the bloom filter
@@ -123,7 +155,6 @@ impl Bloom {
     let l = (hash << self.shift) >> self.shift;
     (0..self.set_locs).for_each(|i| {
       self.set(((h + i * l) & self.size) as usize);
-      self.elem_num += 1;
     });
   }
 
@@ -156,9 +187,10 @@ impl Bloom {
   #[allow(dead_code)]
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn total_size(&self) -> usize {
-    // The bl struct has 5 members and each one is 8 byte. The bitset is a
-    // uint64 byte slice.
-    self.bitset.len() * 8 + 5 * 8
+    // Four u64 metadata fields (size_exp, size, set_locs, shift) plus the
+    // bitset (Vec<u64>). The Vec's heap header is intentionally excluded —
+    // this counts the live data, matching the Go reference.
+    self.bitset.len() * 8 + 4 * 8
   }
 }
 
@@ -215,7 +247,9 @@ mod test {
   #[test]
   fn test_total_size() {
     let bf = Bloom::new(10, 7f64);
-    assert_eq!(bf.total_size(), 104);
+    // 8 u64 bitset words (512 bits, the floor for tiny filters) + 4 u64
+    // metadata fields = 64 + 32 = 96.
+    assert_eq!(bf.total_size(), 96);
   }
 
   #[test]
@@ -225,9 +259,46 @@ mod test {
   }
 
   #[test]
-  fn test_size() {
-    let mut bf = Bloom::new(10, 7f64);
-    bf.size(1024);
-    assert_eq!(bf.bitset.len(), 16);
+  #[should_panic(expected = "false_positive_ratio must be finite")]
+  fn test_new_rejects_zero_ratio() {
+    let _ = Bloom::new(10, 0.0);
+  }
+
+  #[test]
+  #[should_panic(expected = "false_positive_ratio must be finite")]
+  fn test_new_rejects_nan_ratio() {
+    let _ = Bloom::new(10, f64::NAN);
+  }
+
+  #[test]
+  #[should_panic(expected = "false_positive_ratio must be finite")]
+  fn test_new_rejects_negative_ratio() {
+    let _ = Bloom::new(10, -0.5);
+  }
+
+  #[test]
+  fn test_new_clamps_zero_cap() {
+    // cap == 0 used to flow into NaN -> 0 for set_locs, which made
+    // contains() vacuously return true. With cap.max(1), the constructor
+    // produces a usable filter.
+    let bf = Bloom::new(0, 0.01);
+    assert!(bf.set_locs > 0);
+  }
+
+  #[test]
+  #[should_panic(expected = "bloom entries out of range")]
+  fn test_new_rejects_saturating_entries() {
+    // A huge cap with a tiny ratio drives the f64 size to +inf, which casts
+    // to u64::MAX and would overflow get_size's doubling loop / trigger an
+    // absurd allocation. Must be rejected before constructing the filter.
+    let _ = Bloom::new(usize::MAX, 1e-300);
+  }
+
+  #[test]
+  #[should_panic(expected = "bloom set_locs out of range")]
+  fn test_new_rejects_huge_locs() {
+    // ratio >= 1.0 is interpreted as a literal locs count. A huge finite
+    // value would make add/contains loop billions of times per call.
+    let _ = Bloom::new(10, 1e15);
   }
 }

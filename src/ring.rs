@@ -17,7 +17,7 @@ pub struct RingStripe<S> {
 #[cfg(feature = "sync")]
 impl<S> RingStripe<S>
 where
-  S: BuildHasher + Clone + 'static,
+  S: BuildHasher + Clone + 'static + Send,
 {
   pub(crate) fn new(cons: Arc<LFUPolicy<S>>, capa: usize) -> RingStripe<S> {
     RingStripe {

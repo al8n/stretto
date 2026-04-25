@@ -113,7 +113,4 @@ impl<S: BuildHasher + Clone + 'static + Send> PolicyProcessor<S> {
   }
 }
 
-unsafe impl<S: BuildHasher + Clone + 'static + Send> Send for PolicyProcessor<S> {}
-unsafe impl<S: BuildHasher + Clone + 'static + Send + Sync> Sync for PolicyProcessor<S> {}
-
 impl_policy!(AsyncLFUPolicy);

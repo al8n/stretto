@@ -37,7 +37,12 @@ macro_rules! impl_policy {
         let mut inner = self.inner.lock();
         let max_cost = inner.costs.get_max_cost();
 
-        if cost > max_cost {
+        // Negative costs are a programming error from a custom `Coster`. They
+        // would drive `SampledLFU::used` negative, permanently corrupt the
+        // budget (every subsequent admission compares against a lower `used`
+        // than reality), and produce `room_left` values that let the cache
+        // exceed its own cost bound. Reject at the boundary.
+        if cost < 0 || cost > max_cost {
           return AddOutcome::RejectedByCost;
         }
 
@@ -162,9 +167,6 @@ macro_rules! impl_policy {
         inner.costs.update_max_cost(mc)
       }
     }
-
-    unsafe impl<S: BuildHasher + Clone + 'static + Send> Send for $policy<S> {}
-    unsafe impl<S: BuildHasher + Clone + 'static + Send + Sync> Sync for $policy<S> {}
   };
 }
 
@@ -248,9 +250,6 @@ impl<S: BuildHasher + Clone + 'static> PolicyInner<S> {
     Ok(Arc::new(Mutex::new(this)))
   }
 }
-
-unsafe impl<S: BuildHasher + Clone + 'static> Send for PolicyInner<S> {}
-unsafe impl<S: BuildHasher + Clone + 'static> Sync for PolicyInner<S> {}
 
 /// SampledLFU stores key-costs paris.
 pub(crate) struct SampledLFU<S = RandomState> {
@@ -380,10 +379,16 @@ impl<S: BuildHasher + Clone + 'static> SampledLFU<S> {
   }
 
   /// Update the cost by hashed key. If the provided key in SampledLFU, then update it and return true, otherwise false.
+  /// Returns false for costs that exceed `max_cost`: accepting them would push
+  /// `used` past the budget, so the caller must treat it as a rejection and
+  /// roll the row back.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn update(&mut self, k: &u64, cost: i64) -> bool {
     // Update the cost of an existing key, but don't worry about evicting.
     // Evictions will be handled the next time a new item is added
+    if cost < 0 || cost > self.get_max_cost() {
+      return false;
+    }
     match self.key_costs.get_mut(k) {
       None => false,
       Some(prev) => {
@@ -411,9 +416,6 @@ impl<S: BuildHasher + Clone + 'static> SampledLFU<S> {
     }
   }
 }
-
-unsafe impl<S: BuildHasher + Clone + 'static> Send for SampledLFU<S> {}
-unsafe impl<S: BuildHasher + Clone + 'static> Sync for SampledLFU<S> {}
 
 /// TinyLFU is an admission helper that keeps track of access frequency using
 /// tiny (4-bit) counters in the form of a count-min sketch.

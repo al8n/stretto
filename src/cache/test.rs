@@ -236,8 +236,8 @@ mod sync_test {
     for _ in 0..20 {
       sleep(Duration::from_millis(180));
       let (cost_added, cost_evicted) = (
-        c.0.metrics.get_cost_added().unwrap(),
-        c.0.metrics.get_cost_evicted().unwrap(),
+        c.0.metrics.cost_added().unwrap(),
+        c.0.metrics.cost_evicted().unwrap(),
       );
       let cost = cost_added - cost_evicted;
       eprintln!("{}", c.0.metrics);
@@ -366,7 +366,7 @@ mod sync_test {
     c.0.insert_sem.close();
 
     assert!(!c.insert(2, 2, 1));
-    assert_eq!(c.0.metrics.get_sets_dropped().unwrap(), 1);
+    assert_eq!(c.0.metrics.sets_dropped().unwrap(), 1);
   }
 
   #[test]
@@ -573,9 +573,9 @@ mod sync_test {
       c.insert(i, i, 1);
     });
     sleep(Duration::from_millis(100));
-    assert_eq!(c.0.metrics.get_keys_added(), Some(10));
+    assert_eq!(c.0.metrics.keys_added(), Some(10));
     c.clear().unwrap();
-    assert_eq!(c.0.metrics.get_keys_added(), Some(0));
+    assert_eq!(c.0.metrics.keys_added(), Some(0));
 
     (0..10).for_each(|i| {
       assert!(c.get(&i).is_none());
@@ -845,6 +845,343 @@ mod sync_test {
         assert_eq!(v.read(), i);
       }
     }
+  }
+
+  // Regression: `clear()` used to wipe the store silently, violating the
+  // public `CacheCallback::on_exit` contract ("called whenever a value is
+  // removed from the cache"). Users relying on `on_exit` to release
+  // resources (file handles, refcounted external state) would leak on
+  // every clear. The fix drains values through `clear_with` and fires
+  // `on_exit` for each.
+  #[test]
+  fn test_sync_clear_fires_on_exit() {
+    use std::sync::atomic::{AtomicU64, Ordering as AOrd};
+
+    struct CountingCB {
+      on_exit: Arc<AtomicU64>,
+    }
+    impl CacheCallback for CountingCB {
+      type Value = u64;
+      fn on_exit(&self, _v: Option<u64>) {
+        self.on_exit.fetch_add(1, AOrd::Relaxed);
+      }
+    }
+
+    let on_exit_count = Arc::new(AtomicU64::new(0));
+    let c: Cache<
+      u64,
+      u64,
+      TransparentKeyBuilder<u64>,
+      DefaultCoster<u64>,
+      DefaultUpdateValidator<u64>,
+      CountingCB,
+    > = CacheBuilder::new_with_key_builder(1000, 1000, TransparentKeyBuilder::default())
+      .set_callback(CountingCB {
+        on_exit: on_exit_count.clone(),
+      })
+      .set_ignore_internal_cost(true)
+      .finalize()
+      .unwrap();
+
+    for i in 0..50u64 {
+      assert!(c.insert(i, i * 10, 1));
+    }
+    c.wait().unwrap();
+    assert_eq!(c.len(), 50);
+    // Baseline: no on_exit fires from plain inserts.
+    assert_eq!(on_exit_count.load(AOrd::Relaxed), 0);
+
+    c.clear().unwrap();
+
+    assert_eq!(
+      on_exit_count.load(AOrd::Relaxed),
+      50,
+      "on_exit must fire once per live entry drained by clear()",
+    );
+    assert_eq!(c.len(), 0);
+  }
+
+  // Regression: `ShardedMap::clear_with` used to fire `on_exit` from inside
+  // `shard.write()` / `map.drain()`, so a callback that re-entered the cache
+  // on a path that takes a shard lock (e.g. `get`, `len`, `contains`) would
+  // self-deadlock on the same processor thread — parking_lot RwLocks are
+  // not reentrant. The fix drains every shard into a buffer, drops all
+  // write locks, and only then runs the callbacks. This test exercises that
+  // exact re-entry (callback calls `cache.len()` and `cache.get()`) — under
+  // the old code the test would hang until the harness timeout.
+  #[test]
+  fn test_sync_clear_on_exit_can_reenter_cache() {
+    use std::sync::{
+      OnceLock,
+      atomic::{AtomicU64, Ordering as AOrd},
+    };
+
+    type C = Cache<
+      u64,
+      u64,
+      TransparentKeyBuilder<u64>,
+      DefaultCoster<u64>,
+      DefaultUpdateValidator<u64>,
+      ReentrantCB,
+    >;
+
+    struct ReentrantCB {
+      cache: Arc<OnceLock<C>>,
+      reentries: Arc<AtomicU64>,
+    }
+    impl CacheCallback for ReentrantCB {
+      type Value = u64;
+      fn on_exit(&self, _v: Option<u64>) {
+        if let Some(c) = self.cache.get() {
+          // Both take shard locks; would deadlock under the pre-fix
+          // `clear_with` while its write lock was still held.
+          let _ = c.len();
+          let _ = c.get(&999_999u64);
+          self.reentries.fetch_add(1, AOrd::Relaxed);
+        }
+      }
+    }
+
+    let cache_once: Arc<OnceLock<C>> = Arc::new(OnceLock::new());
+    let reentries = Arc::new(AtomicU64::new(0));
+
+    let c: C = CacheBuilder::new_with_key_builder(200, 200, TransparentKeyBuilder::default())
+      .set_callback(ReentrantCB {
+        cache: cache_once.clone(),
+        reentries: reentries.clone(),
+      })
+      .set_ignore_internal_cost(true)
+      .finalize()
+      .unwrap();
+
+    // Plumb the cache handle into the callback AFTER construction so the
+    // callback can re-enter. This creates a reference cycle (cache keeps the
+    // OnceLock alive, OnceLock keeps a Cache clone alive) — acceptable for a
+    // regression test; the process exits cleanly.
+    cache_once.set(c.clone()).ok().expect("set once");
+
+    for i in 0..20u64 {
+      assert!(c.insert(i, i, 1));
+    }
+    c.wait().unwrap();
+    assert_eq!(c.len(), 20);
+
+    // If the fix is reverted, this call hangs forever: on_exit's `c.len()`
+    // tries to take a shard read lock the processor thread already holds
+    // for write.
+    c.clear().unwrap();
+
+    assert_eq!(
+      reentries.load(AOrd::Relaxed),
+      20,
+      "on_exit must have observed every drained entry via the re-entrant path",
+    );
+  }
+
+  // Regression: the Item::Clear handler used to fire `on_exit` BEFORE bumping
+  // `clear_generation`. An `on_exit` that re-entered the cache via `insert`
+  // captured the pre-bump generation, did its eager store write, and enqueued
+  // an `Item::New` stamped with that (soon-to-be-stale) generation. Once the
+  // handler finished firing callbacks and bumped the generation, the queued
+  // `Item::New` was treated as stale by the New handler and its store row
+  // was reaped — the user's insert silently vanished. The fix runs callbacks
+  // AFTER `policy.clear()` / `metrics.clear()` / `start_ts.clear()` and AFTER
+  // the generation bump, so re-entrant inserts capture the fresh generation
+  // and are admitted normally.
+  #[test]
+  fn test_sync_clear_on_exit_reentrant_insert_survives() {
+    use std::sync::{
+      OnceLock,
+      atomic::{AtomicU64, Ordering as AOrd},
+    };
+
+    type C = Cache<
+      u64,
+      u64,
+      TransparentKeyBuilder<u64>,
+      DefaultCoster<u64>,
+      DefaultUpdateValidator<u64>,
+      InsertingCB,
+    >;
+
+    struct InsertingCB {
+      cache: Arc<OnceLock<C>>,
+      inserts_attempted: Arc<AtomicU64>,
+      offset: u64,
+    }
+    impl CacheCallback for InsertingCB {
+      type Value = u64;
+      fn on_exit(&self, v: Option<u64>) {
+        if let (Some(v), Some(c)) = (v, self.cache.get()) {
+          // Re-insert under a post-clear key so we can distinguish these
+          // from the pre-clear values when probing afterwards.
+          let k = self.offset + v;
+          let _ = c.insert(k, v, 1);
+          self.inserts_attempted.fetch_add(1, AOrd::Relaxed);
+        }
+      }
+    }
+
+    const PRE_CLEAR_COUNT: u64 = 20;
+    const POST_CLEAR_OFFSET: u64 = 1_000_000;
+
+    let cache_once: Arc<OnceLock<C>> = Arc::new(OnceLock::new());
+    let inserts_attempted = Arc::new(AtomicU64::new(0));
+
+    let c: C = CacheBuilder::new_with_key_builder(1000, 1000, TransparentKeyBuilder::default())
+      .set_callback(InsertingCB {
+        cache: cache_once.clone(),
+        inserts_attempted: inserts_attempted.clone(),
+        offset: POST_CLEAR_OFFSET,
+      })
+      .set_ignore_internal_cost(true)
+      .finalize()
+      .unwrap();
+
+    cache_once.set(c.clone()).ok().expect("set once");
+
+    for i in 0..PRE_CLEAR_COUNT {
+      // Use v = i + 1 so the re-insert key `offset + v` is unique per entry.
+      assert!(c.insert(i, i + 1, 1));
+    }
+    c.wait().unwrap();
+    assert_eq!(c.len(), PRE_CLEAR_COUNT as usize);
+
+    c.clear().unwrap();
+    c.wait().unwrap();
+
+    assert_eq!(
+      inserts_attempted.load(AOrd::Relaxed),
+      PRE_CLEAR_COUNT,
+      "on_exit should fire once per drained entry",
+    );
+
+    // The re-entrant inserts must have been admitted — before the fix they
+    // were enqueued with a stale generation and reaped as ghosts.
+    let mut survived = 0u64;
+    for i in 0..PRE_CLEAR_COUNT {
+      let k = POST_CLEAR_OFFSET + (i + 1);
+      if let Some(v) = c.get(&k) {
+        assert_eq!(*v.value(), i + 1);
+        survived += 1;
+      }
+    }
+    assert_eq!(
+      survived, PRE_CLEAR_COUNT,
+      "every on_exit re-entrant insert must survive the clear",
+    );
+  }
+
+  // Regression: if an `on_exit` callback panics during `Item::Clear`, the
+  // processor used to unwind past the bare `wg.done()` call, leaving the
+  // WaitGroup counter stuck at 1 and hanging the caller parked on
+  // `wg.wait()`. `wg::WaitGroup::done` takes `&self` and has no Drop-based
+  // signaling, so nothing would ever wake the caller. The fix wraps the
+  // WaitGroup in a `Signal` whose `Drop` fires `wg.done()` if the explicit
+  // consume call was skipped — so the panic-unwind of the match arm still
+  // unblocks `clear()` before the processor thread dies.
+  #[test]
+  fn test_sync_clear_unblocks_on_on_exit_panic() {
+    use std::sync::{
+      atomic::{AtomicBool, Ordering as AOrd},
+      mpsc,
+    };
+
+    struct PanickingCB(Arc<AtomicBool>);
+    impl CacheCallback for PanickingCB {
+      type Value = u64;
+      fn on_exit(&self, _v: Option<u64>) {
+        self.0.store(true, AOrd::Relaxed);
+        panic!("intentional on_exit panic for regression test");
+      }
+    }
+
+    let fired = Arc::new(AtomicBool::new(false));
+    let c: Cache<
+      u64,
+      u64,
+      TransparentKeyBuilder<u64>,
+      DefaultCoster<u64>,
+      DefaultUpdateValidator<u64>,
+      PanickingCB,
+    > = CacheBuilder::new_with_key_builder(100, 100, TransparentKeyBuilder::default())
+      .set_callback(PanickingCB(fired.clone()))
+      .set_ignore_internal_cost(true)
+      .finalize()
+      .unwrap();
+
+    for i in 0..5u64 {
+      assert!(c.insert(i, i, 1));
+    }
+    c.wait().unwrap();
+    assert_eq!(c.len(), 5);
+
+    // Call clear() from a worker thread with a bounded wait. If the Signal
+    // drop-guard is reverted, the processor panics before firing `wg.done()`
+    // and `wg.wait()` blocks forever — the recv below times out. With the
+    // fix, the panic-unwind drops the Signal, `wg.done()` runs, and clear()
+    // returns before the deadline.
+    let (tx, rx) = mpsc::channel();
+    let c2 = c.clone();
+    std::thread::spawn(move || {
+      // The processor thread's unwind catches inside `std::thread::spawn`'s
+      // boundary, so the caller's `clear()` just sees the Signal drop fire.
+      let res = c2.clear();
+      let _ = tx.send(res);
+    });
+
+    let outcome = rx
+      .recv_timeout(Duration::from_secs(5))
+      .expect("clear() must return within 5s even after on_exit panic");
+    outcome.expect("clear() should return Ok once the Signal drop-guard fires");
+
+    assert!(
+      fired.load(AOrd::Relaxed),
+      "the panicking on_exit should have been reached at least once",
+    );
+  }
+
+  // Regression: clear() used to wipe only the shards and leave TTL buckets
+  // in the ExpirationMap behind. A post-clear reinsert of the same key —
+  // with or without TTL — would then be deleted by the next cleanup tick,
+  // because the stale bucket still named that (key, conflict) and
+  // `try_remove` matched the fresh row's conflict for a deterministic
+  // KeyBuilder. The fix clears the ExpirationMap as part of
+  // `ShardedMap::clear`, and also guards the cleanup `is_expired()` check
+  // with `!t.is_zero()` so a zero-TTL post-clear row is never treated as
+  // expired.
+  #[test]
+  fn test_sync_clear_wipes_ttl_buckets() {
+    let c: Cache<u64, u64, TransparentKeyBuilder<u64>> = Cache::builder(100, 100)
+      .set_key_builder(TransparentKeyBuilder::default())
+      .set_ignore_internal_cost(true)
+      // Short cleanup tick so the bucket is processed during the test.
+      .set_cleanup_duration(Duration::from_millis(50))
+      .finalize()
+      .unwrap();
+
+    // Seed with a short TTL so a bucket exists.
+    assert!(c.insert_with_ttl(1u64, 100u64, 1, Duration::from_millis(200)));
+    c.wait().unwrap();
+    assert!(c.get(&1).is_some());
+
+    // Clear before the TTL fires. Stale bucket would survive without the fix.
+    c.clear().unwrap();
+
+    // Reinsert the SAME key with NO TTL. The deterministic KeyBuilder
+    // produces the same conflict, so a surviving stale bucket would match
+    // on cleanup.
+    assert!(c.insert(1u64, 999u64, 1));
+    c.wait().unwrap();
+
+    // Wait past the original TTL + two cleanup ticks. The stale bucket
+    // would fire during this window and delete the fresh row.
+    sleep(Duration::from_millis(500));
+
+    let v = c
+      .get(&1)
+      .expect("post-clear zero-TTL row must survive TTL-bucket cleanup");
+    assert_eq!(v.read(), 999);
   }
 
   // Regression: exercises the race codex flagged where one thread issues
@@ -3363,7 +3700,7 @@ mod async_test {
     // Pre-close data is preserved.
     assert!(!c.insert(2, 2, 1).await);
     assert_eq!(c.get(&1).await.unwrap().read(), 2);
-    assert_eq!(c.0.metrics.get_sets_dropped().unwrap(), 0);
+    assert_eq!(c.0.metrics.sets_dropped().unwrap(), 0);
   }
 
   #[tokio::test]
@@ -3537,9 +3874,9 @@ mod async_test {
       c.insert(i, i, 1).await;
     }
     sleep(Duration::from_millis(100)).await;
-    assert_eq!(c.0.metrics.get_keys_added(), Some(10));
+    assert_eq!(c.0.metrics.keys_added(), Some(10));
     c.clear().await.unwrap();
-    assert_eq!(c.0.metrics.get_keys_added(), Some(0));
+    assert_eq!(c.0.metrics.keys_added(), Some(0));
 
     for i in 0..10 {
       assert!(c.get(&i).await.is_none());
@@ -3672,8 +4009,8 @@ mod async_test {
       for _ in 0..20 {
         sleep(Duration::from_millis(500)).await;
         let (cost_added, cost_evicted) = (
-          tc.0.metrics.get_cost_added().unwrap(),
-          tc.0.metrics.get_cost_evicted().unwrap(),
+          tc.0.metrics.cost_added().unwrap(),
+          tc.0.metrics.cost_evicted().unwrap(),
         );
         let cost = cost_added - cost_evicted;
         assert!(cost as f64 <= (1e6 * 1.05));
@@ -3892,6 +4229,89 @@ mod async_test {
         assert_eq!(v.read(), i);
       }
     }
+  }
+
+  // Async analogue of test_sync_clear_wipes_ttl_buckets. Same hazard:
+  // clear() left stale ExpirationMap buckets pointing at the pre-clear
+  // conflict, so a post-clear reinsert of the same key (zero or nonzero
+  // TTL) could be deleted by the next cleanup tick.
+  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+  async fn test_async_clear_wipes_ttl_buckets() {
+    let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(100, 100)
+      .set_key_builder(TransparentKeyBuilder::default())
+      .set_ignore_internal_cost(true)
+      .set_cleanup_duration(Duration::from_millis(50))
+      .finalize::<TokioRuntime>()
+      .unwrap();
+
+    assert!(
+      c.insert_with_ttl(1u64, 100u64, 1, Duration::from_millis(200))
+        .await
+    );
+    c.wait().await.unwrap();
+    assert!(c.get(&1).await.is_some());
+
+    c.clear().await.unwrap();
+
+    assert!(c.insert(1u64, 999u64, 1).await);
+    c.wait().await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let v = c
+      .get(&1)
+      .await
+      .expect("post-clear zero-TTL row must survive TTL-bucket cleanup");
+    assert_eq!(v.read(), 999);
+  }
+
+  // Async analogue of test_sync_clear_fires_on_exit. See that test for the
+  // motivating contract: on_exit must fire once per drained entry during clear().
+  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+  async fn test_async_clear_fires_on_exit() {
+    use std::sync::atomic::{AtomicU64, Ordering as AOrd};
+
+    struct CountingCB {
+      on_exit: Arc<AtomicU64>,
+    }
+    impl CacheCallback for CountingCB {
+      type Value = u64;
+      fn on_exit(&self, _v: Option<u64>) {
+        self.on_exit.fetch_add(1, AOrd::Relaxed);
+      }
+    }
+
+    let on_exit_count = Arc::new(AtomicU64::new(0));
+    let c: AsyncCache<
+      u64,
+      u64,
+      TransparentKeyBuilder<u64>,
+      DefaultCoster<u64>,
+      DefaultUpdateValidator<u64>,
+      CountingCB,
+    > = AsyncCacheBuilder::new_with_key_builder(1000, 1000, TransparentKeyBuilder::default())
+      .set_callback(CountingCB {
+        on_exit: on_exit_count.clone(),
+      })
+      .set_ignore_internal_cost(true)
+      .finalize::<TokioRuntime>()
+      .unwrap();
+
+    for i in 0..50u64 {
+      assert!(c.insert(i, i * 10, 1).await);
+    }
+    c.wait().await.unwrap();
+    assert_eq!(c.len(), 50);
+    assert_eq!(on_exit_count.load(AOrd::Relaxed), 0);
+
+    c.clear().await.unwrap();
+
+    assert_eq!(
+      on_exit_count.load(AOrd::Relaxed),
+      50,
+      "on_exit must fire once per live entry drained by clear()",
+    );
+    assert_eq!(c.len(), 0);
   }
 
   // Async analogue of the sync concurrent-clear stress. Same rationale:
@@ -4269,7 +4689,7 @@ mod async_test {
     cache.wait().await.unwrap();
 
     let total = CLIENTS * PER_CLIENT;
-    let dropped = cache.0.metrics.get_sets_dropped().unwrap_or(0);
+    let dropped = cache.0.metrics.sets_dropped().unwrap_or(0);
     // Backpressure makes dropped-sets essentially zero; pre-fix this was ~total.
     assert!(
       dropped < total / 20,

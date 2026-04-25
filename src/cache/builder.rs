@@ -211,9 +211,18 @@ where
   }
 
   /// Set the cleanup ticker for Cache, each tick the Cache will clean the expired entries.
+  ///
+  /// A zero duration is silently promoted to the default cleanup interval: the
+  /// async cache spawns a `tokio::time::interval` that panics on zero, and a
+  /// zero tick has no defensible meaning for the sync cache either. Any
+  /// non-zero duration is honored as-is (including sub-second values).
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub fn set_cleanup_duration(mut self, d: Duration) -> Self {
-    self.cleanup_duration = d;
+    self.cleanup_duration = if d.is_zero() {
+      DEFAULT_CLEANUP_DURATION
+    } else {
+      d
+    };
     self
   }
 
