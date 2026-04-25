@@ -834,23 +834,68 @@ where
 
   /// try to remove an entry from Cache by key.
   pub fn try_remove(&self, k: &K) -> Result<(), CacheError> {
-    // Insert-permit re-entry (checked BEFORE the eager store write): if
-    // this `try_remove` runs inside an OUTER `try_insert_in`'s permit-
-    // held window — e.g. from a user `Coster`/`UpdateValidator` or a
-    // callback fired within that window — a blocking `insert_sem.acquire()`
-    // below would self-deadlock on the permit the outer caller still
-    // owns. We cannot safely mutate policy inline here either (the
-    // processor runs concurrently on another thread). Skip the whole
-    // operation so store and policy stay consistent: if we did the
-    // eager remove but then bailed without the Item::Delete enqueue,
-    // the store would be empty while policy still tracked the key's
-    // cost — a phantom residual that silently bypasses `max_cost`.
-    // Matches drop-on-full semantics for re-entrant inserts.
+    // Insert-permit re-entry (checked BEFORE any mutation): if this
+    // `try_remove` runs inside an OUTER `try_insert_in`'s permit-held
+    // window — e.g. from a user `Coster`/`UpdateValidator` or a callback
+    // fired within that window — a blocking `insert_sem.acquire()` below
+    // would self-deadlock on the permit the outer caller still owns. We
+    // cannot safely mutate policy inline here either (the processor runs
+    // concurrently on another thread). Skip the whole operation so store
+    // and policy stay consistent: any half-applied state would leave a
+    // ghost in policy that silently bypasses `max_cost`. Matches drop-on-
+    // full semantics for re-entrant inserts.
     if insert_permit_held() {
       return Ok(());
     }
 
     let (index, conflict) = self.0.key_to_hash.build_key(k);
+
+    // Callback re-entry: if this `try_remove` was called from inside a
+    // user `CacheCallback` running on the processor thread, we cannot
+    // acquire a permit or enqueue an `Item::Delete` — the sole consumer
+    // IS us, and we can't drain while we're executing a callback.
+    // Apply the Delete handler logic inline instead, mirroring src/cache.rs's
+    // Delete arm: generation-gate against a racing `clear()`, and only
+    // wipe policy if no concurrent insert has since reoccupied this
+    // index. The processor's follow-up `try_remove_if_version` would be
+    // a no-op (we already did the eager remove here) and is skipped.
+    if on_processor_thread() {
+      let captured_gen = self.0.clear_generation.load(Ordering::Acquire);
+      let prev = self
+        .0
+        .store
+        .try_remove_if_not_stale(&index, conflict, captured_gen)?;
+      if let Some(prev) = prev {
+        // Reconcile policy BEFORE firing on_exit so an on_exit panic
+        // cannot strand a ghost cost: store and policy are already
+        // consistent at the panic point.
+        let current_gen = self.0.clear_generation.load(Ordering::Acquire);
+        if captured_gen == current_gen && !self.0.store.contains_key(&index, 0) {
+          self.0.policy.remove(&index);
+        }
+        self.0.callback.on_exit(Some(prev.value));
+      }
+      return Ok(());
+    }
+
+    // Acquire a permit BEFORE the eager store write. With the permit-
+    // first ordering, `on_exit` can be moved to AFTER a successful
+    // `Item::Delete` enqueue: if the user callback then panics, the
+    // processor still drains the Delete and reconciles policy, so no
+    // ghost cost can survive the panic. This mirrors the async ordering.
+    //
+    // Pre-fix: store removal ran, then on_exit, then acquire+try_send.
+    // A panic in on_exit (or a closed-acquire bail) left the store
+    // empty while policy kept charging the key's cost — a phantom
+    // residual that bypassed `max_cost` until clear or same-key reinsert.
+    if self.0.insert_sem.acquire().is_err() {
+      // Unreachable while the cache is live: the semaphore is only
+      // closed by `Drop`, which cannot run while the caller holds a
+      // reference. Nothing mutated yet; bail.
+      return Ok(());
+    }
+    let mut permit = SyncPermitGuard::new(&self.0.insert_sem);
+
     // Capture the current clear generation before the eager remove. Paired
     // with the Release-ordered bump in the Clear handler, this Acquire load
     // lets the processor recognize a Delete queued before a clear as stale.
@@ -858,7 +903,6 @@ where
     // pre-clear caller that resumes after `clear()` and a racing post-clear
     // reinsert cannot destroy the fresh row.
     let captured_gen = self.0.clear_generation.load(Ordering::Acquire);
-    // delete immediately
     let prev = self
       .0
       .store
@@ -870,60 +914,49 @@ where
     // concurrent insert: processor admits the new row via Item::New, then
     // our Delete unconditionally calls policy.remove and orphans the fresh
     // admission outside policy accounting (bypassing max_cost).
-    if let Some(prev) = prev {
-      let prev_version = prev.version;
-      self.0.callback.on_exit(Some(prev.value));
+    let Some(prev) = prev else {
+      // Permit released on drop.
+      return Ok(());
+    };
+    let prev_version = prev.version;
 
-      // Callback re-entry: if this `try_remove` was called from inside a
-      // user `CacheCallback` running on the processor thread, a blocking
-      // acquire/send below would self-deadlock — the sole consumer IS us,
-      // and we can't drain while we're executing a callback. Apply the
-      // `Item::Delete` handler inline instead, mirroring src/cache.rs's
-      // Delete arm: generation-gate against a racing `clear()`, and only
-      // wipe policy if no concurrent insert has since reoccupied this
-      // index (which would have already refreshed the shared policy entry
-      // via `UpdatedExisting`). The eager `store.try_remove` above already
-      // did the row removal, so the processor's follow-up
-      // `try_remove_if_version` would be a no-op here and is skipped.
-      if on_processor_thread() {
-        let current_gen = self.0.clear_generation.load(Ordering::Acquire);
-        if captured_gen == current_gen && !self.0.store.contains_key(&index, 0) {
-          self.0.policy.remove(&index);
-        }
-        return Ok(());
-      }
-
-      // Acquire a permit before enqueueing the Delete so backpressure
-      // applies uniformly to every insert-buffer producer. The processor
-      // releases one permit per recv (including Delete).
-      if self.0.insert_sem.acquire().is_err() {
-        // Unreachable while the cache is live: the semaphore is only
-        // closed by `Drop`, which cannot run while the caller holds a
-        // reference. Our eager remove already ran; the store is
-        // consistent, so simply bail.
-        return Ok(());
-      }
-
-      // The version we just removed is stamped on the Item so a concurrent
-      // reinsert at the same (key, conflict) under a newer version survives
-      // the follow-up store cleanup.
-      match self
+    // The version we just removed is stamped on the Item so a concurrent
+    // reinsert at the same (key, conflict) under a newer version survives
+    // the follow-up store cleanup.
+    let send_result =
+      self
         .0
         .insert_buf_tx
-        .try_send(Item::delete(index, conflict, captured_gen, prev_version))
-      {
-        Ok(()) => Ok(()),
-        Err(e) => {
-          self.0.insert_sem.release();
-          Err(CacheError::ChannelError(format!(
-            "failed to send message to the insert buffer: {}",
-            &e
-          )))
-        }
-      }?;
-    }
+        .try_send(Item::delete(index, conflict, captured_gen, prev_version));
 
-    Ok(())
+    if send_result.is_ok() {
+      permit.transfer();
+    }
+    // Drop the guard BEFORE firing on_exit. `transfer()` only disarms the
+    // semaphore release; the guard's Drop also restores
+    // `INSERT_PERMIT_HELD`, so a callback that re-enters this cache while
+    // the guard is still alive would observe `insert_permit_held() == true`
+    // and be misclassified as nested-permit re-entry: re-entrant `remove`
+    // becomes a silent no-op, `clear`/`wait` return errors, and `insert`
+    // takes the bypass branch and can drop the write under tight
+    // `buffer_size`. Mirrors the explicit `drop(permit)` already used by
+    // the update arm before its `on_exit`.
+    drop(permit);
+
+    // Fire on_exit AFTER the Delete is durably enqueued (success path) so
+    // a panicking user callback cannot strand a ghost cost in policy: the
+    // in-flight Delete reconciles policy/store regardless. On send failure
+    // the cache is closing, but the store row is still gone — fire on_exit
+    // so the contract for evicted/removed items holds.
+    self.0.callback.on_exit(Some(prev.value));
+
+    match send_result {
+      Ok(()) => Ok(()),
+      Err(e) => Err(CacheError::ChannelError(format!(
+        "failed to send message to the insert buffer: {}",
+        &e
+      ))),
+    }
   }
 
   #[cfg_attr(not(tarpaulin), inline(always))]

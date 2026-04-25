@@ -5,10 +5,52 @@ use std::{
   collections::HashSet,
   hash::Hasher,
   sync::{
-    Arc,
+    Arc, OnceLock,
     atomic::{AtomicU64, Ordering},
   },
 };
+
+/// Process-global serialization gate for tests that mutate `panic::set_hook`.
+///
+/// `cargo test` runs tests in parallel by default, and the panic hook is a
+/// single process-wide slot. Without serialization, two tests that each
+/// `take_hook()` + `set_hook(no_op)` + restore can interleave such that
+/// test B's `take_hook` captures test A's no-op as its "prior", and a
+/// subsequent restore reinstalls a no-op as the process default — leaving
+/// later tests with their panic diagnostics silently swallowed.
+fn panic_hook_lock() -> &'static Mutex<()> {
+  static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+  LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// RAII guard that suppresses the panic hook for the duration of its
+/// lifetime, holding `panic_hook_lock()` so concurrent hook-mutating tests
+/// cannot corrupt each other's prior-hook chain. The prior hook is restored
+/// on drop (including panic-unwind through the test body).
+pub(crate) struct SuppressPanicHookGuard {
+  _lock: parking_lot::MutexGuard<'static, ()>,
+  prior: Option<Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 'static>>,
+}
+
+impl SuppressPanicHookGuard {
+  pub(crate) fn new() -> Self {
+    let _lock = panic_hook_lock().lock();
+    let prior = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    Self {
+      _lock,
+      prior: Some(prior),
+    }
+  }
+}
+
+impl Drop for SuppressPanicHookGuard {
+  fn drop(&mut self) {
+    if let Some(prior) = self.prior.take() {
+      std::panic::set_hook(prior);
+    }
+  }
+}
 
 static CHARSET: &[u8] = "abcdefghijklmnopqrstuvwxyz0123456789".as_bytes();
 
@@ -3355,8 +3397,7 @@ mod sync_test {
       }
     }
 
-    let prior_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
+    let hook_guard = super::SuppressPanicHookGuard::new();
 
     let c: Cache<u64, u64, TransparentKeyBuilder<u64>, _, _, PanicCB> =
       CacheBuilder::new_with_key_builder(64, 2, TransparentKeyBuilder::default())
@@ -3390,12 +3431,11 @@ mod sync_test {
     match done_rx.recv_timeout(Duration::from_secs(5)) {
       Ok(()) => {}
       Err(_) => {
-        std::panic::set_hook(prior_hook);
+        drop(hook_guard);
         panic!("live clone hung on insert_sem.acquire() after processor panic");
       }
     }
     drop(c);
-    std::panic::set_hook(prior_hook);
   }
 
   /// Regression for the panic-safe shutdown fix (WaitGroup → JoinHandle):
@@ -3417,8 +3457,7 @@ mod sync_test {
 
     // Silence the panic backtrace while the processor unwinds. The panic
     // is intentional; we just don't want it polluting test output.
-    let prior_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
+    let hook_guard = super::SuppressPanicHookGuard::new();
 
     let c: Cache<u64, u64, TransparentKeyBuilder<u64>, _, _, PanicCB> =
       CacheBuilder::new_with_key_builder(64, 2, TransparentKeyBuilder::default())
@@ -3446,16 +3485,238 @@ mod sync_test {
     match done_rx.recv_timeout(Duration::from_secs(5)) {
       Ok(()) => {}
       Err(_) => {
-        std::panic::set_hook(prior_hook);
+        drop(hook_guard);
         panic!("Cache drop hung after processor thread panicked");
       }
     }
-    std::panic::set_hook(prior_hook);
   }
 
   // Cloning Cache is cheap (Arc bump) and clones share backing state. After
   // the original is dropped, the clone keeps the processor alive and the
   // entries are still visible.
+  // Regression: pre-fix, sync `try_remove`'s `on_exit` fired while
+  // `SyncPermitGuard` was still alive (only `transfer()` had been called,
+  // not `drop`). The guard's Drop is what restores `INSERT_PERMIT_HELD` to
+  // its pre-acquire value, so a re-entrant cache call from `on_exit`
+  // observed the flag still set: re-entrant `remove()` early-returned as
+  // a silent no-op, and re-entrant `insert()` took the bypass branch
+  // (`try_acquire`) — under `set_buffer_size(1)` the outer permit had
+  // been transferred to the processor, so `try_acquire` failed and the
+  // inner write was silently dropped. The update arm already drops its
+  // guard before firing `on_exit`; the remove arm now mirrors it.
+  #[test]
+  fn test_sync_try_remove_on_exit_reentry_runs_outside_permit() {
+    use std::sync::{
+      Arc,
+      atomic::{AtomicU64, Ordering as AOrd},
+    };
+
+    struct State {
+      hook_fired: AtomicU64,
+      hook: parking_lot::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    }
+
+    struct ReenterOnExitCB(Arc<State>);
+    impl CacheCallback for ReenterOnExitCB {
+      type Value = u64;
+      fn on_exit(&self, _v: Option<u64>) {
+        // Take-once so the re-entered insert/remove's own on_exit (if any)
+        // doesn't recurse forever.
+        let maybe_hook = self.0.hook.lock().take();
+        if let Some(hook) = maybe_hook {
+          self.0.hook_fired.fetch_add(1, AOrd::Relaxed);
+          hook();
+        }
+      }
+    }
+
+    let state = Arc::new(State {
+      hook_fired: AtomicU64::new(0),
+      hook: parking_lot::Mutex::new(None),
+    });
+
+    // `buffer_size=1`: only one permit. Outer `try_remove` transfers it to
+    // the processor before firing `on_exit`. With the bug, the guard is
+    // still alive at that point so `INSERT_PERMIT_HELD == true`; the
+    // re-entrant `insert` takes `try_acquire` against an empty pool and
+    // silently drops. Post-fix, `on_exit` runs with the guard already
+    // dropped, the re-entrant insert blocks on `acquire()`, the processor
+    // drains the Delete, releases the permit, and the inner insert lands.
+    let c: Arc<
+      Cache<
+        u64,
+        u64,
+        TransparentKeyBuilder<u64>,
+        DefaultCoster<u64>,
+        DefaultUpdateValidator<u64>,
+        ReenterOnExitCB,
+      >,
+    > = Arc::new(
+      CacheBuilder::new_with_key_builder(1000, 1000, TransparentKeyBuilder::default())
+        .set_callback(ReenterOnExitCB(state.clone()))
+        .set_buffer_size(1)
+        .set_ignore_internal_cost(true)
+        .finalize()
+        .unwrap(),
+    );
+
+    // Seed the keys our re-entrant hook will touch.
+    assert!(c.insert(1u64, 100, 1));
+    assert!(c.insert(2u64, 200, 1));
+    c.wait().unwrap();
+
+    let c_hook = c.clone();
+    *state.hook.lock() = Some(Arc::new(move || {
+      // Pre-fix: this insert silently drops (try_acquire fails), and the
+      // remove silently no-ops (insert_permit_held() == true gate at the
+      // top of try_remove fires).
+      assert!(
+        c_hook.insert(3u64, 300, 1),
+        "re-entrant insert from on_exit must succeed (post-fix the guard \
+         is dropped before the callback fires)",
+      );
+      c_hook.try_remove(&2u64).unwrap();
+    }));
+
+    // Outer remove on a worker thread so the test can time-bound it: a
+    // regression that re-introduces the deadlock (e.g., dropping the
+    // guard before transfer) shows up as a timeout instead of a hang.
+    let c_worker = c.clone();
+    let worker = spawn(move || c_worker.try_remove(&1u64).unwrap());
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !worker.is_finished() {
+      if std::time::Instant::now() > deadline {
+        panic!(
+          "outer try_remove deadlocked — the re-entrant callback either \
+           held a permit it could not get, or the processor stalled",
+        );
+      }
+      sleep(Duration::from_millis(10));
+    }
+    worker.join().unwrap();
+
+    c.wait().unwrap();
+
+    assert_eq!(
+      state.hook_fired.load(AOrd::Relaxed),
+      1,
+      "on_exit hook must have fired exactly once",
+    );
+    assert!(
+      c.get(&1).is_none(),
+      "outer remove for K=1 must have taken effect",
+    );
+    assert!(
+      c.get(&2).is_none(),
+      "re-entrant try_remove(2) ran with insert_permit_held() == false; \
+       pre-fix it would have silently no-op'd and K=2 would still be live",
+    );
+    let v3 = c.get(&3).expect(
+      "re-entrant insert(3) ran with insert_permit_held() == false; pre-fix \
+       it would have try_acquired against an empty pool and dropped silently",
+    );
+    assert_eq!(v3.read(), 300);
+  }
+
+  // Regression: pre-fix, sync `try_remove` fired `on_exit` BEFORE
+  // `try_send(Item::Delete)`. A panic in the user callback unwound past
+  // the enqueue, leaving the store row gone but the policy entry still
+  // charging cost — a ghost no later operation could reconcile until
+  // `clear()` or a same-key reinsert. Fix: enqueue Delete first, transfer
+  // permit on success, THEN fire on_exit so the in-flight Delete still
+  // converges policy/store to consistency on panic.
+  #[test]
+  fn test_sync_try_remove_on_exit_panic_no_ghost() {
+    use std::{
+      panic::AssertUnwindSafe,
+      sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering as AOrd},
+      },
+    };
+
+    struct PanicCB {
+      armed: Arc<AtomicBool>,
+      fired: Arc<AtomicU64>,
+    }
+    impl CacheCallback for PanicCB {
+      type Value = u64;
+      fn on_exit(&self, _v: Option<u64>) {
+        self.fired.fetch_add(1, AOrd::Relaxed);
+        if self.armed.load(AOrd::Acquire) {
+          panic!("intentional on_exit panic for try_remove regression");
+        }
+      }
+    }
+
+    let armed = Arc::new(AtomicBool::new(false));
+    let fired = Arc::new(AtomicU64::new(0));
+    let c: Arc<
+      Cache<
+        u64,
+        u64,
+        TransparentKeyBuilder<u64>,
+        DefaultCoster<u64>,
+        DefaultUpdateValidator<u64>,
+        PanicCB,
+      >,
+    > = Arc::new(
+      CacheBuilder::new_with_key_builder(100, 100, TransparentKeyBuilder::default())
+        .set_callback(PanicCB {
+          armed: armed.clone(),
+          fired: fired.clone(),
+        })
+        .set_ignore_internal_cost(true)
+        .finalize()
+        .unwrap(),
+    );
+
+    assert!(c.insert(1u64, 42u64, 1));
+    c.wait().unwrap();
+    assert!(
+      c.0.policy.contains(&1),
+      "key must be admitted before remove"
+    );
+    assert_eq!(c.0.policy.cost(&1), 1);
+
+    armed.store(true, AOrd::Release);
+    let c_worker = c.clone();
+    let panic_result =
+      spawn(move || std::panic::catch_unwind(AssertUnwindSafe(|| c_worker.try_remove(&1u64))))
+        .join()
+        .unwrap();
+    assert!(
+      panic_result.is_err(),
+      "on_exit panic must propagate out of try_remove"
+    );
+    assert_eq!(
+      fired.load(AOrd::Relaxed),
+      1,
+      "panicking on_exit must have been invoked exactly once",
+    );
+    armed.store(false, AOrd::Release);
+
+    // Drain the in-flight Item::Delete. The processor's Delete handler
+    // calls policy.remove to reconcile; pre-fix, on_exit panicking before
+    // try_send meant the Delete never reached the queue and policy stayed
+    // charged.
+    c.wait().unwrap();
+
+    assert!(
+      c.0.store.get(&1, 0).is_none(),
+      "store row must be gone after eager remove",
+    );
+    assert!(
+      !c.0.policy.contains(&1),
+      "policy must be reconciled — a surviving entry with no store row is a ghost",
+    );
+    assert_eq!(
+      c.0.policy.cost(&1),
+      -1,
+      "policy cost ledger must show no charge for the removed key",
+    );
+  }
+
   #[test]
   fn test_sync_clone_shares_state() {
     let c: Cache<u64, u64, TransparentKeyBuilder<u64>> =
@@ -5221,8 +5482,7 @@ mod async_test {
       }
     }
 
-    let prior_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
+    let hook_guard = super::SuppressPanicHookGuard::new();
 
     let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>, _, _, PanicCB> =
       AsyncCacheBuilder::new_with_key_builder(64, 2, TransparentKeyBuilder::default())
@@ -5246,10 +5506,105 @@ mod async_test {
     })
     .await;
 
-    std::panic::set_hook(prior_hook);
+    drop(hook_guard);
     assert!(
       r.is_ok(),
       "live clone hung on insert_sem.acquire() after processor panic",
+    );
+  }
+
+  // Regression: pre-fix, async `try_remove` fired `on_exit` BEFORE
+  // `try_send(Item::Delete)`. A panic in the user callback unwound past
+  // the enqueue, leaving the store row gone but the policy entry still
+  // charging cost — a ghost no later operation could reconcile until
+  // `clear()` or a same-key reinsert. Fix: enqueue Delete first, transfer
+  // permit on success, THEN fire on_exit so the in-flight Delete still
+  // converges policy/store to consistency on panic.
+  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+  async fn test_async_try_remove_on_exit_panic_no_ghost() {
+    use std::sync::{
+      Arc,
+      atomic::{AtomicBool, AtomicU64, Ordering as AOrd},
+    };
+
+    struct PanicCB {
+      armed: Arc<AtomicBool>,
+      fired: Arc<AtomicU64>,
+    }
+    impl CacheCallback for PanicCB {
+      type Value = u64;
+      fn on_exit(&self, _v: Option<u64>) {
+        self.fired.fetch_add(1, AOrd::Relaxed);
+        if self.armed.load(AOrd::Acquire) {
+          panic!("intentional on_exit panic for async try_remove regression");
+        }
+      }
+    }
+
+    let armed = Arc::new(AtomicBool::new(false));
+    let fired = Arc::new(AtomicU64::new(0));
+    let c: AsyncCache<
+      u64,
+      u64,
+      TransparentKeyBuilder<u64>,
+      DefaultCoster<u64>,
+      DefaultUpdateValidator<u64>,
+      PanicCB,
+    > = AsyncCacheBuilder::new_with_key_builder(100, 100, TransparentKeyBuilder::default())
+      .set_callback(PanicCB {
+        armed: armed.clone(),
+        fired: fired.clone(),
+      })
+      .set_ignore_internal_cost(true)
+      .finalize::<TokioRuntime>()
+      .unwrap();
+
+    assert!(c.insert(1u64, 42u64, 1).await);
+    c.wait().await.unwrap();
+    assert!(
+      c.0.policy.contains(&1),
+      "key must be admitted before remove"
+    );
+    assert_eq!(c.0.policy.cost(&1), 1);
+
+    // Suppress the panic message so the test output stays clean.
+    let hook_guard = super::SuppressPanicHookGuard::new();
+
+    armed.store(true, AOrd::Release);
+    let c_worker = c.clone();
+    let join = tokio::spawn(async move { c_worker.try_remove(&1u64).await });
+    let join_result = join.await;
+    armed.store(false, AOrd::Release);
+    drop(hook_guard);
+
+    assert!(
+      join_result.as_ref().err().is_some_and(|e| e.is_panic()),
+      "on_exit panic must propagate out of async try_remove",
+    );
+    assert_eq!(
+      fired.load(AOrd::Relaxed),
+      1,
+      "panicking on_exit must have been invoked exactly once",
+    );
+
+    // Drain the in-flight Item::Delete. The processor's Delete handler
+    // calls policy.remove to reconcile; pre-fix, on_exit panicking before
+    // try_send meant the Delete never reached the queue and policy stayed
+    // charged.
+    c.wait().await.unwrap();
+
+    assert!(
+      c.0.store.get(&1, 0).is_none(),
+      "store row must be gone after eager remove",
+    );
+    assert!(
+      !c.0.policy.contains(&1),
+      "policy must be reconciled — a surviving entry with no store row is a ghost",
+    );
+    assert_eq!(
+      c.0.policy.cost(&1),
+      -1,
+      "policy cost ledger must show no charge for the removed key",
     );
   }
 }

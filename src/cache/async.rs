@@ -764,26 +764,35 @@ where
     // concurrent insert: processor admits the new row via Item::New, then
     // our Delete unconditionally calls policy.remove and orphans the fresh
     // admission outside policy accounting (bypassing max_cost).
-    if let Some(prev) = prev {
-      let prev_version = prev.version;
-      self.0.callback.on_exit(Some(prev.value));
+    let Some(prev) = prev else {
+      // Permit released on drop.
+      return Ok(());
+    };
+    let prev_version = prev.version;
 
-      // The version we just removed is stamped on the Item so a concurrent
-      // reinsert at the same (key, conflict) under a newer version survives
-      // the follow-up store cleanup. `try_send` is safe under the permit
-      // invariant: acquired permit ⇒ reserved channel slot.
-      if self
-        .0
-        .insert_buf_tx
-        .try_send(Item::delete(index, conflict, captured_gen, prev_version))
-        .is_ok()
-      {
-        permit.transfer();
-      }
-      // On try_send failure the permit is released on drop; the processor
-      // is gone so there is no one to reconcile anyway.
+    // The version we just removed is stamped on the Item so a concurrent
+    // reinsert at the same (key, conflict) under a newer version survives
+    // the follow-up store cleanup. `try_send` is safe under the permit
+    // invariant: acquired permit ⇒ reserved channel slot.
+    //
+    // Fire `on_exit` AFTER the Delete is durably enqueued so a panicking
+    // user callback cannot strand a ghost cost in policy: the in-flight
+    // Delete reconciles policy/store regardless. Pre-fix: on_exit ran
+    // before try_send, so a panic between eager remove and enqueue left
+    // policy charging a key whose store row was already gone.
+    if self
+      .0
+      .insert_buf_tx
+      .try_send(Item::delete(index, conflict, captured_gen, prev_version))
+      .is_ok()
+    {
+      permit.transfer();
     }
-    // If nothing was removed the permit is released on drop.
+    // On try_send failure the permit is released on drop; the processor
+    // is gone so there is no one to reconcile anyway. Still fire on_exit —
+    // the value is gone from the store, which is the contract on_exit
+    // promises for evicted/removed items.
+    self.0.callback.on_exit(Some(prev.value));
 
     Ok(())
   }
