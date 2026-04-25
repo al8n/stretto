@@ -40,7 +40,7 @@ getrandom = { version = "0.4", features = ["wasm_js"] }
 
 [features]
 default = ["sync"]
-async = ["async-channel", "event-listener", "agnostic-lite/time", "futures/default", "wg/future"]
+async = ["async-channel", "event-listener", "agnostic-lite/time", "futures/default", "wg/future", "crossbeam-channel"]
 tokio = ["async", "agnostic-lite/tokio"]
 smol  = ["async", "agnostic-lite/smol"]
 sync = ["crossbeam-channel"]
@@ -52,6 +52,7 @@ atomic = "0.6"
 agnostic-lite = { version = "0.6", optional = true }
 async-channel = { version = "2", optional = true }
 crossbeam-channel = { version = "0.5", optional = true }
+crossbeam-utils = "0.8"
 event-listener = { version = "5", optional = true }
 futures = { version = "0.3", optional = true }
 parking_lot = "0.12"
@@ -69,12 +70,21 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 agnostic-lite = { version = "0.6", features = ["tokio"] }
+criterion = { version = "0.8", features = ["html_reports"] }
+
+[[bench]]
+name = "insert"
+harness = false
+required-features = ["sync"]
 
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
-[lints.rust]
+[lints]
+workspace = true
+
+[workspace.lints.rust]
 rust_2018_idioms = "warn"
 single_use_lifetimes = "warn"
 unexpected_cfgs = { level = "warn", check-cfg = [

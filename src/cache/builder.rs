@@ -1,7 +1,7 @@
 use crate::{
   CacheCallback, Coster, DefaultCacheCallback, DefaultCoster, DefaultKeyBuilder,
   DefaultUpdateValidator, KeyBuilder, UpdateValidator,
-  cache::{DEFAULT_CLEANUP_DURATION, DEFAULT_INSERT_BUF_SIZE},
+  cache::{DEFAULT_CLEANUP_DURATION, DEFAULT_DRAIN_INTERVAL},
 };
 use std::{
   collections::hash_map::RandomState,
@@ -48,10 +48,15 @@ pub struct CacheBuilderCore<
   // Unless you have a rare use case, using `64` as the BufferItems value
   // results in good performance.
   // buffer_items: usize,
-  /// `insert_buffer_size` determines the size of insert buffers.
-  ///
-  /// Default is 32 * 1024 (**TODO:** need to figure out the optimal size.).
-  pub(crate) insert_buffer_size: usize,
+  /// High-water mark per stripe in the new striped insert buffer
+  /// (`InsertStripeRing`). When a stripe accumulates this many items,
+  /// the full batch is swapped out and shipped to the processor.
+  /// Default `64`. Min `1`.
+  pub(crate) insert_stripe_high_water: usize,
+
+  /// Cadence for the processor's tick arm, which drains every stripe
+  /// inline and runs TTL cleanup. Default `500ms`. Min `1ms`.
+  pub(crate) drain_interval: Duration,
 
   /// `cleanup_duration` is the duration for internal store to cleanup expired entry.
   ///
@@ -87,13 +92,14 @@ impl<K: Hash + Eq, V: Send + Sync + 'static> CacheBuilderCore<K, V> {
       num_counters,
       max_cost,
       buffer_items: DEFAULT_BUFFER_ITEMS,
-      insert_buffer_size: DEFAULT_INSERT_BUF_SIZE,
       metrics: false,
       callback: Some(DefaultCacheCallback::default()),
       key_to_hash: DefaultKeyBuilder::<K>::default(),
       update_validator: Some(DefaultUpdateValidator::default()),
       coster: Some(DefaultCoster::default()),
       ignore_internal_cost: true,
+      insert_stripe_high_water: crate::cache::insert_stripe::DEFAULT_HIGH_WATER,
+      drain_interval: DEFAULT_DRAIN_INTERVAL,
       cleanup_duration: DEFAULT_CLEANUP_DURATION,
       marker_k: Default::default(),
       marker_v: Default::default(),
@@ -110,13 +116,14 @@ impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<Key = K>> CacheBuild
       num_counters,
       max_cost,
       buffer_items: DEFAULT_BUFFER_ITEMS,
-      insert_buffer_size: DEFAULT_INSERT_BUF_SIZE,
       metrics: false,
       callback: Some(DefaultCacheCallback::default()),
       key_to_hash: index,
       update_validator: Some(DefaultUpdateValidator::default()),
       coster: Some(DefaultCoster::default()),
       ignore_internal_cost: true,
+      insert_stripe_high_water: crate::cache::insert_stripe::DEFAULT_HIGH_WATER,
+      drain_interval: DEFAULT_DRAIN_INTERVAL,
       cleanup_duration: DEFAULT_CLEANUP_DURATION,
       marker_k: Default::default(),
       marker_v: Default::default(),
@@ -173,16 +180,31 @@ where
     self
   }
 
-  /// Set the insert buffer size for the Cache.
+  /// Set the per-stripe high-water mark for the striped insert buffer.
+  /// When a stripe accumulates this many items, the full batch is sent
+  /// to the policy processor.
   ///
-  /// `buffer_size` is the size of the insert buffers. The Dgraph's developers find that 32 * 1024 gives a good performance.
-  ///
-  /// If for some reason you see insert performance decreasing with lots of contention (you shouldn't),
-  /// try increasing this value in increments of 32 * 1024.
-  /// This is a fine-tuning mechanism and you probably won't have to touch this.
+  /// Default `64`. Min `1`. Larger values amortize channel sends but
+  /// delay admission decisions; recommended `≤ 256` for caches under
+  /// ~10 K capacity.
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn set_buffer_size(mut self, sz: usize) -> Self {
-    self.insert_buffer_size = sz;
+  pub fn set_insert_stripe_high_water(mut self, items: usize) -> Self {
+    self.insert_stripe_high_water = items.max(1);
+    self
+  }
+
+  /// Set the processor's drain-tick interval. The processor wakes every
+  /// `interval` to drain every stripe inline (bypassing the bounded
+  /// channel) and to run TTL cleanup.
+  ///
+  /// Default `500ms`. Zero is silently promoted to the default.
+  #[cfg_attr(not(tarpaulin), inline(always))]
+  pub fn set_drain_interval(mut self, interval: Duration) -> Self {
+    self.drain_interval = if interval.is_zero() {
+      DEFAULT_DRAIN_INTERVAL
+    } else {
+      interval
+    };
     self
   }
 
@@ -251,13 +273,14 @@ where
       num_counters: self.num_counters,
       max_cost: self.max_cost,
       buffer_items: self.buffer_items,
-      insert_buffer_size: self.insert_buffer_size,
       metrics: self.metrics,
       callback: self.callback,
       key_to_hash: index,
       update_validator: self.update_validator,
       coster: self.coster,
       ignore_internal_cost: self.ignore_internal_cost,
+      insert_stripe_high_water: self.insert_stripe_high_water,
+      drain_interval: self.drain_interval,
       cleanup_duration: self.cleanup_duration,
       hasher: self.hasher,
       marker_k: self.marker_k,
@@ -285,13 +308,14 @@ where
       num_counters: self.num_counters,
       max_cost: self.max_cost,
       buffer_items: self.buffer_items,
-      insert_buffer_size: self.insert_buffer_size,
       metrics: self.metrics,
       callback: self.callback,
       key_to_hash: self.key_to_hash,
       update_validator: self.update_validator,
       coster: Some(coster),
       ignore_internal_cost: self.ignore_internal_cost,
+      insert_stripe_high_water: self.insert_stripe_high_water,
+      drain_interval: self.drain_interval,
       cleanup_duration: self.cleanup_duration,
       hasher: self.hasher,
       marker_k: self.marker_k,
@@ -313,13 +337,14 @@ where
       num_counters: self.num_counters,
       max_cost: self.max_cost,
       buffer_items: self.buffer_items,
-      insert_buffer_size: self.insert_buffer_size,
       metrics: self.metrics,
       callback: self.callback,
       key_to_hash: self.key_to_hash,
       update_validator: Some(uv),
       coster: self.coster,
       ignore_internal_cost: self.ignore_internal_cost,
+      insert_stripe_high_water: self.insert_stripe_high_water,
+      drain_interval: self.drain_interval,
       cleanup_duration: self.cleanup_duration,
       hasher: self.hasher,
       marker_k: self.marker_k,
@@ -339,13 +364,14 @@ where
       num_counters: self.num_counters,
       max_cost: self.max_cost,
       buffer_items: self.buffer_items,
-      insert_buffer_size: self.insert_buffer_size,
       metrics: self.metrics,
       callback: Some(cb),
       key_to_hash: self.key_to_hash,
       update_validator: self.update_validator,
       coster: self.coster,
       ignore_internal_cost: self.ignore_internal_cost,
+      insert_stripe_high_water: self.insert_stripe_high_water,
+      drain_interval: self.drain_interval,
       cleanup_duration: self.cleanup_duration,
       hasher: self.hasher,
       marker_k: self.marker_k,
@@ -364,13 +390,14 @@ where
       num_counters: self.num_counters,
       max_cost: self.max_cost,
       buffer_items: self.buffer_items,
-      insert_buffer_size: self.insert_buffer_size,
       metrics: self.metrics,
       callback: self.callback,
       key_to_hash: self.key_to_hash,
       update_validator: self.update_validator,
       coster: self.coster,
       ignore_internal_cost: self.ignore_internal_cost,
+      insert_stripe_high_water: self.insert_stripe_high_water,
+      drain_interval: self.drain_interval,
       cleanup_duration: self.cleanup_duration,
       hasher: Some(hasher),
       marker_k: self.marker_k,

@@ -19,8 +19,6 @@ mod metrics;
 #[allow(dead_code)]
 mod policy;
 mod ring;
-#[cfg(any(feature = "sync", feature = "async"))]
-mod semaphore;
 mod sketch;
 mod store;
 mod ttl;
@@ -29,7 +27,7 @@ pub(crate) mod utils;
 #[cfg(feature = "async")]
 #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 pub(crate) mod axync {
-  pub(crate) use async_channel::{Receiver, RecvError, Sender, TrySendError, bounded, unbounded};
+  pub(crate) use async_channel::{Receiver, Sender, bounded, unbounded};
   pub(crate) use futures::{channel::oneshot, select};
 
   /// Signaling half of a one-shot barrier used by `Item::Wait` / `Item::Clear`.
@@ -53,6 +51,44 @@ pub(crate) mod axync {
 
   pub(crate) fn stop_channel() -> (Sender<()>, Receiver<()>) {
     bounded(1)
+  }
+
+  /// Runtime-agnostic cooperative yield. Returns `Pending` once after waking
+  /// itself, then `Ready` on the next poll, forcing the executor to give
+  /// other tasks a chance to run. Equivalent to `tokio::task::yield_now()`
+  /// but works on any executor (tokio, smol, custom) without depending on
+  /// runtime-specific APIs.
+  ///
+  /// Why this lives here: `try_insert_in` is otherwise fully synchronous —
+  /// the eager store write, the stripe push, and rollback all complete
+  /// without awaiting. A producer task in a tight `c.insert(..).await` loop
+  /// would never yield, starving sibling tasks (e.g. a concurrent `clear()`
+  /// or the cache processor's drain triggers) on a busy multi-thread
+  /// runtime where every worker is a producer. The old slow path used
+  /// `async-channel::send().await` which yielded implicitly; with the
+  /// crossbeam-channel migration we restore the yield explicitly here.
+  pub(crate) fn yield_once() -> YieldOnce {
+    YieldOnce { yielded: false }
+  }
+
+  pub(crate) struct YieldOnce {
+    yielded: bool,
+  }
+
+  impl std::future::Future for YieldOnce {
+    type Output = ();
+    fn poll(
+      mut self: std::pin::Pin<&mut Self>,
+      cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+      if self.yielded {
+        std::task::Poll::Ready(())
+      } else {
+        self.yielded = true;
+        cx.waker().wake_by_ref();
+        std::task::Poll::Pending
+      }
+    }
   }
 }
 #[cfg(feature = "async")]

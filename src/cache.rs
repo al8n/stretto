@@ -44,17 +44,30 @@ macro_rules! impl_builder {
         }
       }
 
-      /// Set the insert buffer size for the Cache.
+      /// Set the per-stripe high-water mark for the striped insert buffer.
       ///
-      /// `buffer_size` is the size of the insert buffers. The Dgraph's developers find that 32 * 1024 gives a good performance.
+      /// When a stripe accumulates this many items, the full batch is sent
+      /// to the policy processor.
       ///
-      /// If for some reason you see insert performance decreasing with lots of contention (you shouldn't),
-      /// try increasing this value in increments of 32 * 1024.
-      /// This is a fine-tuning mechanism and you probably won't have to touch this.
+      /// Default `64`. Min `1`. Larger values amortize channel sends but
+      /// delay admission decisions; recommended `≤ 256` for caches under
+      /// ~10 K capacity.
       #[cfg_attr(not(tarpaulin), inline(always))]
-      pub fn set_buffer_size(self, sz: usize) -> Self {
+      pub fn set_insert_stripe_high_water(self, items: usize) -> Self {
         Self {
-          inner: self.inner.set_buffer_size(sz),
+          inner: self.inner.set_insert_stripe_high_water(items),
+        }
+      }
+
+      /// Set the processor's drain-tick interval. The processor wakes every
+      /// `interval` to drain every stripe inline (bypassing the bounded
+      /// channel) and to run TTL cleanup.
+      ///
+      /// Default `500ms`. Zero is silently promoted to the default.
+      #[cfg_attr(not(tarpaulin), inline(always))]
+      pub fn set_drain_interval(self, interval: Duration) -> Self {
+        Self {
+          inner: self.inner.set_drain_interval(interval),
         }
       }
 
@@ -564,6 +577,22 @@ macro_rules! impl_cache_processor {
         }
       }
 
+      /// Drive a per-batch loop of `handle_item`. Each item still takes
+      /// the policy `Mutex` independently — fusing them under one
+      /// acquisition is a follow-up optimization gated by the spec's
+      /// "out of scope: per-batch policy lock fusion" decision. The
+      /// per-call lock cost is small relative to the channel send the
+      /// caller no longer pays, so this is acceptable for v0.9.0.
+      #[cfg_attr(not(tarpaulin), inline(always))]
+      fn handle_insert_batch(&mut self, items: Vec<$item<V>>) -> Result<(), CacheError> {
+        for item in items {
+          if let Err(e) = self.handle_item(item) {
+            tracing::error!("fail to handle insert event item: {}", e);
+          }
+        }
+        Ok(())
+      }
+
       #[cfg_attr(not(tarpaulin), inline(always))]
       fn on_evict(&mut self, item: CrateItem<V>) {
         self.prepare_evict(&item);
@@ -608,6 +637,7 @@ macro_rules! impl_cache_processor {
 }
 
 mod builder;
+mod insert_stripe;
 #[cfg(test)]
 mod test;
 
@@ -627,7 +657,9 @@ mod r#async;
 #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 pub use r#async::{AsyncCache, AsyncCacheBuilder};
 
-// TODO: find the optimal value for this
-const DEFAULT_INSERT_BUF_SIZE: usize = 32 * 1024;
 pub(crate) const DEFAULT_BUFFER_ITEMS: usize = 64;
 const DEFAULT_CLEANUP_DURATION: Duration = Duration::from_secs(2);
+/// Default interval for the processor's drain-tick + TTL cleanup arm.
+/// Matches the spec's `drain_interval` default (500ms) so worst-case
+/// admission latency for stripe-buffered items is bounded to one tick.
+pub(crate) const DEFAULT_DRAIN_INTERVAL: Duration = Duration::from_millis(500);

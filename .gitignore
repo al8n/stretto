@@ -22,3 +22,4 @@ benches/ristretto-go/ristretto-go
 
 **.claude/
 cache-trace/
+docs/
