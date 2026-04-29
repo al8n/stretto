@@ -638,7 +638,14 @@ macro_rules! impl_cache_processor {
 
 mod builder;
 mod insert_stripe;
-#[cfg(test)]
+#[cfg(all(
+  test,
+  any(
+    feature = "sync",
+    all(feature = "async", feature = "tokio"),
+    all(feature = "async", feature = "smol"),
+  ),
+))]
 mod test;
 
 use std::time::Duration;

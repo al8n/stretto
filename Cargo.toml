@@ -41,6 +41,11 @@ name = "async_bench"
 required-features = ["tokio"]
 
 [[example]]
+path = "examples/sync_bench.rs"
+name = "sync_bench"
+required-features = ["sync"]
+
+[[example]]
 path = "examples/get_only_bench.rs"
 name = "get_only_bench"
 required-features = ["tokio", "sync"]
