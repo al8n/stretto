@@ -2817,12 +2817,12 @@ mod sync_test {
   }
 }
 
-#[cfg(feature = "async")]
+#[cfg(all(feature = "async", feature = "tokio"))]
 mod async_test {
   use super::*;
   use crate::{
     AsyncCache, AsyncCacheBuilder, DefaultCacheCallback, DefaultCoster, DefaultKeyBuilder,
-    DefaultUpdateValidator, TransparentKeyBuilder, UpdateValidator,
+    DefaultUpdateValidator, TokioCache, TransparentKeyBuilder, UpdateValidator,
   };
   use agnostic_lite::tokio::TokioRuntime;
   use std::{collections::hash_map::RandomState, hash::Hash, time::Duration};
@@ -2830,8 +2830,19 @@ mod async_test {
 
   async fn new_test_cache<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<Key = K>>(
     kh: KH,
-  ) -> AsyncCache<K, V, KH> {
-    AsyncCache::new_with_key_builder::<TokioRuntime>(100, 10, kh).unwrap()
+  ) -> AsyncCache<
+    K,
+    V,
+    TokioRuntime,
+    KH,
+    DefaultCoster<V>,
+    DefaultUpdateValidator<V>,
+    DefaultCacheCallback<V>,
+    RandomState,
+  > {
+    AsyncCacheBuilder::new_with_key_builder(100, 10, kh)
+      .build::<TokioRuntime>()
+      .unwrap()
   }
 
   async fn retry_set<
@@ -2839,7 +2850,7 @@ mod async_test {
     U: UpdateValidator<Value = u64>,
     CB: CacheCallback<Value = u64>,
   >(
-    c: &AsyncCache<u64, u64, TransparentKeyBuilder<u64>, C, U, CB>,
+    c: &AsyncCache<u64, u64, TokioRuntime, TransparentKeyBuilder<u64>, C, U, CB, RandomState>,
     key: u64,
     val: u64,
     cost: i64,
@@ -2859,7 +2870,7 @@ mod async_test {
 
   #[tokio::test]
   async fn test_cache_builder() {
-    let _: AsyncCache<u64, u64, DefaultKeyBuilder<u64>> =
+    let _: TokioCache<u64, u64, DefaultKeyBuilder<u64>> =
       AsyncCacheBuilder::new_with_key_builder(100, 10, TransparentKeyBuilder::default())
         .set_coster(DefaultCoster::default())
         .set_update_validator(DefaultUpdateValidator::default())
@@ -2870,7 +2881,7 @@ mod async_test {
         .set_insert_stripe_high_water(1000)
         .set_key_builder(DefaultKeyBuilder::default())
         .set_hasher(RandomState::default())
-        .finalize::<TokioRuntime>()
+        .build::<TokioRuntime>()
         .unwrap();
   }
 
@@ -2879,7 +2890,7 @@ mod async_test {
     let max_cost = 10_000;
     let lru = AsyncCacheBuilder::new(max_cost * 10, max_cost as i64)
       .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .expect("failed to create cache");
 
     for i in 0..10_000 {
@@ -2896,8 +2907,9 @@ mod async_test {
   async fn test_cache_key_to_hash() {
     let ctr = Arc::new(AtomicU64::new(0));
 
-    let c: AsyncCache<u64, u64, KHTest> =
-      AsyncCache::new_with_key_builder::<TokioRuntime>(10, 1000, KHTest { ctr: ctr.clone() })
+    let c: TokioCache<u64, u64, KHTest> =
+      AsyncCacheBuilder::new_with_key_builder(10, 1000, KHTest { ctr: ctr.clone() })
+        .build::<TokioRuntime>()
         .unwrap();
 
     assert!(c.insert(1, 1, 1).await);
@@ -2918,10 +2930,10 @@ mod async_test {
 
   #[tokio::test]
   async fn test_cache_update_max_cost() {
-    let c = AsyncCache::builder(10, 10)
+    let c = AsyncCacheBuilder::new(10, 10)
       .set_key_builder(TransparentKeyBuilder::default())
       .set_ignore_internal_cost(false)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
 
     assert_eq!(c.max_cost(), 10);
@@ -2944,8 +2956,9 @@ mod async_test {
 
   #[tokio::test]
   async fn test_cache_drop_is_safe() {
-    let c: AsyncCache<i64, i64, TransparentKeyBuilder<i64>> =
-      AsyncCache::new_with_key_builder::<TokioRuntime>(100, 10, TransparentKeyBuilder::default())
+    let c: TokioCache<i64, i64, TransparentKeyBuilder<i64>> =
+      AsyncCacheBuilder::new_with_key_builder(100, 10, TransparentKeyBuilder::default())
+        .build::<TokioRuntime>()
         .unwrap();
 
     drop(c);
@@ -2954,12 +2967,12 @@ mod async_test {
   #[tokio::test]
   async fn test_cache_process_items() {
     let cb = Arc::new(Mutex::new(HashSet::new()));
-    let c = AsyncCache::builder(100, 10)
+    let c = AsyncCacheBuilder::new(100, 10)
       .set_key_builder(TransparentKeyBuilder::default())
       .set_coster(TestCoster::default())
       .set_callback(TestCallback::new(cb.clone()))
       .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
 
     assert!(c.insert(1, 1, 0).await);
@@ -2987,11 +3000,11 @@ mod async_test {
 
   #[tokio::test]
   async fn test_cache_get() {
-    let c = AsyncCache::builder(100, 10)
+    let c = AsyncCacheBuilder::new(100, 10)
       .set_key_builder(TransparentKeyBuilder::default())
       .set_ignore_internal_cost(true)
       .set_metrics(true)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
 
     c.insert(1, 1, 0).await;
@@ -3013,11 +3026,11 @@ mod async_test {
 
   #[tokio::test]
   async fn test_cache_set() {
-    let c = AsyncCache::builder(100, 10)
+    let c = AsyncCacheBuilder::new(100, 10)
       .set_key_builder(TransparentKeyBuilder::default())
       .set_ignore_internal_cost(true)
       .set_metrics(true)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
 
     retry_set(&c, 1, 1, 1, Duration::ZERO).await;
@@ -3028,11 +3041,11 @@ mod async_test {
 
   #[tokio::test]
   async fn test_cache_internal_cost() {
-    let c = AsyncCache::builder(100, 10)
+    let c = AsyncCacheBuilder::new(100, 10)
       .set_key_builder(TransparentKeyBuilder::default())
       .set_ignore_internal_cost(false)
       .set_metrics(true)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
 
     // Get should return None because the cache's cost is too small to store the item
@@ -3047,11 +3060,11 @@ mod async_test {
 
   #[tokio::test]
   async fn test_recache_with_ttl() {
-    let c = AsyncCache::builder(100, 10)
+    let c = AsyncCacheBuilder::new(100, 10)
       .set_key_builder(TransparentKeyBuilder::default())
       .set_ignore_internal_cost(true)
       .set_metrics(true)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
 
     // Set initial value for key = 1
@@ -3079,11 +3092,11 @@ mod async_test {
   #[tokio::test]
   async fn test_cache_set_with_ttl() {
     let cb = Arc::new(Mutex::new(HashSet::new()));
-    let c = AsyncCache::builder(100, 10)
+    let c = AsyncCacheBuilder::new(100, 10)
       .set_key_builder(TransparentKeyBuilder::default())
       .set_callback(TestCallback::new(cb.clone()))
       .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
 
     retry_set(&c, 1, 1, 1, Duration::from_secs(1)).await;
@@ -3126,10 +3139,10 @@ mod async_test {
 
   #[tokio::test]
   async fn test_cache_remove_with_ttl() {
-    let c = AsyncCache::builder(100, 10)
+    let c = AsyncCacheBuilder::new(100, 10)
       .set_key_builder(TransparentKeyBuilder::default())
       .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
 
     retry_set(&c, 3, 1, 1, Duration::from_secs(10)).await;
@@ -3144,11 +3157,11 @@ mod async_test {
 
   #[tokio::test]
   async fn test_cache_get_ttl() {
-    let c = AsyncCache::builder(100, 10)
+    let c = AsyncCacheBuilder::new(100, 10)
       .set_key_builder(TransparentKeyBuilder::default())
       .set_metrics(true)
       .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
 
     // try expiration with valid ttl item
@@ -3189,11 +3202,11 @@ mod async_test {
 
   #[tokio::test]
   async fn test_cache_clear() {
-    let c = AsyncCache::builder(100, 10)
+    let c = AsyncCacheBuilder::new(100, 10)
       .set_key_builder(TransparentKeyBuilder::default())
       .set_metrics(true)
       .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
 
     for i in 0..10 {
@@ -3214,10 +3227,10 @@ mod async_test {
   #[tokio::test]
   async fn test_cache_metrics_clear() {
     let c = Arc::new(
-      AsyncCache::builder(100, 10)
+      AsyncCacheBuilder::new(100, 10)
         .set_key_builder(TransparentKeyBuilder::default())
         .set_metrics(true)
-        .finalize::<TokioRuntime>()
+        .build::<TokioRuntime>()
         .unwrap(),
     );
 
@@ -3246,11 +3259,11 @@ mod async_test {
   #[tokio::test]
   async fn test_cache_drop_updates() {
     async fn test() {
-      let c = AsyncCache::builder(100, 10)
+      let c = AsyncCacheBuilder::new(100, 10)
         .set_callback(DefaultCacheCallback::default())
         .set_metrics(true)
         .set_insert_stripe_high_water(1)
-        .finalize::<TokioRuntime>()
+        .build::<TokioRuntime>()
         .unwrap();
 
       for i in 0..50 {
@@ -3277,10 +3290,10 @@ mod async_test {
     let mut clean_win = 0;
 
     for _ in 0..10 {
-      let c = AsyncCache::builder(100, 1000)
+      let c = AsyncCacheBuilder::new(100, 1000)
         .set_key_builder(TransparentKeyBuilder::default())
         .set_metrics(true)
-        .finalize::<TokioRuntime>()
+        .build::<TokioRuntime>()
         .unwrap();
 
       // Set initial value for key = 1
@@ -3308,9 +3321,9 @@ mod async_test {
   #[tokio::test]
   async fn test_cache_max_cost() {
     let c = Arc::new(
-      AsyncCache::builder(12960, 1e6 as i64)
+      AsyncCacheBuilder::new(12960, 1e6 as i64)
         .set_metrics(true)
-        .finalize::<TokioRuntime>()
+        .build::<TokioRuntime>()
         .unwrap(),
     );
 
@@ -3366,11 +3379,11 @@ mod async_test {
 
   #[tokio::test]
   async fn test_cache_blockon_clear() {
-    let c: Arc<AsyncCache<u64, u64, TransparentKeyBuilder<u64>>> = Arc::new(
-      AsyncCache::builder(100, 10)
+    let c: Arc<TokioCache<u64, u64, TransparentKeyBuilder<u64>>> = Arc::new(
+      AsyncCacheBuilder::new(100, 10)
         .set_key_builder(TransparentKeyBuilder::default())
         .set_ignore_internal_cost(true)
-        .finalize::<TokioRuntime>()
+        .build::<TokioRuntime>()
         .unwrap(),
     );
 
@@ -3403,10 +3416,10 @@ mod async_test {
   #[tokio::test]
   async fn test_insert_after_clear() {
     let ttl = Duration::from_secs(60);
-    let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(100, 10)
+    let c: TokioCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCacheBuilder::new(100, 10)
       .set_key_builder(TransparentKeyBuilder::default())
       .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
 
     assert!(c.insert_with_ttl(0, 1, 1, ttl).await);
@@ -3422,11 +3435,11 @@ mod async_test {
 
   #[tokio::test]
   async fn test_async_set_buffer_items_and_len() {
-    let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(100, 10)
+    let c: TokioCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCacheBuilder::new(100, 10)
       .set_key_builder(TransparentKeyBuilder::default())
       .set_buffer_items(32)
       .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
 
     assert!(c.is_empty());
@@ -3440,21 +3453,21 @@ mod async_test {
 
   #[tokio::test]
   async fn test_async_as_ref() {
-    let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(100, 10)
+    let c: TokioCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCacheBuilder::new(100, 10)
       .set_key_builder(TransparentKeyBuilder::default())
       .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
-    let r: &AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = c.as_ref();
+    let r: &TokioCache<u64, u64, TransparentKeyBuilder<u64>> = c.as_ref();
     assert_eq!(r.max_cost(), 10);
   }
 
   #[tokio::test]
   async fn test_async_insert_if_present_missing() {
-    let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(100, 10)
+    let c: TokioCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCacheBuilder::new(100, 10)
       .set_key_builder(TransparentKeyBuilder::default())
       .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
     assert!(!c.insert_if_present(42, 0, 1).await);
     c.wait().await.unwrap();
@@ -3463,11 +3476,11 @@ mod async_test {
 
   #[tokio::test]
   async fn test_async_ring_overflow_and_fill() {
-    let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(100, 10)
+    let c: TokioCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCacheBuilder::new(100, 10)
       .set_key_builder(TransparentKeyBuilder::default())
       .set_buffer_items(4)
       .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
 
     for _ in 0..200 {
@@ -3485,10 +3498,10 @@ mod async_test {
     // routes clear through the insert buffer, so inserts enqueued after
     // clear() returns are processed against the freshly cleared state.
     for _ in 0..32 {
-      let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(100, 100)
+      let c: TokioCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCacheBuilder::new(100, 100)
         .set_key_builder(TransparentKeyBuilder::default())
         .set_ignore_internal_cost(true)
-        .finalize::<TokioRuntime>()
+        .build::<TokioRuntime>()
         .unwrap();
       for i in 0..10u64 {
         c.insert(i, i, 1).await;
@@ -3525,11 +3538,11 @@ mod async_test {
   // TTL) could be deleted by the next cleanup tick.
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
   async fn test_async_clear_wipes_ttl_buckets() {
-    let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(100, 100)
+    let c: TokioCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCacheBuilder::new(100, 100)
       .set_key_builder(TransparentKeyBuilder::default())
       .set_ignore_internal_cost(true)
       .set_cleanup_duration(Duration::from_millis(50))
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
 
     assert!(
@@ -3573,16 +3586,18 @@ mod async_test {
     let c: AsyncCache<
       u64,
       u64,
+      TokioRuntime,
       TransparentKeyBuilder<u64>,
       DefaultCoster<u64>,
       DefaultUpdateValidator<u64>,
       CountingCB,
+      RandomState,
     > = AsyncCacheBuilder::new_with_key_builder(1000, 1000, TransparentKeyBuilder::default())
       .set_callback(CountingCB {
         on_exit: on_exit_count.clone(),
       })
       .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
 
     for i in 0..50u64 {
@@ -3614,11 +3629,11 @@ mod async_test {
     };
 
     for _ in 0..4 {
-      let c: Arc<AsyncCache<u64, u64, TransparentKeyBuilder<u64>>> = Arc::new(
+      let c: Arc<TokioCache<u64, u64, TransparentKeyBuilder<u64>>> = Arc::new(
         AsyncCacheBuilder::new(500, 5_000)
           .set_key_builder(TransparentKeyBuilder::default())
           .set_ignore_internal_cost(true)
-          .finalize::<TokioRuntime>()
+          .build::<TokioRuntime>()
           .unwrap(),
       );
 
@@ -3695,11 +3710,11 @@ mod async_test {
     let mut total_ghosts = 0usize;
 
     for round in 0..10u64 {
-      let c: Arc<AsyncCache<u64, u64, TransparentKeyBuilder<u64>>> = Arc::new(
+      let c: Arc<TokioCache<u64, u64, TransparentKeyBuilder<u64>>> = Arc::new(
         AsyncCacheBuilder::new(20_000, 1_000_000)
           .set_key_builder(TransparentKeyBuilder::default())
           .set_ignore_internal_cost(true)
-          .finalize::<TokioRuntime>()
+          .build::<TokioRuntime>()
           .unwrap(),
       );
 
@@ -3768,12 +3783,12 @@ mod async_test {
     const MAX_COST: i64 = 100;
     const N: u64 = 5_000;
 
-    let c: Arc<AsyncCache<u64, u64, TransparentKeyBuilder<u64>>> = Arc::new(
+    let c: Arc<TokioCache<u64, u64, TransparentKeyBuilder<u64>>> = Arc::new(
       AsyncCacheBuilder::new(1000, MAX_COST)
         .set_key_builder(TransparentKeyBuilder::default())
         .set_ignore_internal_cost(true)
         .set_insert_stripe_high_water(1)
-        .finalize::<TokioRuntime>()
+        .build::<TokioRuntime>()
         .unwrap(),
     );
 
@@ -3843,11 +3858,11 @@ mod async_test {
       }
     }
 
-    let c = AsyncCache::builder(100, 10)
+    let c = AsyncCacheBuilder::new(100, 10)
       .set_key_builder(TransparentKeyBuilder::default())
       .set_update_validator(NoUpdate)
       .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
 
     assert!(c.insert(1u64, 1u64, 1).await);
@@ -3867,7 +3882,7 @@ mod async_test {
     let c = AsyncCacheBuilder::new(1000, 10_000)
       .set_key_builder(TransparentKeyBuilder::default())
       .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
 
     for i in 0..N {
@@ -3903,9 +3918,9 @@ mod async_test {
   async fn test_async_insert_box_dyn_any() {
     use std::any::Any;
 
-    let c: AsyncCache<String, Box<dyn Any + Send + Sync>> = AsyncCacheBuilder::new(100, 10)
+    let c: TokioCache<String, Box<dyn Any + Send + Sync>> = AsyncCacheBuilder::new(100, 10)
       .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
 
     let key = "session".to_string();
@@ -3929,10 +3944,10 @@ mod async_test {
   async fn test_async_insert_no_starvation_under_high_concurrency() {
     use std::sync::Arc;
 
-    let cache: AsyncCache<u64, u64> = AsyncCacheBuilder::new(100_000, 10_000)
+    let cache: TokioCache<u64, u64> = AsyncCacheBuilder::new(100_000, 10_000)
       .set_metrics(true)
       .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
 
     const CLIENTS: u64 = 16;
@@ -3978,11 +3993,11 @@ mod async_test {
     let mut total_ghosts = 0usize;
 
     for round in 0..ROUNDS {
-      let c: Arc<AsyncCache<u64, u64, TransparentKeyBuilder<u64>>> = Arc::new(
+      let c: Arc<TokioCache<u64, u64, TransparentKeyBuilder<u64>>> = Arc::new(
         AsyncCacheBuilder::new(20_000, 1_000_000)
           .set_key_builder(TransparentKeyBuilder::default())
           .set_ignore_internal_cost(true)
-          .finalize::<TokioRuntime>()
+          .build::<TokioRuntime>()
           .unwrap(),
       );
 
@@ -4047,11 +4062,11 @@ mod async_test {
     let mut ghosts = 0usize;
 
     for round in 0..ROUNDS {
-      let c: Arc<AsyncCache<u64, u64, TransparentKeyBuilder<u64>>> = Arc::new(
+      let c: Arc<TokioCache<u64, u64, TransparentKeyBuilder<u64>>> = Arc::new(
         AsyncCacheBuilder::new(20_000, 1_000_000)
           .set_key_builder(TransparentKeyBuilder::default())
           .set_ignore_internal_cost(true)
-          .finalize::<TokioRuntime>()
+          .build::<TokioRuntime>()
           .unwrap(),
       );
 
@@ -4130,11 +4145,11 @@ mod async_test {
     let mut ghosts = 0usize;
 
     for round in 0..ROUNDS {
-      let c: Arc<AsyncCache<u64, u64, TransparentKeyBuilder<u64>>> = Arc::new(
+      let c: Arc<TokioCache<u64, u64, TransparentKeyBuilder<u64>>> = Arc::new(
         AsyncCacheBuilder::new(KEYS_PER_ROUND as usize * 2, MAX_COST)
           .set_key_builder(TransparentKeyBuilder::default())
           .set_ignore_internal_cost(true)
-          .finalize::<TokioRuntime>()
+          .build::<TokioRuntime>()
           .unwrap(),
       );
 
@@ -4193,10 +4208,10 @@ mod async_test {
   // Cloning AsyncCache is cheap (Arc bump) and the clones share backing state.
   #[tokio::test]
   async fn test_async_clone_shares_state() {
-    let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(100, 10)
+    let c: TokioCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCacheBuilder::new(100, 10)
       .set_key_builder(TransparentKeyBuilder::default())
       .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
 
     let c2 = c.clone();
@@ -4224,10 +4239,10 @@ mod async_test {
   // longer enqueue — `items_rx` has been dropped by the exited processor.
   #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
   async fn test_drop_stops_policy_worker() {
-    let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCache::builder(100, 10)
+    let c: TokioCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCacheBuilder::new(100, 10)
       .set_key_builder(TransparentKeyBuilder::default())
       .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
 
     assert!(c.insert(1, 1, 1).await);
@@ -4276,11 +4291,11 @@ mod async_test {
 
     let hook_guard = super::SuppressPanicHookGuard::new();
 
-    let c: AsyncCache<u64, u64, TransparentKeyBuilder<u64>, _, _, PanicCB> =
+    let c: TokioCache<u64, u64, TransparentKeyBuilder<u64>, _, _, PanicCB> =
       AsyncCacheBuilder::new_with_key_builder(64, 2, TransparentKeyBuilder::default())
         .set_callback(PanicCB)
         .set_ignore_internal_cost(true)
-        .finalize::<TokioRuntime>()
+        .build::<TokioRuntime>()
         .unwrap();
 
     let clone = c.clone();
@@ -4311,8 +4326,8 @@ mod async_test {
   // await, so dropping mid-push is the same as never calling insert at all.
   #[tokio::test]
   async fn async_below_threshold_no_cancellation_hole() {
-    let cache: AsyncCache<u64, u64> = AsyncCacheBuilder::new(1_000, 1_000)
-      .finalize::<TokioRuntime>()
+    let cache: TokioCache<u64, u64> = AsyncCacheBuilder::new(1_000, 1_000)
+      .build::<TokioRuntime>()
       .unwrap();
 
     let key = 42_u64;
@@ -4348,9 +4363,9 @@ mod async_test {
   async fn async_slow_path_under_load_smoke() {
     use agnostic_lite::RuntimeLite;
 
-    let cache: AsyncCache<u64, u64> = AsyncCacheBuilder::new(1_000, 1_000)
+    let cache: TokioCache<u64, u64> = AsyncCacheBuilder::new(1_000, 1_000)
       .set_insert_stripe_high_water(1)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
 
     let n_pushes = 10_000_u64;
@@ -4387,8 +4402,8 @@ mod async_test {
   // process queued batches before the std::thread processor exits.
   #[tokio::test]
   async fn async_close_drains_stripes_into_consistent_state() {
-    let cache: AsyncCache<u64, u64> = AsyncCacheBuilder::new(10_000, 10_000)
-      .finalize::<TokioRuntime>()
+    let cache: TokioCache<u64, u64> = AsyncCacheBuilder::new(10_000, 10_000)
+      .build::<TokioRuntime>()
       .unwrap();
 
     // Insert several items but do NOT call wait — items may sit in
@@ -4409,8 +4424,8 @@ mod async_test {
   // stripes and wait() would return before our items are processed.
   #[tokio::test]
   async fn async_wait_drains_partial_stripes() {
-    let cache: AsyncCache<u64, u64> = AsyncCacheBuilder::new(10_000, 10_000)
-      .finalize::<TokioRuntime>()
+    let cache: TokioCache<u64, u64> = AsyncCacheBuilder::new(10_000, 10_000)
+      .build::<TokioRuntime>()
       .unwrap();
 
     for i in 0..5u64 {
@@ -4471,17 +4486,19 @@ mod async_test {
     let c: AsyncCache<
       u64,
       u64,
+      TokioRuntime,
       TransparentKeyBuilder<u64>,
       DefaultCoster<u64>,
       DefaultUpdateValidator<u64>,
       PanicCB,
+      RandomState,
     > = AsyncCacheBuilder::new_with_key_builder(100, 100, TransparentKeyBuilder::default())
       .set_callback(PanicCB {
         armed: armed.clone(),
         fired: fired.clone(),
       })
       .set_ignore_internal_cost(true)
-      .finalize::<TokioRuntime>()
+      .build::<TokioRuntime>()
       .unwrap();
 
     assert!(c.insert(1u64, 42u64, 1).await);
@@ -4532,15 +4549,17 @@ mod async_test {
       "policy cost ledger must show no charge for the removed key",
     );
   }
+}
 
-  #[cfg(all(test, feature = "async", feature = "smol"))]
+#[cfg(all(feature = "async", feature = "smol"))]
+mod async_smol_test {
   #[test]
   fn smol_runtime_basic_insert_and_get() {
     use agnostic_lite::{RuntimeLite, smol::SmolRuntime};
 
     SmolRuntime::block_on(async {
-      let cache: crate::AsyncCache<u64, u64> = crate::AsyncCacheBuilder::new(1_000, 1_000)
-        .finalize::<SmolRuntime>()
+      let cache: crate::SmolCache<u64, u64> = crate::AsyncCacheBuilder::new(1_000, 1_000)
+        .build::<SmolRuntime>()
         .unwrap();
       cache.insert(1, 100, 1).await;
       cache.wait().await.unwrap();

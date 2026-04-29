@@ -52,44 +52,6 @@ pub(crate) mod axync {
   pub(crate) fn stop_channel() -> (Sender<()>, Receiver<()>) {
     bounded(1)
   }
-
-  /// Runtime-agnostic cooperative yield. Returns `Pending` once after waking
-  /// itself, then `Ready` on the next poll, forcing the executor to give
-  /// other tasks a chance to run. Equivalent to `tokio::task::yield_now()`
-  /// but works on any executor (tokio, smol, custom) without depending on
-  /// runtime-specific APIs.
-  ///
-  /// Why this lives here: `try_insert_in` is otherwise fully synchronous —
-  /// the eager store write, the stripe push, and rollback all complete
-  /// without awaiting. A producer task in a tight `c.insert(..).await` loop
-  /// would never yield, starving sibling tasks (e.g. a concurrent `clear()`
-  /// or the cache processor's drain triggers) on a busy multi-thread
-  /// runtime where every worker is a producer. The old slow path used
-  /// `async-channel::send().await` which yielded implicitly; with the
-  /// crossbeam-channel migration we restore the yield explicitly here.
-  pub(crate) fn yield_once() -> YieldOnce {
-    YieldOnce { yielded: false }
-  }
-
-  pub(crate) struct YieldOnce {
-    yielded: bool,
-  }
-
-  impl std::future::Future for YieldOnce {
-    type Output = ();
-    fn poll(
-      mut self: std::pin::Pin<&mut Self>,
-      cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<()> {
-      if self.yielded {
-        std::task::Poll::Ready(())
-      } else {
-        self.yielded = true;
-        cx.waker().wake_by_ref();
-        std::task::Poll::Pending
-      }
-    }
-  }
 }
 #[cfg(feature = "async")]
 #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
@@ -102,6 +64,38 @@ pub use agnostic_lite::tokio::TokioRuntime;
 #[cfg(feature = "smol")]
 #[cfg_attr(docsrs, doc(cfg(feature = "smol")))]
 pub use agnostic_lite::smol::SmolRuntime;
+
+/// Convenience alias for an [`AsyncCache`] driven by tokio's runtime.
+///
+/// Equivalent to `AsyncCache<K, V, TokioRuntime, ...>`. Available when
+/// the `async` and `tokio` features are both enabled.
+#[cfg(all(feature = "async", feature = "tokio"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "async", feature = "tokio"))))]
+pub type TokioCache<
+  K,
+  V,
+  KH = DefaultKeyBuilder<K>,
+  C = DefaultCoster<V>,
+  U = DefaultUpdateValidator<V>,
+  CB = DefaultCacheCallback<V>,
+  S = std::collections::hash_map::RandomState,
+> = AsyncCache<K, V, agnostic_lite::tokio::TokioRuntime, KH, C, U, CB, S>;
+
+/// Convenience alias for an [`AsyncCache`] driven by smol's runtime.
+///
+/// Equivalent to `AsyncCache<K, V, SmolRuntime, ...>`. Available when
+/// the `async` and `smol` features are both enabled.
+#[cfg(all(feature = "async", feature = "smol"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "async", feature = "smol"))))]
+pub type SmolCache<
+  K,
+  V,
+  KH = DefaultKeyBuilder<K>,
+  C = DefaultCoster<V>,
+  U = DefaultUpdateValidator<V>,
+  CB = DefaultCacheCallback<V>,
+  S = std::collections::hash_map::RandomState,
+> = AsyncCache<K, V, agnostic_lite::smol::SmolRuntime, KH, C, U, CB, S>;
 
 #[cfg(feature = "sync")]
 #[cfg_attr(docsrs, doc(cfg(feature = "sync")))]

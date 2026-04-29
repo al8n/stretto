@@ -2,7 +2,8 @@
 
 use std::{sync::Arc, time::Instant};
 
-use stretto::{AsyncCache, Cache, TokioRuntime};
+use agnostic_lite::tokio::TokioRuntime;
+use stretto::{AsyncCacheBuilder, Cache, TokioCache};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 8)]
 async fn main() {
@@ -41,8 +42,9 @@ async fn main() {
   drop(sync_cache);
 
   // ASYNC bench
-  let async_cache: AsyncCache<u64, u64> =
-    AsyncCache::new::<TokioRuntime>(cap as usize * 10, cap).unwrap();
+  let async_cache: TokioCache<u64, u64> = AsyncCacheBuilder::new(cap as usize * 10, cap)
+    .build::<TokioRuntime>()
+    .unwrap();
   let async_cache = Arc::new(async_cache);
   let start = Instant::now();
   let mut handles = Vec::with_capacity(n_clients);

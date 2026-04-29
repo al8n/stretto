@@ -167,7 +167,7 @@ where
 {
   /// Build Cache and start all threads needed by the Cache.
   ///
-  /// `RT` is the async runtime to use. For example, if you use `tokio`,
+  /// `R` is the async runtime to use. For example, if you use `tokio`,
   /// pass `TokioRuntime` from `agnostic-lite`.
   ///
   /// ```no_run
@@ -175,13 +175,13 @@ where
   /// use agnostic_lite::tokio::TokioRuntime;
   ///
   /// AsyncCacheBuilder::<u64, u64>::new(100, 10)
-  ///     .finalize::<TokioRuntime>()
+  ///     .build::<TokioRuntime>()
   ///     .unwrap();
   /// ```
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn finalize<RT: RuntimeLite>(self) -> Result<AsyncCache<K, V, KH, C, U, CB, S>, CacheError>
+  pub fn build<R: RuntimeLite>(self) -> Result<AsyncCache<K, V, R, KH, C, U, CB, S>, CacheError>
   where
-    <RT as RuntimeLite>::Interval: Send,
+    <R as RuntimeLite>::Interval: Send,
   {
     let num_counters = self.inner.num_counters;
 
@@ -214,7 +214,7 @@ where
       hasher.clone(),
     ));
     let mut policy =
-      AsyncLFUPolicy::with_hasher::<RT>(num_counters, max_cost, hasher, policy_stop_rx)?;
+      AsyncLFUPolicy::with_hasher::<R>(num_counters, max_cost, hasher, policy_stop_rx)?;
 
     let coster = Arc::new(self.inner.coster.unwrap());
     let callback = Arc::new(self.inner.callback.unwrap());
@@ -259,7 +259,8 @@ where
       metrics,
       clear_generation,
       processor: Some(processor),
-      _marker: Default::default(),
+      _marker: PhantomData,
+      _runtime: PhantomData,
     };
 
     Ok(AsyncCache(Arc::new(inner)))
@@ -419,18 +420,19 @@ impl<V> Item<V> {
 pub struct AsyncCache<
   K,
   V,
+  R,
   KH = DefaultKeyBuilder<K>,
   C = DefaultCoster<V>,
   U = DefaultUpdateValidator<V>,
   CB = DefaultCacheCallback<V>,
   S = RandomState,
->(pub(crate) Arc<AsyncCacheInner<K, V, KH, C, U, CB, S>>)
+>(pub(crate) Arc<AsyncCacheInner<K, V, R, KH, C, U, CB, S>>)
 where
   K: Hash + Eq,
   V: Send + Sync + 'static,
   KH: KeyBuilder<Key = K>;
 
-impl<K, V, KH, C, U, CB, S> Clone for AsyncCache<K, V, KH, C, U, CB, S>
+impl<K, V, R, KH, C, U, CB, S> Clone for AsyncCache<K, V, R, KH, C, U, CB, S>
 where
   K: Hash + Eq,
   V: Send + Sync + 'static,
@@ -450,6 +452,7 @@ where
 pub(crate) struct AsyncCacheInner<
   K,
   V,
+  R,
   KH = DefaultKeyBuilder<K>,
   C = DefaultCoster<V>,
   U = DefaultUpdateValidator<V>,
@@ -511,70 +514,15 @@ pub(crate) struct AsyncCacheInner<
   pub(crate) processor: Option<JoinHandle<Result<(), CacheError>>>,
 
   pub(crate) _marker: PhantomData<fn(K)>,
+
+  /// Type tag for the runtime that owns this cache. Carried so
+  /// `try_insert_in` can call `R::yield_now()` directly instead of a
+  /// custom one-shot future, keeping the cooperative yield runtime-aware
+  /// without forcing the runtime bound onto read-only impls.
+  pub(crate) _runtime: PhantomData<R>,
 }
 
-impl<K: Hash + Eq, V: Send + Sync + 'static> AsyncCache<K, V> {
-  /// Returns a Cache instance with default configurations.
-  ///
-  /// `RT` is the async runtime to use. For example:
-  ///
-  /// ```no_run
-  /// use stretto::AsyncCache;
-  /// use agnostic_lite::tokio::TokioRuntime;
-  ///
-  /// AsyncCache::<u64, u64>::new::<TokioRuntime>(100, 10).unwrap();
-  /// ```
-  #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn new<RT: RuntimeLite>(num_counters: usize, max_cost: i64) -> Result<Self, CacheError>
-  where
-    <RT as RuntimeLite>::Interval: Send,
-  {
-    AsyncCacheBuilder::new(num_counters, max_cost).finalize::<RT>()
-  }
-
-  /// Returns a Builder.
-  #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn builder(
-    num_counters: usize,
-    max_cost: i64,
-  ) -> AsyncCacheBuilder<
-    K,
-    V,
-    DefaultKeyBuilder<K>,
-    DefaultCoster<V>,
-    DefaultUpdateValidator<V>,
-    DefaultCacheCallback<V>,
-    RandomState,
-  > {
-    AsyncCacheBuilder::new(num_counters, max_cost)
-  }
-}
-
-impl<K: Hash + Eq, V: Send + Sync + 'static, KH: KeyBuilder<Key = K>> AsyncCache<K, V, KH> {
-  /// Returns a Cache instance with a custom key builder.
-  ///
-  /// ```no_run
-  /// use stretto::{AsyncCache, TransparentKeyBuilder};
-  /// use agnostic_lite::tokio::TokioRuntime;
-  ///
-  /// AsyncCache::<u64, u64, TransparentKeyBuilder<_>>::new_with_key_builder::<TokioRuntime>(
-  ///     100, 10, TransparentKeyBuilder::<u64>::default(),
-  /// ).unwrap();
-  /// ```
-  #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn new_with_key_builder<RT: RuntimeLite>(
-    num_counters: usize,
-    max_cost: i64,
-    index: KH,
-  ) -> Result<Self, CacheError>
-  where
-    <RT as RuntimeLite>::Interval: Send,
-  {
-    AsyncCacheBuilder::new_with_key_builder(num_counters, max_cost, index).finalize::<RT>()
-  }
-}
-
-impl<K, V, KH, C, U, CB, S> AsyncCache<K, V, KH, C, U, CB, S>
+impl<K, V, R, KH, C, U, CB, S> AsyncCache<K, V, R, KH, C, U, CB, S>
 where
   K: Hash + Eq,
   V: Send + Sync + 'static,
@@ -583,6 +531,7 @@ where
   U: UpdateValidator<Value = V>,
   CB: CacheCallback<Value = V>,
   S: BuildHasher + Clone + 'static + Send,
+  R: RuntimeLite,
 {
   /// clear the Cache.
   #[cfg_attr(not(tarpaulin), inline(always))]
@@ -778,14 +727,16 @@ where
     // crossbeam-channel migration, so a producer task in a tight
     // `c.insert(..).await` loop would otherwise hog its worker thread and
     // starve sibling tasks (concurrent `clear()`, the policy worker, etc).
-    // See `axync::yield_once` for the rationale.
-    crate::axync::yield_once().await;
+    // `R::yield_now()` dispatches to the runtime's native yield primitive
+    // (e.g. `tokio::task::yield_now()`), keeping the cooperative yield
+    // executor-aware without forcing the runtime bound onto read-only impls.
+    R::yield_now().await;
 
     result
   }
 }
 
-impl<K, V, KH, C, U, CB, S> Drop for AsyncCacheInner<K, V, KH, C, U, CB, S>
+impl<K, V, R, KH, C, U, CB, S> Drop for AsyncCacheInner<K, V, R, KH, C, U, CB, S>
 where
   K: Hash + Eq,
   V: Send + Sync + 'static,
@@ -1014,7 +965,7 @@ where
 impl_builder!(AsyncCacheBuilder);
 impl_cache_processor!(CacheProcessor, Item);
 
-impl<K, V, KH, C, U, CB, S> AsyncCache<K, V, KH, C, U, CB, S>
+impl<K, V, R, KH, C, U, CB, S> AsyncCache<K, V, R, KH, C, U, CB, S>
 where
   K: Hash + Eq,
   V: Send + Sync + 'static,
@@ -1216,8 +1167,8 @@ where
   }
 }
 
-impl<K, V, KH, C, U, CB, S> AsRef<AsyncCache<K, V, KH, C, U, CB, S>>
-  for AsyncCache<K, V, KH, C, U, CB, S>
+impl<K, V, R, KH, C, U, CB, S> AsRef<AsyncCache<K, V, R, KH, C, U, CB, S>>
+  for AsyncCache<K, V, R, KH, C, U, CB, S>
 where
   K: Hash + Eq,
   V: Send + Sync + 'static,
@@ -1227,7 +1178,7 @@ where
   CB: CacheCallback<Value = V>,
   S: BuildHasher + Clone + 'static,
 {
-  fn as_ref(&self) -> &AsyncCache<K, V, KH, C, U, CB, S> {
+  fn as_ref(&self) -> &AsyncCache<K, V, R, KH, C, U, CB, S> {
     self
   }
 }

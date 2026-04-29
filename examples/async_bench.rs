@@ -15,7 +15,8 @@ use std::{
   time::Instant,
 };
 
-use stretto::{AsyncCache, TokioRuntime};
+use agnostic_lite::tokio::TokioRuntime;
+use stretto::{AsyncCacheBuilder, TokioCache};
 
 #[inline]
 fn xorshift(state: &mut u64) -> u64 {
@@ -52,8 +53,9 @@ async fn main() {
 
   let key_space: u64 = ((cap as u64) * key_ratio_pct) / 100;
 
-  let cache: AsyncCache<u64, u64> =
-    AsyncCache::new::<TokioRuntime>(cap as usize * 10, cap).unwrap();
+  let cache: TokioCache<u64, u64> = AsyncCacheBuilder::new(cap as usize * 10, cap)
+    .build::<TokioRuntime>()
+    .unwrap();
   let cache = Arc::new(cache);
 
   let hits = Arc::new(AtomicU64::new(0));
