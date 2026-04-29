@@ -96,7 +96,10 @@ fn on_processor_thread() -> bool {
 ///
 /// - **cleanup_duration**
 ///
-///   The [`Cache`] will cleanup the expired values every 500ms by default.
+///   Cadence for the [`Cache`]'s TTL-cleanup tick arm. Default `2s`.
+///   Independent from the stripe-drain cadence (`drain_interval`,
+///   default `500ms`); cleanup is a heavier sweep over every expiration
+///   bucket and so runs less often than drain.
 ///
 /// - **update_validator**
 ///
@@ -227,6 +230,7 @@ where
       100000,
       self.inner.ignore_internal_cost,
       self.inner.drain_interval,
+      self.inner.cleanup_duration,
       store.clone(),
       policy.clone(),
       buf_rx,
@@ -376,8 +380,12 @@ pub(crate) struct CacheProcessor<V, U, CB, S> {
   pub(crate) callback: Arc<CB>,
   pub(crate) ignore_internal_cost: bool,
   pub(crate) item_size: usize,
-  /// Tick cadence for the processor's drain-and-cleanup arm.
+  /// Tick cadence for the processor's stripe-drain arm.
   pub(crate) drain_interval: Duration,
+  /// Tick cadence for the processor's TTL-cleanup arm. Separate from
+  /// `drain_interval` so drain can stay aggressive while cleanup sweeps
+  /// every expiration bucket at its own (heavier, slower) cadence.
+  pub(crate) cleanup_duration: Duration,
   /// Owned reference to the producer-side ring so the processor can
   /// inline-drain it from the tick arm and the stop arm.
   pub(crate) insert_stripe: Arc<crate::cache::insert_stripe::InsertStripeRing<Item<V>>>,
@@ -831,6 +839,22 @@ where
             } => {
               self.0.metrics.add(MetricType::DropSets, key, 1);
               if let Ok(Some(sitem)) = self.0.store.try_remove_if_version(&key, conflict, version) {
+                // Ghost-entry cleanup. The processor may have just
+                // handled a stale Item::Delete for an older version
+                // of this key whose `contains_key` gate saw OUR eager
+                // row and therefore skipped `policy.remove`. Removing
+                // our row here without cleaning policy would strand
+                // that older entry as a ghost: policy tracks the key,
+                // store has nothing at this index, and no future
+                // handler is queued to reconcile (Item::New was
+                // dropped, never reaches the processor).
+                //
+                // conflict=0 means "any row at this index" (Policy is
+                // index-keyed); leave policy alone if a different
+                // conflict is sharing the entry.
+                if !self.0.store.contains_key(&key, 0) {
+                  self.0.policy.remove(&key);
+                }
                 self.0.callback.on_reject(CrateItem {
                   val: Some(sitem.value),
                   index: key,
@@ -873,6 +897,7 @@ where
     num_to_keep: usize,
     ignore_internal_cost: bool,
     drain_interval: Duration,
+    cleanup_duration: Duration,
     store: Arc<ShardedMap<V, U, S, S>>,
     policy: Arc<LFUPolicy<S>>,
     insert_buf_rx: Receiver<Vec<Item<V>>>,
@@ -896,6 +921,7 @@ where
       ignore_internal_cost,
       item_size,
       drain_interval,
+      cleanup_duration,
       insert_stripe,
       clear_generation,
     }
@@ -903,7 +929,13 @@ where
 
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub(crate) fn spawn(mut self) -> JoinHandle<Result<(), CacheError>> {
-    let ticker = tick(self.drain_interval);
+    // Two tickers, deliberately separate (mirrors async): drain stays
+    // aggressive (default 500ms) so admission latency is bounded by one
+    // drain_interval period, while TTL cleanup runs at its own cadence
+    // (default 2s) because each sweep walks every expiration bucket and
+    // is heavier than a stripe drain.
+    let drain_ticker = tick(self.drain_interval);
+    let cleanup_ticker = tick(self.cleanup_duration);
     let stripe = self.insert_stripe.clone();
     spawn(move || {
       ON_PROCESSOR_THREAD.with(|c| c.set(true));
@@ -929,15 +961,17 @@ where
               }
             }
           },
-          recv(ticker) -> msg => {
-            // Drain every stripe inline first — bypasses the channel
-            // entirely so backlog can clear regardless of channel
-            // capacity. Then run TTL cleanup.
+          recv(drain_ticker) -> _ => {
+            // Drain partial stripes inline on every tick — bounds
+            // admission latency to one drain_interval period regardless
+            // of whether a threshold flush fired.
             stripe.drain_all_stripes_inline(|batch| {
               for item in batch {
                 let _ = self.handle_item(item);
               }
             });
+          },
+          recv(cleanup_ticker) -> msg => {
             if let Err(e) = self.handle_cleanup_event(msg) {
               tracing::error!("fail to handle cleanup event: {}", e);
             }

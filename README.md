@@ -74,6 +74,8 @@ Hit ratios produced by [cachebench](https://github.com/al8n/cachebench) against 
 
 When both hold, Stretto leads by **7–47 percentage points** — OLTP at every capacity, the 20K rows of P1–P13, the 100K rows of S1–S3. When either fails (DS1 at 4M+, S1/S2 at 800K, P14, ConCat, MergeP, MergeS, the 160K rows of P4/P6/P7/P11/P12), admission rejects items LRU/W-TinyLFU would have kept and Stretto trails by up to 57 points. **Decision rule:** if your working set is several times your cache size *and* hot keys repeat, pick Stretto; if traffic is bursty scans or your cache is sized to hold most of the data, pick Moka or QuickCache.
 
+**Read-heavy ≠ Stretto-friendly.** The fit axis is access pattern, not the read-to-write ratio. A read-heavy workload with a tight hot set and skewed frequencies (OLTP, P1–P13) is Stretto's sweet spot; a read-heavy workload with a wide, churning keyspace (DS1) is its worst case — admission rejects items that LRU/W-TinyLFU would have kept, regardless of how few writes there are. Sized your cache to hold most of the data? Use an LRU-style cache (Moka, QuickCache).
+
 ### S3 trace (Search)
 
 S3 traces an entire workload from small to large capacity in one section. At 100K (cold tail still being rejected) Stretto wins by ~8 points; at 400K (Stretto's "frontier") it edges past Moka Segmented by 1.6; at 800K (capacity ≈ working set) admission filtering hurts and Moka Segmented pulls ahead by 13.6. The 400K row is the cleanest single illustration of where Stretto's regime ends.
@@ -114,8 +116,8 @@ The P-series captures workstation block-IO over a few hours per machine. Two dis
 
 | Trace | Capacity | QuickCache | Stretto | TinyUFO | Moka Sync | Moka Async | Moka Segmented(8) |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| P1  |  20,000 | 22.70% | **54.97%** | 17.39% | 21.37% | 21.25% | 21.86% |
-| P1  | 160,000 | 68.61% | **68.94%** | 64.30% | 63.98% | 64.84% | 66.96% |
+| P1  |  20,000 | 22.73% | **48.25%** | 16.99% | 21.47% | 21.40% | 21.83% |
+| P1  | 160,000 | 68.58% | **69.25%** | 64.20% | 64.33% | 64.84% | 66.96% |
 | P2  |  20,000 | 21.02% | **60.94%** | 16.20% | 19.39% | 19.44% | 20.16% |
 | P2  | 160,000 | 67.15% | **73.48%** | 63.91% | 63.38% | 63.85% | 66.83% |
 | P3  |  20,000 |  8.92% | **44.17%** |  3.82% | 11.22% | 11.25% | 11.02% |

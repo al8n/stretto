@@ -732,7 +732,13 @@ where
         Ok(true)
       }
       PushOutcome::Dropped(batch) => {
-        rollback_batch(&self.0.store, &self.0.callback, &self.0.metrics, &batch);
+        rollback_batch(
+          &self.0.store,
+          &self.0.policy,
+          &self.0.callback,
+          &self.0.metrics,
+          &batch,
+        );
         if let Some(v) = prev_val {
           self.0.callback.on_exit(Some(v));
         }
@@ -810,6 +816,7 @@ where
 /// into the same stripe.
 pub(crate) fn rollback_batch<V, U, CB, S>(
   store: &Arc<ShardedMap<V, U, S, S>>,
+  policy: &Arc<AsyncLFUPolicy<S>>,
   callback: &Arc<CB>,
   metrics: &Arc<Metrics>,
   batch: &[Item<V>],
@@ -831,6 +838,21 @@ pub(crate) fn rollback_batch<V, U, CB, S>(
       } => {
         metrics.add(MetricType::DropSets, *key, 1);
         if let Ok(Some(sitem)) = store.try_remove_if_version(key, *conflict, *version) {
+          // Ghost-entry cleanup. The processor may have just handled
+          // a stale Item::Delete for an older version of this key
+          // whose `contains_key` gate saw OUR eager row and therefore
+          // skipped `policy.remove`. Removing our row here without
+          // cleaning policy would strand that older entry as a ghost:
+          // policy tracks the key, store has nothing at this index,
+          // and no future handler is queued to reconcile (Item::New
+          // was dropped, never reaches the processor).
+          //
+          // conflict=0 means "any row at this index" (Policy is
+          // index-keyed); leave policy alone if a different conflict
+          // is sharing the entry.
+          if !store.contains_key(key, 0) {
+            policy.remove(key);
+          }
           callback.on_reject(CrateItem {
             val: Some(sitem.value),
             index: *key,

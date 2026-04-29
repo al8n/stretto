@@ -784,14 +784,25 @@ mod sync_test {
     for i in 0..16u64 {
       assert!(c.insert(i, i, 1));
     }
-    // Sleep > 2 × drain_interval so the tick arm fires at least once.
-    sleep(Duration::from_millis(150));
-
-    for i in 0..16u64 {
-      assert!(
-        c.0.policy.contains(&i),
-        "key {i} not in policy after tick drain",
-      );
+    // The tick arm fires every 50ms and drains stripes inline. On a
+    // loaded CI runner the processor thread can be scheduled late, so
+    // poll up to 5 s rather than relying on a fixed sleep.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+      let all_present = (0..16u64).all(|i| c.0.policy.contains(&i));
+      if all_present {
+        break;
+      }
+      if std::time::Instant::now() >= deadline {
+        for i in 0..16u64 {
+          assert!(
+            c.0.policy.contains(&i),
+            "key {i} not in policy after tick drain",
+          );
+        }
+        unreachable!();
+      }
+      sleep(Duration::from_millis(25));
     }
   }
 

@@ -54,13 +54,22 @@ pub struct CacheBuilderCore<
   /// Default `64`. Min `1`.
   pub(crate) insert_stripe_high_water: usize,
 
-  /// Cadence for the processor's tick arm, which drains every stripe
-  /// inline and runs TTL cleanup. Default `500ms`. Min `1ms`.
+  /// Cadence for the processor's stripe-drain tick arm. The arm drains
+  /// every per-stripe insert buffer inline so admission latency is bounded
+  /// by one cadence period regardless of whether a threshold flush fired.
+  ///
+  /// Independent from `cleanup_duration`: drain stays aggressive while the
+  /// heavier TTL-cleanup sweep runs on its own ticker.
+  ///
+  /// Default `500ms`. Min `1ms`.
   pub(crate) drain_interval: Duration,
 
-  /// `cleanup_duration` is the duration for internal store to cleanup expired entry.
+  /// Cadence for TTL cleanup sweeps over the store's expiration buckets.
+  /// TTL sweeps walk every bucket and are heavier than stripe drains, so
+  /// both the sync and async caches run cleanup on its own ticker at this
+  /// cadence — independent from `drain_interval`.
   ///
-  /// Default is 500ms.
+  /// Default `2s`.
   pub(crate) cleanup_duration: Duration,
 
   /// key_to_hash is used to customize the key hashing algorithm.
@@ -233,6 +242,9 @@ where
   }
 
   /// Set the cleanup ticker for Cache, each tick the Cache will clean the expired entries.
+  ///
+  /// Drives a dedicated TTL-cleanup ticker for both the sync and async
+  /// caches, independent from `drain_interval`. Default `2s`.
   ///
   /// A zero duration is silently promoted to the default cleanup interval: the
   /// async cache spawns a `tokio::time::interval` that panics on zero, and a

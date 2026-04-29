@@ -487,37 +487,40 @@ macro_rules! impl_cache_processor {
             if version == 0 {
               return Ok(());
             }
-            // Gate `policy.remove` on the store being empty at this index. In
-            // the normal case (no racing reinsert) the caller's eager
-            // `store.try_remove` left the index absent, so this is true and we
-            // clean up policy. But if a concurrent `insert()` landed a newer
-            // row between the caller's remove and this handler, and that new
-            // Item::New was processed before us, the New handler already
-            // refreshed the policy entry in-place (via
-            // `AddOutcome::UpdatedExisting`) to reflect the fresh admission.
-            // Wiping policy now would orphan that fresh row outside
-            // cost/eviction accounting — a ghost store row.
+            // Version-guarded removal FIRST so the `contains_key` gate that
+            // follows reflects the post-removal state of the index. If we
+            // checked `contains_key` first, the row we are about to remove
+            // would still be there and we would skip `policy.remove` —
+            // stranding the policy entry as a ghost the moment we then
+            // remove the store row.
             //
-            // The gate passes conflict=0 to ask "does the store hold ANY row
-            // at this index", not "at this (index, conflict)". Policy is
-            // keyed by index alone, so an index collision between distinct
-            // keys (different conflicts) shares a single policy entry.
-            // Checking with our own conflict would miss a post-remove insert
-            // at a different conflict: `contains_key(&key, C_A)` would return
-            // false even though the store now holds a row at this index
-            // (conflict C_B) that the New handler already merged into the
-            // shared policy entry via UpdatedExisting. We'd then wipe policy
-            // and strand C_B as a ghost.
+            // `try_remove_if_version` returns `Some` only if the live row
+            // at this `(key, conflict)` still has our captured version. A
+            // concurrent reinsert that bumped the version (or wrote a row
+            // under a different conflict at the same index) leaves us with
+            // `None`, so we must not destroy that fresh data.
+            let removed = self.store.try_remove_if_version(&key, conflict, version)?;
+
+            // Now that our own row (if any) is gone, ask whether the store
+            // still holds ANY row at this index. Policy is keyed by index
+            // alone, so:
+            //   - empty index → our entry is the last reference and we own
+            //     the cleanup.
+            //   - index occupied → either a concurrent reinsert at the
+            //     same (key, conflict) under a newer version (its
+            //     New/Update handler will refresh the policy entry via
+            //     `AddOutcome::UpdatedExisting`) or an index collision
+            //     under a different conflict that already shares the
+            //     policy entry. Wiping in either case would orphan the
+            //     surviving row outside cost/eviction accounting.
+            //
+            // conflict=0 means "any row at this index" (Policy is index-
+            // keyed); checking with our own conflict would miss the
+            // index-collision case and strand a ghost.
             if !self.store.contains_key(&key, 0) {
               self.policy.remove(&key); // deals with metrics updates.
             }
-            // Version-guarded removal: the eager remove already took
-            // whatever was there at the caller's `try_remove`. If a
-            // concurrent insert has since landed a new value at the same
-            // (key, conflict) under a different version, leaving it alone
-            // is the correct outcome — removing by (key, conflict) alone
-            // would destroy that fresh data.
-            if let Some(sitem) = self.store.try_remove_if_version(&key, conflict, version)? {
+            if let Some(sitem) = removed {
               self.callback.on_exit(Some(sitem.value));
             }
 
