@@ -676,14 +676,23 @@ where
     // remove would strand a policy entry with no store row. The send is
     // sync (crossbeam) and may briefly park the tokio worker under
     // contention; that is the deliberate tradeoff vs dropping a Delete.
-    let _ =
+    let send_result =
       self
         .0
         .insert_buf_ring
         .send_single(Item::delete(index, conflict, captured_gen, prev_version));
+
+    // Fire on_exit AFTER the Delete is durably enqueued (or its failure is
+    // captured) so a panicking user callback cannot mask a channel error
+    // and strand a ghost cost in policy.
     self.0.callback.on_exit(Some(prev.value));
 
-    Ok(())
+    match send_result {
+      Ok(()) => Ok(()),
+      Err(()) => Err(CacheError::ChannelError(
+        "failed to send delete to insert buffer: channel closed".to_string(),
+      )),
+    }
   }
 
   #[cfg_attr(not(tarpaulin), inline(always))]
@@ -703,6 +712,14 @@ where
       None => return Ok(false),
     };
 
+    // Capture whether our own item is an Update before moving it into
+    // the ring. If the batch is later dropped, `rollback_batch` keeps
+    // Update store rows in place (graceful leak: readers already see the
+    // new value), so the caller-facing result must say `Ok(true)` for an
+    // Update — `Ok(false)` would be a contract violation since the
+    // user's mutation survived.
+    let is_update = matches!(item, Item::Update { .. });
+
     // (2) Push to stripe — sync, no await. Mirrors sync's
     // drop-on-overflow contract: if the bounded ring is saturated (after
     // a 20µs send_timeout) or disconnected during shutdown, the batch is
@@ -719,7 +736,7 @@ where
         if let Some(v) = prev_val {
           self.0.callback.on_exit(Some(v));
         }
-        Ok(false)
+        Ok(is_update)
       }
     };
 

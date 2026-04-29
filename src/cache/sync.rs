@@ -782,6 +782,14 @@ where
 
     use crate::cache::insert_stripe::PushOutcome;
 
+    // Capture whether our own item is an Update before moving it into
+    // the ring. If the batch is later dropped, the rollback path keeps
+    // Update store rows in place (graceful leak: readers already see
+    // the new value), so the caller-facing result must say `Ok(true)`
+    // for an Update — `Ok(false)` would be a contract violation since
+    // the user's mutation survived.
+    let is_update = matches!(item, Item::Update { .. });
+
     // Push into the striped insert buffer. The ring buffers up to
     // `high_water` items per stripe before swapping a full Vec out and
     // sending it through the bounded `Sender<Vec<Item<V>>>` to the
@@ -848,7 +856,7 @@ where
         if let Some(v) = prev_val {
           self.0.callback.on_exit(Some(v));
         }
-        Ok(false)
+        Ok(is_update)
       }
     }
   }
