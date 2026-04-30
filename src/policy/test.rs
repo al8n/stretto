@@ -4,22 +4,14 @@ use crate::{
 };
 use std::collections::hash_map::RandomState;
 
-use std::time::Duration;
-
-static WAIT: Duration = Duration::from_millis(100);
-
 #[cfg(feature = "sync")]
 mod sync_test {
   use super::*;
-  use crate::{
-    policy::{AddOutcome, LFUPolicy},
-    sync::{Sender, stop_channel},
-  };
-  use std::{sync::Arc, thread::sleep};
+  use crate::policy::{AddOutcome, LFUPolicy};
+  use std::sync::Arc;
 
-  fn make_policy(ctrs: usize, max_cost: i64) -> (LFUPolicy, Sender<()>) {
-    let (stop_tx, stop_rx) = stop_channel();
-    (LFUPolicy::new(ctrs, max_cost, stop_rx).unwrap(), stop_tx)
+  fn make_policy(ctrs: usize, max_cost: i64) -> LFUPolicy {
+    LFUPolicy::new(ctrs, max_cost).unwrap()
   }
 
   #[test]
@@ -29,47 +21,25 @@ mod sync_test {
 
   #[test]
   fn test_policy_metrics() {
-    let (mut p, _stop_tx) = make_policy(100, 10);
+    let mut p = make_policy(100, 10);
     p.collect_metrics(Arc::new(Metrics::new_op()));
     assert!(p.metrics.is_op());
     assert!(p.inner.lock().costs.metrics.is_op());
   }
 
   #[test]
-  fn test_policy_process_items() {
-    let (p, stop_tx) = make_policy(100, 10);
-    p.items_tx.send(vec![1, 2, 2]).unwrap();
-    sleep(WAIT);
+  fn test_policy_increment() {
+    // Direct admit.increment is the only path now (no channel/processor).
+    let p = make_policy(100, 10);
+    p.admit.increment(1);
+    p.admit.increments(vec![2, 2]);
     assert_eq!(p.admit.estimate(2), 2);
     assert_eq!(p.admit.estimate(1), 1);
-
-    drop(stop_tx);
-    sleep(WAIT);
-    // After the processor exits, items_rx is dropped and push's try_send
-    // returns Disconnected, surfaced as Some(keys).
-    assert!(p.push(vec![3, 3, 3]).is_some());
-    assert_eq!(p.admit.estimate(3), 0);
-  }
-
-  #[test]
-  fn test_policy_push() {
-    let (p, _stop_tx) = make_policy(100, 10);
-    // Empty input is returned as-is — nothing to enqueue.
-    assert_eq!(p.push(vec![]), Some(vec![]));
-
-    let mut keep_count = 0;
-    (0..10).for_each(|_| {
-      if p.push(vec![1, 2, 3, 4, 5]).is_none() {
-        keep_count += 1;
-      }
-    });
-
-    assert_ne!(0, keep_count);
   }
 
   #[test]
   fn test_policy_add() {
-    let (p, _stop_tx) = make_policy(1000, 100);
+    let p = make_policy(1000, 100);
     assert!(matches!(p.add(1, 101), AddOutcome::RejectedByCost));
 
     let mut inner = p.inner.lock();
@@ -99,7 +69,7 @@ mod sync_test {
 
   #[test]
   fn test_policy_has() {
-    let (p, _stop_tx) = make_policy(100, 10);
+    let p = make_policy(100, 10);
     p.add(1, 1);
     assert!(p.contains(&1));
     assert!(!p.contains(&2));
@@ -107,7 +77,7 @@ mod sync_test {
 
   #[test]
   fn test_policy_del() {
-    let (p, _stop_tx) = make_policy(100, 10);
+    let p = make_policy(100, 10);
     p.add(1, 1);
     p.remove(&1);
     p.remove(&2);
@@ -117,14 +87,14 @@ mod sync_test {
 
   #[test]
   fn test_policy_cap() {
-    let (p, _stop_tx) = make_policy(100, 10);
+    let p = make_policy(100, 10);
     p.add(1, 1);
     assert_eq!(p.cap(), 9);
   }
 
   #[test]
   fn test_policy_update() {
-    let (p, _stop_tx) = make_policy(100, 10);
+    let p = make_policy(100, 10);
     p.add(1, 1);
     p.update(&1, 2);
     let inner = p.inner.lock();
@@ -133,7 +103,7 @@ mod sync_test {
 
   #[test]
   fn test_policy_cost() {
-    let (p, _stop_tx) = make_policy(100, 10);
+    let p = make_policy(100, 10);
     p.add(1, 2);
     assert_eq!(p.cost(&1), 2);
     assert_eq!(p.cost(&2), -1);
@@ -141,7 +111,7 @@ mod sync_test {
 
   #[test]
   fn test_policy_clear() {
-    let (p, _stop_tx) = make_policy(100, 10);
+    let p = make_policy(100, 10);
     p.add(1, 1);
     p.add(2, 2);
     p.add(3, 3);
@@ -152,53 +122,16 @@ mod sync_test {
     assert!(!p.contains(&2));
     assert!(!p.contains(&3));
   }
-
-  // Dropping the stop sender tears down the processor, after which
-  // direct channel sends and `push` both fail.
-  #[test]
-  fn test_policy_shutdown_on_stop_drop() {
-    let (p, stop_tx) = make_policy(100, 10);
-    p.add(1, 1);
-    drop(stop_tx);
-    sleep(WAIT);
-    assert!(p.items_tx.send(vec![1]).is_err());
-  }
-
-  #[test]
-  fn test_policy_push_after_shutdown() {
-    let (p, stop_tx) = make_policy(100, 10);
-    drop(stop_tx);
-    sleep(WAIT);
-    assert!(p.push(vec![1, 2]).is_some());
-  }
-
-  #[test]
-  fn test_policy_add_after_shutdown() {
-    let (p, stop_tx) = make_policy(100, 10);
-    drop(stop_tx);
-    // `add` operates on the inner lock and is independent of the
-    // background processor — it must still succeed.
-    p.add(1, 1);
-  }
 }
 
 #[cfg(feature = "async")]
 mod async_test {
   use super::*;
-  use crate::{
-    axync::{Sender, stop_channel},
-    policy::{AddOutcome, AsyncLFUPolicy},
-  };
-  use agnostic_lite::tokio::TokioRuntime;
+  use crate::policy::{AddOutcome, AsyncLFUPolicy};
   use std::sync::Arc;
-  use tokio::time::sleep;
 
-  fn make_policy(ctrs: usize, max_cost: i64) -> (AsyncLFUPolicy, Sender<()>) {
-    let (stop_tx, stop_rx) = stop_channel();
-    (
-      AsyncLFUPolicy::new::<TokioRuntime>(ctrs, max_cost, stop_rx).unwrap(),
-      stop_tx,
-    )
+  fn make_policy(ctrs: usize, max_cost: i64) -> AsyncLFUPolicy {
+    AsyncLFUPolicy::new(ctrs, max_cost).unwrap()
   }
 
   #[tokio::test]
@@ -208,46 +141,24 @@ mod async_test {
 
   #[tokio::test]
   async fn test_policy_metrics() {
-    let (mut p, _stop_tx) = make_policy(100, 10);
+    let mut p = make_policy(100, 10);
     p.collect_metrics(Arc::new(Metrics::new_op()));
     assert!(p.metrics.is_op());
     assert!(p.inner.lock().costs.metrics.is_op());
   }
 
   #[tokio::test]
-  async fn test_policy_process_items() {
-    let (p, stop_tx) = make_policy(100, 10);
-
-    assert!(p.push(vec![1, 2, 2]).is_none());
-    sleep(WAIT).await;
-
+  async fn test_policy_increment() {
+    let p = make_policy(100, 10);
+    p.admit.increment(1);
+    p.admit.increments(vec![2, 2]);
     assert_eq!(p.admit.estimate(2), 2);
     assert_eq!(p.admit.estimate(1), 1);
-
-    drop(stop_tx);
-    sleep(WAIT).await;
-    assert!(p.push(vec![3, 3, 3]).is_some());
-    assert_eq!(p.admit.estimate(3), 0);
-  }
-
-  #[tokio::test]
-  async fn test_policy_push() {
-    let (p, _stop_tx) = make_policy(100, 10);
-    assert_eq!(p.push(vec![]), Some(vec![]));
-
-    let mut keep_count = 0;
-    for _ in 0..10 {
-      if p.push(vec![1, 2, 3, 4, 5]).is_none() {
-        keep_count += 1;
-      }
-    }
-
-    assert_ne!(0, keep_count);
   }
 
   #[tokio::test]
   async fn test_policy_add() {
-    let (p, _stop_tx) = make_policy(1000, 100);
+    let p = make_policy(1000, 100);
     assert!(matches!(p.add(1, 101), AddOutcome::RejectedByCost));
 
     let mut inner = p.inner.lock();
@@ -277,7 +188,7 @@ mod async_test {
 
   #[tokio::test]
   async fn test_policy_has() {
-    let (p, _stop_tx) = make_policy(100, 10);
+    let p = make_policy(100, 10);
     p.add(1, 1);
     assert!(p.contains(&1));
     assert!(!p.contains(&2));
@@ -285,7 +196,7 @@ mod async_test {
 
   #[tokio::test]
   async fn test_policy_del() {
-    let (p, _stop_tx) = make_policy(100, 10);
+    let p = make_policy(100, 10);
     p.add(1, 1);
     p.remove(&1);
     p.remove(&2);
@@ -295,14 +206,14 @@ mod async_test {
 
   #[tokio::test]
   async fn test_policy_cap() {
-    let (p, _stop_tx) = make_policy(100, 10);
+    let p = make_policy(100, 10);
     p.add(1, 1);
     assert_eq!(p.cap(), 9);
   }
 
   #[tokio::test]
   async fn test_policy_update() {
-    let (p, _stop_tx) = make_policy(100, 10);
+    let p = make_policy(100, 10);
     p.add(1, 1);
     p.update(&1, 2);
     let inner = p.inner.lock();
@@ -311,7 +222,7 @@ mod async_test {
 
   #[tokio::test]
   async fn test_policy_cost() {
-    let (p, _stop_tx) = make_policy(100, 10);
+    let p = make_policy(100, 10);
     p.add(1, 2);
     assert_eq!(p.cost(&1), 2);
     assert_eq!(p.cost(&2), -1);
@@ -319,7 +230,7 @@ mod async_test {
 
   #[tokio::test]
   async fn test_policy_clear() {
-    let (p, _stop_tx) = make_policy(100, 10);
+    let p = make_policy(100, 10);
     p.add(1, 1);
     p.add(2, 2);
     p.add(3, 3);
@@ -329,30 +240,6 @@ mod async_test {
     assert!(!p.contains(&2));
     assert!(!p.contains(&2));
     assert!(!p.contains(&3));
-  }
-
-  #[tokio::test]
-  async fn test_policy_shutdown_on_stop_drop() {
-    let (p, stop_tx) = make_policy(100, 10);
-    p.add(1, 1);
-    drop(stop_tx);
-    sleep(WAIT).await;
-    assert!(p.items_tx.send(vec![1]).await.is_err());
-  }
-
-  #[tokio::test]
-  async fn test_policy_push_after_shutdown() {
-    let (p, stop_tx) = make_policy(100, 10);
-    drop(stop_tx);
-    sleep(WAIT).await;
-    assert!(p.push(vec![1, 2]).is_some());
-  }
-
-  #[tokio::test]
-  async fn test_policy_add_after_shutdown() {
-    let (p, stop_tx) = make_policy(100, 10);
-    drop(stop_tx);
-    p.add(1, 1);
   }
 }
 

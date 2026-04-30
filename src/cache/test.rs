@@ -921,10 +921,9 @@ mod sync_test {
   }
 
   #[test]
-  fn test_sync_set_buffer_items_and_len() {
+  fn test_sync_len() {
     let c: Cache<u64, u64, TransparentKeyBuilder<u64>> = Cache::builder(100, 10)
       .set_key_builder(TransparentKeyBuilder::default())
-      .set_buffer_items(32)
       .set_ignore_internal_cost(true)
       .finalize()
       .unwrap();
@@ -960,24 +959,6 @@ mod sync_test {
     assert!(!c.insert_if_present(42, 0, 1));
     c.wait().unwrap();
     assert!(c.get(&42).is_none());
-  }
-
-  #[test]
-  fn test_sync_ring_overflow_and_fill() {
-    let c: Cache<u64, u64, TransparentKeyBuilder<u64>> = Cache::builder(100, 10)
-      .set_key_builder(TransparentKeyBuilder::default())
-      .set_buffer_items(4)
-      .set_ignore_internal_cost(true)
-      .finalize()
-      .unwrap();
-
-    // Fire enough gets that the ring buffer fills and flushes multiple times,
-    // and enough bursts that some batches may be dropped by the policy (bounded tx).
-    for _ in 0..200 {
-      for k in 0..16u64 {
-        let _ = c.get(&k);
-      }
-    }
   }
 
   #[test]
@@ -3445,10 +3426,9 @@ mod async_test {
   }
 
   #[tokio::test]
-  async fn test_async_set_buffer_items_and_len() {
+  async fn test_async_len() {
     let c: TokioCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCacheBuilder::new(100, 10)
       .set_key_builder(TransparentKeyBuilder::default())
-      .set_buffer_items(32)
       .set_ignore_internal_cost(true)
       .build::<TokioRuntime>()
       .unwrap();
@@ -3483,22 +3463,6 @@ mod async_test {
     assert!(!c.insert_if_present(42, 0, 1).await);
     c.wait().await.unwrap();
     assert!(c.get(&42).await.is_none());
-  }
-
-  #[tokio::test]
-  async fn test_async_ring_overflow_and_fill() {
-    let c: TokioCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCacheBuilder::new(100, 10)
-      .set_key_builder(TransparentKeyBuilder::default())
-      .set_buffer_items(4)
-      .set_ignore_internal_cost(true)
-      .build::<TokioRuntime>()
-      .unwrap();
-
-    for _ in 0..200 {
-      for k in 0..16u64 {
-        let _ = c.get(&k).await;
-      }
-    }
   }
 
   #[tokio::test]
@@ -4240,44 +4204,6 @@ mod async_test {
     drop(c);
     let val = c2.get(&7).await.expect("cache must survive original drop");
     assert_eq!(*val.value(), 42);
-  }
-
-  // Dropping the cache must stop the policy's background LFU worker.
-  // Policy shutdown is Drop-driven: the cache owns `stop_tx`, which the
-  // policy processor watches via `stop_rx`; dropping the cache disconnects
-  // both the cache processor and the policy processor. The observable
-  // signal that the policy worker has exited is that `policy.push` can no
-  // longer enqueue — `items_rx` has been dropped by the exited processor.
-  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-  async fn test_drop_stops_policy_worker() {
-    let c: TokioCache<u64, u64, TransparentKeyBuilder<u64>> = AsyncCacheBuilder::new(100, 10)
-      .set_key_builder(TransparentKeyBuilder::default())
-      .set_ignore_internal_cost(true)
-      .build::<TokioRuntime>()
-      .unwrap();
-
-    assert!(c.insert(1, 1, 1).await);
-    c.wait().await.unwrap();
-
-    // Keep an Arc to the policy alive past the cache drop so we can
-    // observe it. Before drop, the worker is alive and push succeeds.
-    let policy = c.0.policy.clone();
-    assert!(
-      policy.push(vec![1]).is_none(),
-      "policy must accept pushes before drop"
-    );
-
-    drop(c);
-
-    // Wait for the processor to observe the stop_tx disconnect and exit,
-    // dropping items_rx. After that, `push` can no longer enqueue.
-    for _ in 0..50 {
-      if policy.push(vec![1]).is_some() {
-        return;
-      }
-      tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    panic!("policy worker did not exit after cache drop");
   }
 
   // Regression for async processor permit-leak on user-callback panic.

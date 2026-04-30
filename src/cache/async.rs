@@ -6,7 +6,6 @@ use crate::{
   cache::builder::CacheBuilderCore,
   metrics::MetricType,
   policy::{AddOutcome, AsyncLFUPolicy},
-  ring::AsyncRingStripe,
   store::{ShardedMap, UpdateResult},
   ttl::{ExpirationMap, Time},
 };
@@ -198,11 +197,6 @@ where
       self.inner.insert_stripe_high_water,
     );
     let insert_buf_ring = Arc::new(insert_buf_ring);
-    // Two stop channels: AsyncLFUPolicy still runs as an RT task and uses
-    // async-channel; the cache processor now runs on a std::thread and uses
-    // crossbeam_channel. Both senders live in `AsyncCacheInner` so `Drop`
-    // disconnects both on shutdown.
-    let (policy_stop_tx, policy_stop_rx) = crate::axync::stop_channel();
     let (stop_tx, stop_rx) = cb_bounded::<()>(1);
 
     let hasher = self.inner.hasher.unwrap();
@@ -213,8 +207,7 @@ where
       self.inner.update_validator.unwrap(),
       hasher.clone(),
     ));
-    let mut policy =
-      AsyncLFUPolicy::with_hasher::<R>(num_counters, max_cost, hasher, policy_stop_rx)?;
+    let mut policy = AsyncLFUPolicy::with_hasher(num_counters, max_cost, hasher)?;
 
     let coster = Arc::new(self.inner.coster.unwrap());
     let callback = Arc::new(self.inner.callback.unwrap());
@@ -244,17 +237,13 @@ where
     )
     .spawn();
 
-    let buffer_items = self.inner.buffer_items;
-    let get_buf = AsyncRingStripe::new(policy.clone(), buffer_items);
     let inner = AsyncCacheInner {
       store,
       policy,
-      get_buf: Arc::new(get_buf),
       insert_buf_ring,
       callback,
       key_to_hash: Arc::new(self.inner.key_to_hash),
       stop_tx: Some(stop_tx),
-      policy_stop_tx: Some(policy_stop_tx),
       coster,
       metrics,
       clear_generation,
@@ -471,8 +460,6 @@ pub(crate) struct AsyncCacheInner<
 
   pub(crate) insert_buf_ring: Arc<crate::cache::insert_stripe::InsertStripeRing<Item<V>>>,
 
-  pub(crate) get_buf: Arc<AsyncRingStripe<S>>,
-
   /// Held in `Option` so `Drop` can `take()` and drop it, disconnecting the
   /// processor thread's `stop_rx`. We never `send()` on this channel —
   /// disconnection alone wakes the processor's `select!` stop arm via
@@ -480,12 +467,6 @@ pub(crate) struct AsyncCacheInner<
   /// processor thread so the cache returns only after the drain is
   /// complete and no further callbacks can fire.
   pub(crate) stop_tx: Option<Sender<()>>,
-
-  /// Stop sender for the `AsyncLFUPolicy` task. Separate from the cache
-  /// processor's `stop_tx` because the policy still runs as an `RT` task
-  /// and uses the async-channel `axync::Sender`. `Drop` drops this so the
-  /// policy task observes its receiver as disconnected and exits.
-  pub(crate) policy_stop_tx: Option<crate::axync::Sender<()>>,
 
   pub(crate) callback: Arc<CB>,
 
@@ -772,9 +753,6 @@ where
   /// or policy mutation can fire after the last `AsyncCache::drop`
   /// returns.
   ///
-  /// `policy_stop_tx` is dropped too so the `AsyncLFUPolicy` RT task
-  /// observes its receiver disconnected and exits.
-  ///
   /// Panic-safe: `JoinHandle::join` returns `Err` if the processor thread
   /// panicked (e.g. from a user callback), so shutdown cannot hang on a
   /// missed handshake.
@@ -788,7 +766,6 @@ where
   /// path on its own.
   fn drop(&mut self) {
     let _ = self.stop_tx.take();
-    let _ = self.policy_stop_tx.take();
     if let Some(handle) = self.processor.take() {
       if handle.thread().id() == std::thread::current().id() {
         return;
@@ -1023,7 +1000,7 @@ where
   {
     let (index, conflict) = self.0.key_to_hash.build_key(key);
 
-    self.0.get_buf.push(index);
+    self.0.policy.admit.increment(index);
 
     match self.0.store.get(&index, conflict) {
       None => {
@@ -1046,7 +1023,7 @@ where
   {
     let (index, conflict) = self.0.key_to_hash.build_key(key);
 
-    self.0.get_buf.push(index);
+    self.0.policy.admit.increment(index);
 
     match self.0.store.get_mut(&index, conflict) {
       None => {

@@ -31,6 +31,22 @@
   for `CacheCallback`s that drop the last handle from the processor
   itself) so when `Drop` returns the cache is fully shut down.
 
+### Get-path policy plumbing
+
+- **Removed `set_buffer_items` builder method** on both `CacheBuilder` and
+  `AsyncCacheBuilder`. The get-path no longer uses a striped ring buffer
+  to batch hashes — `cache.get(k)` now calls `policy.admit.increment(hash)`
+  directly (lock-free, ~20 atomic ops). The buffer existed solely to
+  amortize the cost of a per-batch policy mutex and channel send, both
+  of which were removed in this release. Migration: drop the
+  `.set_buffer_items(N)` call from the builder chain — there's nothing
+  to tune in the new path.
+- **`Metrics::gets_kept()` and `gets_dropped()` are now always 0.**
+  They tracked policy-channel admission outcomes; with no channel and
+  no backpressure, every get unconditionally registers an increment.
+  The accessors remain for source compatibility but no longer reflect
+  meaningful work.
+
 ### Public guard types
 
 - `ValueRef<V>` and `ValueRefMut<V>` now wrap
@@ -71,20 +87,32 @@ See `docs/superpowers/specs/2026-04-26-striped-insert-buffer-design.md`
 - Sync `Cache::insert` latency reduced ~17.7× on the OLTP cachebench
   trace (cap=2000 from 2.83s → 0.160s) while preserving the hit ratio
   (75.35% measured at cap=2000 in Task 15 acceptance benchmarks).
-- **Lock-free `TinyLFU`**: `CountMinSketch` now uses `Vec<AtomicU8>`
+- **Lock-free `TinyLFU`**: `CountMinSketch` now uses `Arc<[AtomicU8]>`
   with CAS-loop nibble increments and per-byte halving; `Bloom` uses
-  `Vec<AtomicU64>` with `fetch_or`-based set and `store(0)` reset; the
+  `Arc<[AtomicU64]>` with `fetch_or`-based set and `store(0)` reset; the
   `TinyLFU` window counter is `AtomicUsize` and a single-winner
   `AtomicBool` guards `try_reset` so concurrent threshold crossings
-  cannot double-decay the counters. `admit` moved out of
+  cannot double-decay the counters. After halving, `w` is set to
+  `current_w % samples` via a CAS-loop, which preserves carry from
+  racing increments while keeping `w` bounded in `[0, samples)` — no
+  underflow and no cascade resets. `admit` moved out of
   `Mutex<PolicyInner>` into a sibling `Arc<TinyLFU>` field on
-  `LFUPolicy` / `AsyncLFUPolicy`, so the policy worker's `handle_items`
-  applies frequency increments lock-free — no more contention between
-  get-path increments and concurrent `add()` admission decisions.
-  `add()` continues to serialize through the costs mutex but reads
-  `admit` lock-free; `clear()` holds the costs lock across both clears
-  so a concurrent `add()` cannot observe a half-cleared (empty admit +
-  populated costs) state that would bias toward eviction.
+  `LFUPolicy` / `AsyncLFUPolicy`. `add()` continues to serialize
+  through the costs mutex but reads `admit` lock-free; `clear()` holds
+  the costs lock across both clears so a concurrent `add()` cannot
+  observe a half-cleared (empty admit + populated costs) state.
+- **Removed get-path policy channel and worker thread.** Previously
+  every `cache.get(k)` allocated a `Vec<u64>`, wrote to a striped ring
+  buffer (`RingStripe` / `AsyncRingStripe`), and on flush sent a batch
+  through `LFUPolicy::push` over a `crossbeam_channel` to a dedicated
+  policy worker that drained `Vec<u64>` and called `admit.increments`.
+  With the lock-free `TinyLFU` above, the indirection was pure cost.
+  `cache.get(k)` now calls `policy.admit.increment(hash)` synchronously
+  on the get path (~20 atomic ops, sub-microsecond). One fewer thread
+  per cache, no per-get `Vec` allocation, no channel backpressure, no
+  drop-when-full silent admission-signal loss. Sync test count went
+  from 157 → 150; async from 149 → 141 (deleted tests covered the
+  removed API surface, not regressions).
 
 # Version 0.7 (2022/08/30)
 - change function definition to 

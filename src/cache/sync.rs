@@ -4,7 +4,6 @@ use crate::{
   cache::builder::CacheBuilderCore,
   metrics::MetricType,
   policy::{AddOutcome, LFUPolicy},
-  ring::RingStripe,
   store::ShardedMap,
   sync::{Instant, JoinHandle, Receiver, Sender, Signal, WaitGroup, select, spawn, stop_channel},
   ttl::{ExpirationMap, Time},
@@ -211,8 +210,7 @@ where
       hasher.clone(),
     ));
 
-    let buffer_items = self.inner.buffer_items;
-    let mut policy = LFUPolicy::with_hasher(num_counters, max_cost, hasher, stop_rx.clone())?;
+    let mut policy = LFUPolicy::with_hasher(num_counters, max_cost, hasher)?;
 
     let coster = Arc::new(self.inner.coster.unwrap());
     let callback = Arc::new(self.inner.callback.unwrap());
@@ -242,11 +240,9 @@ where
     )
     .spawn();
 
-    let get_buf = RingStripe::new(policy.clone(), buffer_items);
     let inner = CacheInner {
       store,
       policy,
-      get_buf: Arc::new(get_buf),
       insert_buf,
       callback,
       key_to_hash: Arc::new(self.inner.key_to_hash),
@@ -451,8 +447,6 @@ pub(crate) struct CacheInner<
 
   /// policy determines what gets let in to the cache and what gets kicked out.
   pub(crate) policy: Arc<LFUPolicy<S>>,
-
-  pub(crate) get_buf: Arc<RingStripe<S>>,
 
   /// Striped per-thread insert buffer. Producers (`try_insert_in`,
   /// `try_remove`, `wait`, `clear`) push here; the processor's
@@ -1046,7 +1040,7 @@ where
   {
     let (index, conflict) = self.0.key_to_hash.build_key(key);
 
-    self.0.get_buf.push(index);
+    self.0.policy.admit.increment(index);
 
     match self.0.store.get(&index, conflict) {
       None => {
@@ -1069,7 +1063,7 @@ where
   {
     let (index, conflict) = self.0.key_to_hash.build_key(key);
 
-    self.0.get_buf.push(index);
+    self.0.policy.admit.increment(index);
 
     match self.0.store.get_mut(&index, conflict) {
       None => {

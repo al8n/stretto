@@ -18,7 +18,6 @@ mod metrics;
 /// [1]: https://arxiv.org/abs/1512.00727
 #[allow(dead_code)]
 mod policy;
-mod ring;
 mod sketch;
 mod store;
 mod ttl;
@@ -27,8 +26,7 @@ pub(crate) mod utils;
 #[cfg(feature = "async")]
 #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 pub(crate) mod axync {
-  pub(crate) use async_channel::{Receiver, Sender, bounded, unbounded};
-  pub(crate) use futures::{channel::oneshot, select};
+  pub(crate) use futures::channel::oneshot;
 
   /// Signaling half of a one-shot barrier used by `Item::Wait` / `Item::Clear`.
   ///
@@ -47,10 +45,6 @@ pub(crate) mod axync {
     pub(crate) fn done(self) {
       let _ = self.0.send(());
     }
-  }
-
-  pub(crate) fn stop_channel() -> (Sender<()>, Receiver<()>) {
-    bounded(1)
   }
 }
 #[cfg(feature = "async")]

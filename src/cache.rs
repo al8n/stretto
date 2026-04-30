@@ -71,19 +71,6 @@ macro_rules! impl_builder {
         }
       }
 
-      /// Set the insert buffer items for the Cache.
-      ///
-      /// `buffer_items` determines the size of Get buffers.
-      ///
-      /// Unless you have a rare use case, using `64` as the BufferItems value
-      /// results in good performance.
-      #[cfg_attr(not(tarpaulin), inline(always))]
-      pub fn set_buffer_items(self, sz: usize) -> Self {
-        Self {
-          inner: self.inner.set_buffer_items(sz),
-        }
-      }
-
       /// Set whether record the metrics or not.
       ///
       /// Metrics is true when you want real-time logging of a variety of stats.
@@ -667,7 +654,6 @@ mod r#async;
 #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 pub use r#async::{AsyncCache, AsyncCacheBuilder};
 
-pub(crate) const DEFAULT_BUFFER_ITEMS: usize = 64;
 const DEFAULT_CLEANUP_DURATION: Duration = Duration::from_secs(2);
 /// Default interval for the processor's drain-tick + TTL cleanup arm.
 /// Matches the spec's `drain_interval` default (500ms) so worst-case
