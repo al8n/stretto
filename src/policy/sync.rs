@@ -1,6 +1,6 @@
 use crate::{
   CacheError, MetricType, Metrics,
-  policy::PolicyInner,
+  policy::{PolicyInner, TinyLFU},
   sync::{JoinHandle, Receiver, Sender, select, spawn},
 };
 use crossbeam_channel::unbounded;
@@ -9,6 +9,7 @@ use std::{collections::hash_map::RandomState, hash::BuildHasher, sync::Arc};
 
 pub(crate) struct LFUPolicy<S = RandomState> {
   pub(crate) inner: Arc<Mutex<PolicyInner<S>>>,
+  pub(crate) admit: Arc<TinyLFU>,
   pub(crate) items_tx: Sender<Vec<u64>>,
   pub(crate) metrics: Arc<Metrics>,
 }
@@ -28,21 +29,24 @@ impl<S: BuildHasher + Clone + 'static + Send> LFUPolicy<S> {
     hasher: S,
     stop_rx: Receiver<()>,
   ) -> Result<Self, CacheError> {
-    let inner = PolicyInner::with_hasher(ctrs, max_cost, hasher)?;
+    let inner = PolicyInner::with_hasher(max_cost, hasher);
+    let admit = Arc::new(TinyLFU::new(ctrs)?);
 
     // Unbounded matches the async policy (`AsyncLFUPolicy`). The previous
     // `bounded(3)` silently dropped most frequency-increment batches under
     // multi-thread contention — get pushes outpaced the processor and the
     // 3-slot channel filled instantly, starving TinyLFU of access signal
-    // and degrading admission decisions. The processor consumes batches
-    // with a single Mutex+counter increment, so it keeps up with realistic
-    // get rates and the channel does not grow without bound in practice.
+    // and degrading admission decisions. The processor now applies batches
+    // with no policy mutex (TinyLFU is internally lock-free), so it keeps
+    // up with realistic get rates and the channel does not grow without
+    // bound in practice.
     let (items_tx, items_rx) = unbounded();
 
-    PolicyProcessor::new(inner.clone(), items_rx, stop_rx).spawn();
+    PolicyProcessor::new(admit.clone(), items_rx, stop_rx).spawn();
 
     let this = Self {
       inner,
+      admit,
       items_tx,
       metrics: Arc::new(Metrics::new()),
     };
@@ -70,21 +74,17 @@ impl<S: BuildHasher + Clone + 'static + Send> LFUPolicy<S> {
   }
 }
 
-pub(crate) struct PolicyProcessor<S> {
-  inner: Arc<Mutex<PolicyInner<S>>>,
+pub(crate) struct PolicyProcessor {
+  admit: Arc<TinyLFU>,
   items_rx: Receiver<Vec<u64>>,
   stop_rx: Receiver<()>,
 }
 
-impl<S: BuildHasher + Clone + 'static + Send> PolicyProcessor<S> {
+impl PolicyProcessor {
   #[cfg_attr(not(tarpaulin), inline(always))]
-  fn new(
-    inner: Arc<Mutex<PolicyInner<S>>>,
-    items_rx: Receiver<Vec<u64>>,
-    stop_rx: Receiver<()>,
-  ) -> Self {
+  fn new(admit: Arc<TinyLFU>, items_rx: Receiver<Vec<u64>>, stop_rx: Receiver<()>) -> Self {
     Self {
-      inner,
+      admit,
       items_rx,
       stop_rx,
     }
@@ -111,8 +111,7 @@ impl<S: BuildHasher + Clone + 'static + Send> PolicyProcessor<S> {
 
   #[cfg_attr(not(tarpaulin), inline(always))]
   fn handle_items(&self, items: Vec<u64>) {
-    let mut inner = self.inner.lock();
-    inner.admit.increments(items);
+    self.admit.increments(items);
   }
 }
 

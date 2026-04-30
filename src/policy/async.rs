@@ -1,7 +1,7 @@
 use crate::{
   CacheError, MetricType, Metrics,
   axync::{Receiver, Sender, select, unbounded},
-  policy::PolicyInner,
+  policy::{PolicyInner, TinyLFU},
 };
 use agnostic_lite::RuntimeLite;
 use futures::future::FutureExt;
@@ -10,6 +10,7 @@ use std::{collections::hash_map::RandomState, hash::BuildHasher, sync::Arc};
 
 pub(crate) struct AsyncLFUPolicy<S = RandomState> {
   pub(crate) inner: Arc<Mutex<PolicyInner<S>>>,
+  pub(crate) admit: Arc<TinyLFU>,
   pub(crate) items_tx: Sender<Vec<u64>>,
   pub(crate) metrics: Arc<Metrics>,
 }
@@ -33,14 +34,16 @@ impl<S: BuildHasher + Clone + 'static + Send> AsyncLFUPolicy<S> {
     hasher: S,
     stop_rx: Receiver<()>,
   ) -> Result<Self, CacheError> {
-    let inner = PolicyInner::with_hasher(ctrs, max_cost, hasher)?;
+    let inner = PolicyInner::with_hasher(max_cost, hasher);
+    let admit = Arc::new(TinyLFU::new(ctrs)?);
 
     let (items_tx, items_rx) = unbounded();
 
-    PolicyProcessor::new(inner.clone(), items_rx, stop_rx).spawn::<RT>();
+    PolicyProcessor::new(admit.clone(), items_rx, stop_rx).spawn::<RT>();
 
     let this = Self {
       inner,
+      admit,
       items_tx,
       metrics: Arc::new(Metrics::new()),
     };
@@ -67,21 +70,17 @@ impl<S: BuildHasher + Clone + 'static + Send> AsyncLFUPolicy<S> {
   }
 }
 
-pub(crate) struct PolicyProcessor<S> {
-  inner: Arc<Mutex<PolicyInner<S>>>,
+pub(crate) struct PolicyProcessor {
+  admit: Arc<TinyLFU>,
   items_rx: Receiver<Vec<u64>>,
   stop_rx: Receiver<()>,
 }
 
-impl<S: BuildHasher + Clone + 'static + Send> PolicyProcessor<S> {
+impl PolicyProcessor {
   #[cfg_attr(not(tarpaulin), inline(always))]
-  fn new(
-    inner: Arc<Mutex<PolicyInner<S>>>,
-    items_rx: Receiver<Vec<u64>>,
-    stop_rx: Receiver<()>,
-  ) -> Self {
+  fn new(admit: Arc<TinyLFU>, items_rx: Receiver<Vec<u64>>, stop_rx: Receiver<()>) -> Self {
     Self {
-      inner,
+      admit,
       items_rx,
       stop_rx,
     }
@@ -108,8 +107,7 @@ impl<S: BuildHasher + Clone + 'static + Send> PolicyProcessor<S> {
 
   #[cfg_attr(not(tarpaulin), inline(always))]
   fn handle_items(&self, items: Vec<u64>) {
-    let mut inner = self.inner.lock();
-    inner.admit.increments(items);
+    self.admit.increments(items);
   }
 }
 

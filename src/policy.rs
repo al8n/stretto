@@ -14,7 +14,7 @@ use std::{
   hash::BuildHasher,
   sync::{
     Arc,
-    atomic::{AtomicI64, Ordering},
+    atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering},
   },
 };
 
@@ -59,7 +59,7 @@ macro_rules! impl_policy {
           };
         }
 
-        let inc_hits = inner.admit.estimate(key);
+        let inc_hits = self.admit.estimate(key);
         // TODO: perhaps we should use a min heap here. Right now our time
         // complexity is N for finding the min. Min heap should bring it down to
         // O(lg N). We try to use std::collections::BinaryHeap, but it is very slower.
@@ -73,7 +73,7 @@ macro_rules! impl_policy {
           let (mut min_key, mut min_hits, mut min_id, mut min_cost) = (0u64, i64::MAX, 0, 0i64);
 
           sample.iter().enumerate().for_each(|(idx, pair)| {
-            let hits = inner.admit.estimate(pair.key);
+            let hits = self.admit.estimate(pair.key);
             if hits < min_hits {
               min_key = pair.key;
               min_hits = hits;
@@ -150,8 +150,12 @@ macro_rules! impl_policy {
 
       #[cfg_attr(not(tarpaulin), inline(always))]
       pub fn clear(&self) {
+        // Hold the costs lock across both clears so a concurrent `add()`
+        // (which also locks costs) cannot observe a half-cleared state —
+        // i.e. cleared admit + populated costs would make admission decisions
+        // against zero estimates with full budget, biasing toward eviction.
         let mut inner = self.inner.lock();
-        inner.admit.clear();
+        self.admit.clear();
         inner.costs.clear();
       }
 
@@ -185,7 +189,6 @@ mod r#async;
 pub(crate) use r#async::AsyncLFUPolicy;
 
 pub(crate) struct PolicyInner<S = RandomState> {
-  admit: TinyLFU,
   costs: SampledLFU<S>,
 }
 
@@ -242,12 +245,11 @@ impl<S: BuildHasher + Clone + 'static> PolicyInner<S> {
   }
 
   #[cfg_attr(not(tarpaulin), inline(always))]
-  fn with_hasher(ctrs: usize, max_cost: i64, hasher: S) -> Result<Arc<Mutex<Self>>, CacheError> {
+  fn with_hasher(max_cost: i64, hasher: S) -> Arc<Mutex<Self>> {
     let this = Self {
-      admit: TinyLFU::new(ctrs)?,
       costs: SampledLFU::with_hasher(max_cost, hasher),
     };
-    Ok(Arc::new(Mutex::new(this)))
+    Arc::new(Mutex::new(this))
   }
 }
 
@@ -419,11 +421,21 @@ impl<S: BuildHasher + Clone + 'static> SampledLFU<S> {
 
 /// TinyLFU is an admission helper that keeps track of access frequency using
 /// tiny (4-bit) counters in the form of a count-min sketch.
+///
+/// All mutating methods take `&self` and use atomic ops internally
+/// (`CountMinSketch` is CAS-based, `Bloom` is `fetch_or`-based, `w` is
+/// `AtomicUsize`). Concurrent callers do not need an external lock.
 pub(crate) struct TinyLFU {
   ctr: CountMinSketch,
   doorkeeper: Bloom,
   samples: usize,
-  w: usize,
+  w: AtomicUsize,
+  /// Single-winner guard for `try_reset`. The thread that flips this from
+  /// `false` to `true` runs the halving; concurrent callers that find it set
+  /// bail out and let their increment leak past `samples` briefly. Without
+  /// this guard, multiple threads crossing the threshold would each run the
+  /// halving and double-decay the counters.
+  resetting: AtomicBool,
 }
 
 impl TinyLFU {
@@ -434,7 +446,8 @@ impl TinyLFU {
       ctr: CountMinSketch::new(num_ctrs as u64)?,
       doorkeeper: Bloom::new(num_ctrs, 0.01),
       samples: num_ctrs,
-      w: 0,
+      w: AtomicUsize::new(0),
+      resetting: AtomicBool::new(false),
     })
   }
 
@@ -461,7 +474,7 @@ impl TinyLFU {
   ///
   /// [`increment`]: struct.TinyLFU.method.increment.html
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn increments(&mut self, khs: Vec<u64>) {
+  pub fn increments(&self, khs: Vec<u64>) {
     khs.iter().for_each(|k| self.increment(*k))
   }
 
@@ -469,7 +482,7 @@ impl TinyLFU {
   ///
   /// [TinyLFU: A Highly Efficient Cache Admission Policy]: https://arxiv.org/pdf/1512.00727.pdf
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn increment(&mut self, kh: u64) {
+  pub fn increment(&self, kh: u64) {
     // Flip doorkeeper bit if not already done.
     if !self.doorkeeper.contains_or_add(kh) {
       // Increment count-min counter if doorkeeper bit is already set.
@@ -483,23 +496,36 @@ impl TinyLFU {
   ///
   /// [TinyLFU: A Highly Efficient Cache Admission Policy]: https://arxiv.org/pdf/1512.00727.pdf
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn try_reset(&mut self) {
-    self.w += 1;
-    if self.w >= self.samples {
-      self.reset();
+  pub fn try_reset(&self) {
+    if self.w.fetch_add(1, Ordering::Relaxed) + 1 < self.samples {
+      return;
     }
+    self.reset();
   }
 
   #[cfg_attr(not(tarpaulin), inline(always))]
-  fn reset(&mut self) {
-    // zero out size
-    self.w = 0;
+  fn reset(&self) {
+    // Only one thread runs the halving per crossing. Other threads that race
+    // here find `resetting == true` and bail; their bumped `w` will drive a
+    // subsequent reset call once we release the guard.
+    if self
+      .resetting
+      .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+      .is_err()
+    {
+      return;
+    }
 
     // zero bloom filter bits
     self.doorkeeper.reset();
 
     // halves count-min counters
     self.ctr.reset();
+
+    // zero out size
+    self.w.store(0, Ordering::Relaxed);
+
+    self.resetting.store(false, Ordering::Release);
   }
 
   /// `clear` is an extension for the original TinyLFU.
@@ -509,8 +535,8 @@ impl TinyLFU {
   ///
   /// [`reset`]: struct.TinyLFU.method.reset.html
   #[cfg_attr(not(tarpaulin), inline(always))]
-  pub fn clear(&mut self) {
-    self.w = 0;
+  pub fn clear(&self) {
+    self.w.store(0, Ordering::Relaxed);
     self.doorkeeper.clear();
     self.ctr.clear();
   }

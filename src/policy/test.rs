@@ -40,18 +40,15 @@ mod sync_test {
     let (p, stop_tx) = make_policy(100, 10);
     p.items_tx.send(vec![1, 2, 2]).unwrap();
     sleep(WAIT);
-    let inner = p.inner.lock();
-    assert_eq!(inner.admit.estimate(2), 2);
-    assert_eq!(inner.admit.estimate(1), 1);
-    drop(inner);
+    assert_eq!(p.admit.estimate(2), 2);
+    assert_eq!(p.admit.estimate(1), 1);
 
     drop(stop_tx);
     sleep(WAIT);
     // After the processor exits, items_rx is dropped and push's try_send
     // returns Disconnected, surfaced as Some(keys).
     assert!(p.push(vec![3, 3, 3]).is_some());
-    let inner = p.inner.lock();
-    assert_eq!(inner.admit.estimate(3), 0);
+    assert_eq!(p.admit.estimate(3), 0);
   }
 
   #[test]
@@ -77,10 +74,10 @@ mod sync_test {
 
     let mut inner = p.inner.lock();
     inner.costs.increment(1, 1);
-    inner.admit.increment(1);
-    inner.admit.increment(2);
-    inner.admit.increment(3);
     drop(inner);
+    p.admit.increment(1);
+    p.admit.increment(2);
+    p.admit.increment(3);
 
     assert!(matches!(p.add(1, 1), AddOutcome::UpdatedExisting));
 
@@ -218,23 +215,19 @@ mod async_test {
   }
 
   #[tokio::test]
-  #[allow(clippy::await_holding_lock)]
   async fn test_policy_process_items() {
     let (p, stop_tx) = make_policy(100, 10);
 
     assert!(p.push(vec![1, 2, 2]).is_none());
     sleep(WAIT).await;
 
-    let inner = p.inner.lock();
-    assert_eq!(inner.admit.estimate(2), 2);
-    assert_eq!(inner.admit.estimate(1), 1);
-    drop(inner);
+    assert_eq!(p.admit.estimate(2), 2);
+    assert_eq!(p.admit.estimate(1), 1);
 
     drop(stop_tx);
     sleep(WAIT).await;
     assert!(p.push(vec![3, 3, 3]).is_some());
-    let inner = p.inner.lock();
-    assert_eq!(inner.admit.estimate(3), 0);
+    assert_eq!(p.admit.estimate(3), 0);
   }
 
   #[tokio::test]
@@ -259,10 +252,10 @@ mod async_test {
 
     let mut inner = p.inner.lock();
     inner.costs.increment(1, 1);
-    inner.admit.increment(1);
-    inner.admit.increment(2);
-    inner.admit.increment(3);
     drop(inner);
+    p.admit.increment(1);
+    p.admit.increment(2);
+    p.admit.increment(3);
 
     assert!(matches!(p.add(1, 1), AddOutcome::UpdatedExisting));
 
@@ -463,13 +456,17 @@ fn test_sampled_lfu_fill_sample_is_random() {
 
 #[test]
 fn test_tinylfu_increment() {
-  let mut l = TinyLFU::new(4).unwrap();
+  let l = TinyLFU::new(4).unwrap();
   l.increment(1);
   l.increment(1);
   l.increment(1);
   assert!(l.doorkeeper.contains(1));
   assert_eq!(l.ctr.estimate(1), 2);
 
+  // The 4th increment trips `try_reset` (samples == 4), which halves
+  // the count-min counters and clears the doorkeeper. After reset the
+  // increment itself runs first, but the reset wipes both — so the
+  // bit/counter are zero post-reset.
   l.increment(1);
   assert!(!l.doorkeeper.contains(1));
   assert_eq!(l.ctr.estimate(1), 1);
@@ -477,33 +474,36 @@ fn test_tinylfu_increment() {
 
 #[test]
 fn test_tinylfu_estimate() {
-  let mut l = TinyLFU::new(8).unwrap();
+  use std::sync::atomic::Ordering;
+  let l = TinyLFU::new(8).unwrap();
   l.increment(1);
   l.increment(1);
   l.increment(1);
 
   assert_eq!(l.estimate(1), 3);
   assert_eq!(l.estimate(2), 0);
-  assert_eq!(l.w, 3);
+  assert_eq!(l.w.load(Ordering::Relaxed), 3);
 }
 
 #[test]
 fn test_tinylfu_increments() {
-  let mut l = TinyLFU::new(16).unwrap();
+  use std::sync::atomic::Ordering;
+  let l = TinyLFU::new(16).unwrap();
 
   assert_eq!(l.samples, 16);
   l.increments([1, 2, 2, 3, 3, 3].to_vec());
   assert_eq!(l.estimate(1), 1);
   assert_eq!(l.estimate(2), 2);
   assert_eq!(l.estimate(3), 3);
-  assert_eq!(6, l.w);
+  assert_eq!(6, l.w.load(Ordering::Relaxed));
 }
 
 #[test]
 fn test_tinylfu_clear() {
-  let mut l = TinyLFU::new(16).unwrap();
+  use std::sync::atomic::Ordering;
+  let l = TinyLFU::new(16).unwrap();
   l.increments([1, 3, 3, 3].to_vec());
   l.clear();
-  assert_eq!(0, l.w);
+  assert_eq!(0, l.w.load(Ordering::Relaxed));
   assert_eq!(0, l.estimate(3));
 }
