@@ -7,7 +7,10 @@ use crate::error::CacheError;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 use std::{
   fmt::{Debug, Formatter},
-  sync::atomic::{AtomicU8, Ordering},
+  sync::{
+    Arc,
+    atomic::{AtomicU8, Ordering},
+  },
   time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -21,16 +24,23 @@ const DEPTH: usize = 4;
 /// a real conflict on a single nibble is rare even at high QPS because
 /// the 64-cell rows are large compared to the working set, and the four
 /// hash seeds spread writes across rows.
-pub(crate) struct CountMinRow(Vec<AtomicU8>);
+///
+/// Backed by `Arc<[AtomicU8]>` so `Clone` bumps a refcount (cells are
+/// shared) instead of deep-copying. The slice is allocated once at
+/// construction and never resized; mutation goes through the atomic
+/// cells via interior mutability.
+#[derive(Clone)]
+pub(crate) struct CountMinRow(Arc<[AtomicU8]>);
 
 impl CountMinRow {
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub(crate) fn new(width: u64) -> Self {
-    let mut v = Vec::with_capacity(width as usize);
-    for _ in 0..width as usize {
+    let width = width as usize;
+    let mut v = Vec::with_capacity(width);
+    for _ in 0..width {
       v.push(AtomicU8::new(0));
     }
-    Self(v)
+    Self(Arc::from(v))
   }
 
   #[cfg_attr(not(tarpaulin), inline(always))]
@@ -75,7 +85,7 @@ impl CountMinRow {
   /// being silently overwritten.
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub(crate) fn reset(&self) {
-    for cell in &self.0 {
+    for cell in self.0.iter() {
       let mut cur = cell.load(Ordering::Relaxed);
       loop {
         let new = (cur >> 1) & 0x77;
@@ -89,7 +99,7 @@ impl CountMinRow {
 
   #[cfg_attr(not(tarpaulin), inline(always))]
   pub(crate) fn clear(&self) {
-    for cell in &self.0 {
+    for cell in self.0.iter() {
       cell.store(0, Ordering::Relaxed);
     }
   }

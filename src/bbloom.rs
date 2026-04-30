@@ -4,6 +4,7 @@
 //!
 //! I claim no additional copyright over the original implementation.
 use core::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 const LN_2: f64 = std::f64::consts::LN_2;
 
@@ -44,10 +45,15 @@ fn calc_size_by_wrong_positives(num_entries: usize, wrongs: f64) -> EntriesLocs 
   }
 }
 
-/// Bloom filter
-#[repr(C)]
+/// Bloom filter.
+///
+/// Backed by `Arc<[AtomicU64]>` so `Clone` bumps a refcount (bits are
+/// shared) instead of deep-copying. The slice is allocated once at
+/// construction and never resized; mutation goes through the atomic
+/// cells via interior mutability.
+#[derive(Clone)]
 pub(crate) struct Bloom {
-  bitset: Vec<AtomicU64>,
+  bitset: Arc<[AtomicU64]>,
   size_exp: u64,
   size: u64,
   set_locs: u64,
@@ -116,7 +122,7 @@ impl Bloom {
     bitset.resize_with(words, || AtomicU64::new(0));
 
     Self {
-      bitset,
+      bitset: Arc::from(bitset),
       size: size.size - 1,
       size_exp: size.exp,
       set_locs: entries_locs.locs,
@@ -126,7 +132,7 @@ impl Bloom {
 
   /// `reset` resets the `Bloom` filter
   pub fn reset(&self) {
-    for word in &self.bitset {
+    for word in self.bitset.iter() {
       word.store(0, Ordering::Relaxed);
     }
   }
@@ -140,7 +146,7 @@ impl Bloom {
 
   /// `clear` clear the `Bloom` filter
   pub fn clear(&self) {
-    for word in &self.bitset {
+    for word in self.bitset.iter() {
       word.store(0, Ordering::Relaxed);
     }
   }
