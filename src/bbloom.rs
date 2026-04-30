@@ -3,6 +3,8 @@
 //! This file is a mechanical translation of the reference Golang code, available at <https://github.com/dgraph-io/ristretto/blob/master/z/bbloom.go>
 //!
 //! I claim no additional copyright over the original implementation.
+use core::sync::atomic::{AtomicU64, Ordering};
+
 const LN_2: f64 = std::f64::consts::LN_2;
 
 struct Size {
@@ -45,7 +47,7 @@ fn calc_size_by_wrong_positives(num_entries: usize, wrongs: f64) -> EntriesLocs 
 /// Bloom filter
 #[repr(C)]
 pub(crate) struct Bloom {
-  bitset: Vec<u64>,
+  bitset: Vec<AtomicU64>,
   size_exp: u64,
   size: u64,
   set_locs: u64,
@@ -109,8 +111,12 @@ impl Bloom {
 
     let size = get_size(entries_locs.entries);
 
+    let words = (size.size >> 6) as usize;
+    let mut bitset = Vec::with_capacity(words);
+    bitset.resize_with(words, || AtomicU64::new(0));
+
     Self {
-      bitset: vec![0; (size.size >> 6) as usize],
+      bitset,
       size: size.size - 1,
       size_exp: size.exp,
       set_locs: entries_locs.locs,
@@ -119,8 +125,10 @@ impl Bloom {
   }
 
   /// `reset` resets the `Bloom` filter
-  pub fn reset(&mut self) {
-    self.bitset.fill(0);
+  pub fn reset(&self) {
+    for word in &self.bitset {
+      word.store(0, Ordering::Relaxed);
+    }
   }
 
   /// Returns the exp of the size
@@ -131,26 +139,28 @@ impl Bloom {
   }
 
   /// `clear` clear the `Bloom` filter
-  pub fn clear(&mut self) {
-    self.bitset.fill(0);
+  pub fn clear(&self) {
+    for word in &self.bitset {
+      word.store(0, Ordering::Relaxed);
+    }
   }
 
   /// `set` sets the bit[idx] of bitset
-  pub fn set(&mut self, idx: usize) {
+  pub fn set(&self, idx: usize) {
     let word = idx >> 6;
     let mask = 1u64 << (idx & 63);
-    self.bitset[word] |= mask;
+    self.bitset[word].fetch_or(mask, Ordering::Relaxed);
   }
 
   /// `is_set` checks if bit[idx] of bitset is set, returns true/false.
   pub fn is_set(&self, idx: usize) -> bool {
     let word = idx >> 6;
     let mask = 1u64 << (idx & 63);
-    self.bitset[word] & mask != 0
+    self.bitset[word].load(Ordering::Relaxed) & mask != 0
   }
 
   /// `add` adds hash of a key to the bloom filter
-  pub fn add(&mut self, hash: u64) {
+  pub fn add(&self, hash: u64) {
     let h = hash >> self.shift;
     let l = (hash << self.shift) >> self.shift;
     (0..self.set_locs).for_each(|i| {
@@ -174,7 +184,13 @@ impl Bloom {
   /// `contains_or_add` only Adds hash, if it's not present in the bloomfilter.
   /// Returns true if hash was added.
   /// Returns false if hash was already registered in the bloomfilter.
-  pub fn contains_or_add(&mut self, hash: u64) -> bool {
+  ///
+  /// The check-then-add is intentionally non-atomic — concurrent calls for the
+  /// same hash may both observe `contains == false` and both `add`. This is
+  /// harmless because `add` is idempotent (`fetch_or` of the same mask) and
+  /// the doorkeeper is a probabilistic structure where the worst case is a
+  /// duplicate `true` return; TinyLFU treats both observations identically.
+  pub fn contains_or_add(&self, hash: u64) -> bool {
     if self.contains(hash) {
       false
     } else {
@@ -226,7 +242,7 @@ mod test {
 
   #[test]
   fn test_number_of_wrongs() {
-    let mut bf = Bloom::new(N * 10, 7f64);
+    let bf = Bloom::new(N * 10, 7f64);
 
     let mut cnt = 0;
     get_word_list().into_iter().for_each(|words| {
@@ -300,5 +316,110 @@ mod test {
     // ratio >= 1.0 is interpreted as a literal locs count. A huge finite
     // value would make add/contains loop billions of times per call.
     let _ = Bloom::new(10, 1e15);
+  }
+
+  #[test]
+  fn test_bloom_concurrent_add_distinct_keys() {
+    // 16 threads, each adds 256 distinct hashes. After joining, every hash
+    // must be observable via contains() — no lost updates from racing
+    // fetch_or on the same word.
+    use std::{sync::Arc, thread};
+
+    let bf = Arc::new(Bloom::new(8192, 0.01));
+    let mut handles = Vec::with_capacity(16);
+    for t in 0..16u64 {
+      let bf = Arc::clone(&bf);
+      handles.push(thread::spawn(move || {
+        let base = t * 1_000_000;
+        for i in 0..256u64 {
+          bf.add(base + i);
+        }
+      }));
+    }
+    for h in handles {
+      h.join().unwrap();
+    }
+
+    for t in 0..16u64 {
+      let base = t * 1_000_000;
+      for i in 0..256u64 {
+        assert!(
+          bf.contains(base + i),
+          "hash {} (thread {}) not present after concurrent add",
+          base + i,
+          t
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn test_bloom_concurrent_add_same_key() {
+    // Many threads adding the same hash must all observe it. fetch_or is
+    // idempotent so this is the easy case — guards against any future
+    // refactor that introduces a non-idempotent set primitive.
+    use std::{sync::Arc, thread};
+
+    let bf = Arc::new(Bloom::new(1024, 0.01));
+    let mut handles = Vec::with_capacity(8);
+    for _ in 0..8 {
+      let bf = Arc::clone(&bf);
+      handles.push(thread::spawn(move || {
+        for _ in 0..1000 {
+          bf.add(0xdead_beef);
+        }
+      }));
+    }
+    for h in handles {
+      h.join().unwrap();
+    }
+    assert!(bf.contains(0xdead_beef));
+  }
+
+  #[test]
+  fn test_bloom_concurrent_add_and_reset() {
+    // One thread adds, another resets. After all threads join we don't
+    // assert specific contents (reset/add ordering is genuinely racy), only
+    // that no panic / UB occurred and contains is still callable.
+    use std::{
+      sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+      },
+      thread,
+    };
+
+    let bf = Arc::new(Bloom::new(2048, 0.01));
+    let stop = Arc::new(AtomicBool::new(false));
+
+    let adder = {
+      let bf = Arc::clone(&bf);
+      let stop = Arc::clone(&stop);
+      thread::spawn(move || {
+        let mut h = 1u64;
+        while !stop.load(Ordering::Relaxed) {
+          bf.add(h);
+          h = h.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
+        }
+      })
+    };
+    let resetter = {
+      let bf = Arc::clone(&bf);
+      let stop = Arc::clone(&stop);
+      thread::spawn(move || {
+        for _ in 0..1000 {
+          if stop.load(Ordering::Relaxed) {
+            break;
+          }
+          bf.reset();
+        }
+      })
+    };
+
+    resetter.join().unwrap();
+    stop.store(true, Ordering::Relaxed);
+    adder.join().unwrap();
+
+    let _ = bf.contains(0);
   }
 }
