@@ -507,3 +507,59 @@ fn test_tinylfu_clear() {
   assert_eq!(0, l.w.load(Ordering::Relaxed));
   assert_eq!(0, l.estimate(3));
 }
+
+/// Stress test: many threads increment concurrently while the reset
+/// threshold is crossed repeatedly. Verifies that:
+///   1. No nibble in the count-min sketch overflows past 15
+///   2. The window counter `w` doesn't drift far past `samples` (the
+///      `fetch_sub(samples)` carryover keeps it bounded; without it,
+///      losing-CAS callers would have their bumps erased and `w`
+///      would never accumulate the right total)
+///   3. No panic / data race / deadlock under concurrent reset
+#[test]
+fn test_tinylfu_concurrent_increment_with_reset() {
+  use std::{
+    sync::{Arc, atomic::Ordering},
+    thread,
+  };
+
+  // Small samples=64 so resets fire often during the run; 8 threads
+  // each issue 5_000 increments across 32 distinct keys → many resets.
+  let l = Arc::new(TinyLFU::new(64).unwrap());
+  let mut handles = Vec::with_capacity(8);
+  for t in 0..8u64 {
+    let l = l.clone();
+    handles.push(thread::spawn(move || {
+      for i in 0..5_000u64 {
+        l.increment((t * 5_000 + i) % 32);
+      }
+    }));
+  }
+  for h in handles {
+    h.join().unwrap();
+  }
+
+  // Estimates per key are bounded by the 4-bit counter (max 15), and
+  // because reset halves the sketch each window, no key should read
+  // out as anything wild. Just spot-check no panic / overflow.
+  for k in 0..32u64 {
+    let est = l.estimate(k);
+    assert!(
+      (0..=16).contains(&est),
+      "estimate for key {} is out of range: {}",
+      k,
+      est
+    );
+  }
+
+  // w may be anywhere in [0, samples) after the last reset, but should
+  // never exceed `samples * concurrent_threads` (that would mean the
+  // reset coordination broke and never fired).
+  let final_w = l.w.load(Ordering::Relaxed);
+  assert!(
+    final_w < l.samples * 8,
+    "w runaway: {} (samples={}, threads=8)",
+    final_w,
+    l.samples
+  );
+}

@@ -506,8 +506,8 @@ impl TinyLFU {
   #[cfg_attr(not(tarpaulin), inline(always))]
   fn reset(&self) {
     // Only one thread runs the halving per crossing. Other threads that race
-    // here find `resetting == true` and bail; their bumped `w` will drive a
-    // subsequent reset call once we release the guard.
+    // here find `resetting == true` and bail; their bumped `w` carries over
+    // into the next window via the modulo-CAS below.
     if self
       .resetting
       .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -522,8 +522,24 @@ impl TinyLFU {
     // halves count-min counters
     self.ctr.reset();
 
-    // zero out size
-    self.w.store(0, Ordering::Relaxed);
+    // Set `w` to its current value mod `samples` so increments that raced
+    // with this halving (whose `fetch_add` ran while we held the guard)
+    // carry over into the next window — without letting `w` cascade past
+    // `samples` and trigger immediate re-resets. CAS-loops to compose with
+    // concurrent `fetch_add`s. Bounded by `samples`, so `w` never
+    // underflows and can never accumulate enough to fire two halvings
+    // back-to-back from a single window.
+    let mut cur = self.w.load(Ordering::Relaxed);
+    loop {
+      let carry = cur % self.samples;
+      match self
+        .w
+        .compare_exchange_weak(cur, carry, Ordering::Relaxed, Ordering::Relaxed)
+      {
+        Ok(_) => break,
+        Err(actual) => cur = actual,
+      }
+    }
 
     self.resetting.store(false, Ordering::Release);
   }
