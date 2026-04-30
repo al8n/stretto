@@ -3,7 +3,7 @@ use crate::{
   policy::PolicyInner,
   sync::{JoinHandle, Receiver, Sender, select, spawn},
 };
-use crossbeam_channel::bounded;
+use crossbeam_channel::unbounded;
 use parking_lot::Mutex;
 use std::{collections::hash_map::RandomState, hash::BuildHasher, sync::Arc};
 
@@ -30,7 +30,14 @@ impl<S: BuildHasher + Clone + 'static + Send> LFUPolicy<S> {
   ) -> Result<Self, CacheError> {
     let inner = PolicyInner::with_hasher(ctrs, max_cost, hasher)?;
 
-    let (items_tx, items_rx) = bounded(3);
+    // Unbounded matches the async policy (`AsyncLFUPolicy`). The previous
+    // `bounded(3)` silently dropped most frequency-increment batches under
+    // multi-thread contention — get pushes outpaced the processor and the
+    // 3-slot channel filled instantly, starving TinyLFU of access signal
+    // and degrading admission decisions. The processor consumes batches
+    // with a single Mutex+counter increment, so it keeps up with realistic
+    // get rates and the channel does not grow without bound in practice.
+    let (items_tx, items_rx) = unbounded();
 
     PolicyProcessor::new(inner.clone(), items_rx, stop_rx).spawn();
 

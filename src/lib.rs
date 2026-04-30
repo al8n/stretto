@@ -19,8 +19,6 @@ mod metrics;
 #[allow(dead_code)]
 mod policy;
 mod ring;
-#[cfg(any(feature = "sync", feature = "async"))]
-mod semaphore;
 mod sketch;
 mod store;
 mod ttl;
@@ -29,7 +27,7 @@ pub(crate) mod utils;
 #[cfg(feature = "async")]
 #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
 pub(crate) mod axync {
-  pub(crate) use async_channel::{Receiver, RecvError, Sender, TrySendError, bounded, unbounded};
+  pub(crate) use async_channel::{Receiver, Sender, bounded, unbounded};
   pub(crate) use futures::{channel::oneshot, select};
 
   /// Signaling half of a one-shot barrier used by `Item::Wait` / `Item::Clear`.
@@ -66,6 +64,38 @@ pub use agnostic_lite::tokio::TokioRuntime;
 #[cfg(feature = "smol")]
 #[cfg_attr(docsrs, doc(cfg(feature = "smol")))]
 pub use agnostic_lite::smol::SmolRuntime;
+
+/// Convenience alias for an [`AsyncCache`] driven by tokio's runtime.
+///
+/// Equivalent to `AsyncCache<K, V, TokioRuntime, ...>`. Available when
+/// the `async` and `tokio` features are both enabled.
+#[cfg(all(feature = "async", feature = "tokio"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "async", feature = "tokio"))))]
+pub type TokioCache<
+  K,
+  V,
+  KH = DefaultKeyBuilder<K>,
+  C = DefaultCoster<V>,
+  U = DefaultUpdateValidator<V>,
+  CB = DefaultCacheCallback<V>,
+  S = std::collections::hash_map::RandomState,
+> = AsyncCache<K, V, agnostic_lite::tokio::TokioRuntime, KH, C, U, CB, S>;
+
+/// Convenience alias for an [`AsyncCache`] driven by smol's runtime.
+///
+/// Equivalent to `AsyncCache<K, V, SmolRuntime, ...>`. Available when
+/// the `async` and `smol` features are both enabled.
+#[cfg(all(feature = "async", feature = "smol"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "async", feature = "smol"))))]
+pub type SmolCache<
+  K,
+  V,
+  KH = DefaultKeyBuilder<K>,
+  C = DefaultCoster<V>,
+  U = DefaultUpdateValidator<V>,
+  CB = DefaultCacheCallback<V>,
+  S = std::collections::hash_map::RandomState,
+> = AsyncCache<K, V, agnostic_lite::smol::SmolRuntime, KH, C, U, CB, S>;
 
 #[cfg(feature = "sync")]
 #[cfg_attr(docsrs, doc(cfg(feature = "sync")))]

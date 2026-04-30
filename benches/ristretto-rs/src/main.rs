@@ -55,14 +55,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use tokio::fs;
     use tokio::time::Instant;
-    use stretto::AsyncCache;
+    use agnostic_lite::tokio::TokioRuntime;
+    use stretto::AsyncCacheBuilder;
 
     let content = fs::read(Path::new("mock.json")).await?;
     let dataset: Dataset = serde_json::from_slice(content.as_slice())?;
 
-    let c = AsyncCache::builder(12960, 1e6 as i64)
+    let c = AsyncCacheBuilder::new(12960, 1e6 as i64)
         .set_metrics(true)
-        .finalize(tokio::spawn)
+        .build::<TokioRuntime>()
         .unwrap();
 
     let time = Instant::now();

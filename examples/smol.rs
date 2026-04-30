@@ -1,10 +1,12 @@
 use agnostic_lite::RuntimeLite;
 use std::time::Duration;
-use stretto::{AsyncCache, SmolRuntime};
+use stretto::{AsyncCacheBuilder, SmolCache, SmolRuntime};
 
 async fn run() {
   // cache is intended to take ownership of key and value
-  let c: AsyncCache<String, String> = AsyncCache::new::<SmolRuntime>(12960, 1e6 as i64).unwrap();
+  let c: SmolCache<String, String> = AsyncCacheBuilder::new(12960, 1e6 as i64)
+    .build::<SmolRuntime>()
+    .unwrap();
 
   // set a value with a cost of 1
   c.insert("key1".to_string(), "value1".to_string(), 1).await;

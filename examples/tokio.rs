@@ -1,11 +1,13 @@
 use agnostic_lite::tokio::TokioRuntime;
 use std::time::Duration;
-use stretto::AsyncCache;
+use stretto::{AsyncCacheBuilder, TokioCache};
 
 #[tokio::main]
 async fn main() {
   // cache is intended to take ownership of key and value
-  let c: AsyncCache<String, String> = AsyncCache::new::<TokioRuntime>(12960, 1e6 as i64).unwrap();
+  let c: TokioCache<String, String> = AsyncCacheBuilder::new(12960, 1e6 as i64)
+    .build::<TokioRuntime>()
+    .unwrap();
 
   // set a value with a cost of 1
   c.insert("key1".to_string(), "value1".to_string(), 1).await;

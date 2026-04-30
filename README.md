@@ -65,46 +65,154 @@ Stretto is a pure Rust implementation of <https://github.com/dgraph-io/ristretto
 
 ## Benchmarks
 
-Hit ratios produced by [mokabench](https://github.com/moka-rs/mokabench) against the [ARC trace](https://github.com/moka-rs/cache-trace) suite, 16 concurrent clients. Compared against [QuickCache](https://crates.io/crates/quick_cache) 0.6, [TinyUFO](https://crates.io/crates/TinyUFO) 0.8 and [Moka](https://crates.io/crates/moka) 0.12. Higher is better; **bold** marks the leader for each row.
+Hit ratios produced by [cachebench](https://github.com/al8n/cachebench) against the [ARC trace](https://github.com/moka-rs/cache-trace) suite, 16 concurrent clients. Compared against [QuickCache](https://crates.io/crates/quick_cache) 0.6, [TinyUFO](https://crates.io/crates/TinyUFO) 0.8 and [Moka](https://crates.io/crates/moka) 0.12. Higher is better; **bold** marks the leader for each row. The "Stretto" column reports the sync `Cache`; `AsyncCache` tracks sync closely on the same traces (see [Sync vs async](#sync-vs-async-cache)).
 
-### S3 trace
+**Where Stretto fits.** TinyLFU admission compares each candidate's recent access frequency against the current eviction victim's and only admits when the candidate is "hotter." Two conditions together make this win:
 
-| Capacity | QuickCache | Stretto | Stretto Async¹ | TinyUFO | Moka Sync | Moka Async | Moka Segmented(8) |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-|   100,000 | **12.84%** | 12.20% | 3.04% |  2.82% | 10.39% | 10.50% | 10.09% |
-|   400,000 |    42.27%  | 38.31% | 3.05% | 20.25% | 40.96% | 41.17% | **42.32%** |
-|   800,000 |    68.33%  | 67.06% | 3.04% | 62.08% | 66.21% | 67.49% | **70.10%** |
+1. **Capacity is small relative to the working set** (typically ≤ ~25%). The admission filter then has a real choice on every insert; rejecting a one-off scan beats evicting a hot tail entry.
+2. **Access frequencies are skewed** (Zipf-like). The frequency sketch needs signal to distinguish hot from cold; uniform or scan-heavy traffic gives it none.
 
-### DS1 trace
+When both hold, Stretto leads by **7–47 percentage points** — OLTP at every capacity, the 20K rows of P1–P13, the 100K rows of S1–S3. When either fails (DS1 at 4M+, S1/S2 at 800K, P14, ConCat, MergeP, MergeS, the 160K rows of P4/P6/P7/P11/P12), admission rejects items LRU/W-TinyLFU would have kept and Stretto trails by up to 57 points. **Decision rule:** if your working set is several times your cache size *and* hot keys repeat, pick Stretto; if traffic is bursty scans or your cache is sized to hold most of the data, pick Moka or QuickCache.
 
-| Capacity | QuickCache | Stretto | Stretto Async¹ | TinyUFO | Moka Sync | Moka Async | Moka Segmented(8) |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1,000,000 | **15.11%** | 13.94% | 0.75% |  3.34% | 12.75% | 12.91% | 14.78% |
-| 4,000,000 |    44.41%  | 39.51% | 0.75% | 24.68% | 38.42% | 44.29% | **45.19%** |
-| 8,000,000 | **69.30%** | 52.11% | 0.74% | 53.25% | 63.84% | 67.58% | 67.35% |
+**Read-heavy ≠ Stretto-friendly.** The fit axis is access pattern, not the read-to-write ratio. A read-heavy workload with a tight hot set and skewed frequencies (OLTP, P1–P13) is Stretto's sweet spot; a read-heavy workload with a wide, churning keyspace (DS1) is its worst case — admission rejects items that LRU/W-TinyLFU would have kept, regardless of how few writes there are. Sized your cache to hold most of the data? Use an LRU-style cache (Moka, QuickCache).
+
+### S3 trace (Search)
+
+S3 traces an entire workload from small to large capacity in one section. At 100K (cold tail still being rejected) Stretto wins by ~8 points; at 400K (Stretto's "frontier") it edges past Moka Segmented by 1.6; at 800K (capacity ≈ working set) admission filtering hurts and Moka Segmented pulls ahead by 13.6. The 400K row is the cleanest single illustration of where Stretto's regime ends.
+
+| Capacity | QuickCache | Stretto | TinyUFO | Moka Sync | Moka Async | Moka Segmented(8) |
+|---:|---:|---:|---:|---:|---:|---:|
+|   100,000 | 12.83% | **20.72%** |  2.80% | 10.40% | 10.49% | 10.08% |
+|   400,000 | 42.29% | **43.92%** | 20.85% | 40.98% | 41.59% | 42.30% |
+|   800,000 | 68.35% | 56.52% | 62.28% | 66.35% | 67.37% | **70.10%** |
+
+### DS1 trace (Database server)
+
+DS1 is a "database" trace in name only — its access pattern has weak frequency skew across a huge key space and rewards LRU-style retention. Even at 1M (≈5% of interesting working set) Stretto trails QuickCache by 2 points; the gap widens to 20 points at 4M and **45 points** at 8M, as LRU policies keep recently-touched items that admission filtering rejects. DS1 is the canonical "do not pick Stretto" workload.
+
+| Capacity | QuickCache | Stretto | TinyUFO | Moka Sync | Moka Async | Moka Segmented(8) |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1,000,000 | **15.09%** | 12.98% |  3.36% | 12.51% | 13.19% | 14.74% |
+| 4,000,000 | 44.42% | 24.92% | 24.71% | 41.48% | 39.22% | **44.65%** |
+| 8,000,000 | **69.31%** | 24.57% | 53.42% | 64.38% | 64.85% | 66.43% |
 
 ### OLTP trace
 
-Stretto is designed for database workloads. OLTP has a tight working set with strong frequency skew — exactly the access pattern admission-based LFU was built for. At small capacities where the hot set has to be actively filtered, Stretto leads every competitor by 8–27 percentage points. As capacity grows past the working set, simpler policies catch up.
+OLTP is the workload Ristretto was designed for: a tight, repeatedly-accessed working set with strong frequency skew. Stretto's hit ratio is **33–47 percentage points** above the next-best cache and stays nearly flat across capacity (75.7% at cap=256, 76.4% at cap=2000) — TinyLFU pins the hot tail regardless of slack. Other caches' ratios climb with capacity (QuickCache: 22% → 42%, Moka Sync: 26% → 43%) because they have to physically retain the working set first. v0.9.0's 64-stripe insert buffer keeps producer contention out of the picture under 16 concurrent clients, so the result reflects the policy itself, not buffer-overflow drops.
 
-| Capacity | QuickCache | Stretto | Stretto Async¹ | TinyUFO | Moka Sync | Moka Async | Moka Segmented(8) |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-|    256 | 22.37% | **53.34%** | 42.48% | 16.67% | 26.25% | 25.41% | 28.73% |
-|    512 | 28.74% | **51.23%** | 42.53% | 20.59% | 32.61% | 31.94% | 33.34% |
-|  1,000 | 35.10% | **50.40%** | 42.41% | 26.53% | 37.93% | 37.39% | 37.50% |
-|  2,000 | 41.52% | **50.73%** | 42.27% | 34.80% | 42.89% | 42.34% | 42.71% |
-|  4,000 | 47.74% | **51.87%** | 42.52% | 43.42% | 48.18% | 46.53% | 48.32% |
-|  8,000 | **55.37%** | 52.18% | 42.05% | 51.71% | 53.67% | 53.49% | 54.40% |
+| Capacity | QuickCache | Stretto | TinyUFO | Moka Sync | Moka Async | Moka Segmented(8) |
+|---:|---:|---:|---:|---:|---:|---:|
+|    256 | 22.28% | **75.74%** | 16.35% | 26.40% | 25.55% | 28.80% |
+|    512 | 28.79% | **76.02%** | 19.89% | 32.71% | 32.00% | 33.53% |
+|  1,000 | 35.12% | **76.13%** | 27.08% | 38.02% | 37.48% | 37.80% |
+|  2,000 | 41.68% | **76.39%** | 35.05% | 42.99% | 42.47% | 42.85% |
 
-¹ `Stretto Async` is `stretto::AsyncCache` with Tokio. The measurements above use 16 concurrent tokio tasks, which starves Stretto's internal policy-processor task and inflates the insert drop rate — hit ratios collapse on heavy traces. At lower concurrency (1–4 clients) the async cache tracks the sync cache closely. See [#37](https://github.com/al8n/stretto/issues/37) follow-up for the scaling work.
+### ARC P-series traces (Workstation)
+
+The P-series captures workstation block-IO over a few hours per machine. Two distinct regimes:
+
+- **At 20K capacity (~12.5% of working set)** — Stretto wins all 13 of P1–P13, by 13–40 points. P14 (a ~5×-larger trace, 80K is already a tighter ratio) sits past Stretto's regime and QuickCache leads.
+- **At 160K capacity (~100% of working set)** — the picture flattens. Stretto still wins clearly on P2 (+6), P3 (+5), P8 (+9), P10 (+7); ties P1, P5, P9, P13 within ~1 point; trails P4, P6, P7, P11, P12, P14 where W-TinyLFU's recency-and-frequency signal extracts more from a saturated cache than admission filtering can.
+
+| Trace | Capacity | QuickCache | Stretto | TinyUFO | Moka Sync | Moka Async | Moka Segmented(8) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| P1  |  20,000 | 22.73% | **48.25%** | 16.99% | 21.47% | 21.40% | 21.83% |
+| P1  | 160,000 | 68.58% | **69.25%** | 64.20% | 64.33% | 64.84% | 66.96% |
+| P2  |  20,000 | 21.02% | **60.94%** | 16.20% | 19.39% | 19.44% | 20.16% |
+| P2  | 160,000 | 67.15% | **73.48%** | 63.91% | 63.38% | 63.85% | 66.83% |
+| P3  |  20,000 |  8.92% | **44.17%** |  3.82% | 11.22% | 11.25% | 11.02% |
+| P3  | 160,000 | 54.16% | **59.44%** | 50.02% | 48.23% | 48.89% | 50.91% |
+| P4  |  20,000 |  4.79% | **18.61%** |  4.52% |  4.79% |  4.74% |  4.66% |
+| P4  | 160,000 | 30.62% | 22.46% | 26.98% | 28.81% | 29.04% | **30.71%** |
+| P5  |  20,000 |  8.98% | **29.91%** |  6.26% |  8.55% |  8.53% |  8.38% |
+| P5  | 160,000 | 46.58% | **47.39%** | 38.57% | 43.14% | 43.28% | 45.16% |
+| P6  |  20,000 | 17.22% | **37.05%** |  8.89% | 16.29% | 15.89% | 14.89% |
+| P6  | 160,000 | **84.41%** | 64.87% | 58.88% | 77.27% | 78.01% | 81.28% |
+| P7  |  20,000 | 10.46% | **43.19%** |  5.12% |  8.22% |  8.10% |  7.46% |
+| P7  | 160,000 | **57.35%** | 53.52% | 44.31% | 53.20% | 54.30% | 56.63% |
+| P8  |  20,000 | 22.64% | **62.46%** | 18.43% | 21.38% | 21.63% | 21.73% |
+| P8  | 160,000 | 76.54% | **85.26%** | 73.72% | 72.72% | 73.19% | 76.03% |
+| P9  |  20,000 | 12.49% | **40.13%** |  9.88% | 13.63% | 13.65% | 13.87% |
+| P9  | 160,000 | 55.31% | **56.59%** | 51.33% | 50.28% | 51.42% | 53.15% |
+| P10 |  20,000 |  6.56% | **19.93%** |  3.36% |  4.58% |  4.61% |  4.53% |
+| P10 | 160,000 | 28.72% | **37.08%** | 21.48% | 30.38% | 29.57% | 29.99% |
+| P11 |  20,000 | 19.53% | **42.40%** | 17.57% | 18.81% | 18.69% | 18.91% |
+| P11 | 160,000 | **68.28%** | 56.77% | 66.50% | 65.71% | 65.91% | 68.26% |
+| P12 |  20,000 | 10.09% | **32.71%** |  8.96% |  9.23% |  9.26% |  9.11% |
+| P12 | 160,000 | **45.06%** | 41.79% | 40.61% | 41.94% | 42.58% | 44.66% |
+| P13 |  20,000 | 12.60% | **43.26%** |  7.32% | 11.36% | 11.16% | 10.99% |
+| P13 | 160,000 | 55.44% | **56.74%** | 47.44% | 50.05% | 50.76% | 53.95% |
+| P14 |  80,000 | **29.80%** | 24.99% | 19.53% | 28.13% | 28.22% | 29.11% |
+| P14 | 640,000 | **57.93%** | 33.05% | 53.13% | 51.93% | 52.15% | 54.30% |
+
+### ARC S-series traces (Search)
+
+S1 and S2 are search-engine traces with weak frequency skew. The crossover between Stretto's regime and LRU-style policies' regime sits between 100K and 800K capacity:
+
+- At 100K (working set still doesn't fit), Stretto's filter rejects the long cold tail and wins by 8–9 points.
+- At 800K (capacity nears the working set), LRU/W-TinyLFU keep recently-touched items that admission rejects, and Stretto trails by 14–27 points.
+
+| Trace | Capacity | QuickCache | Stretto | TinyUFO | Moka Sync | Moka Async | Moka Segmented(8) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| S1 | 100,000 |  9.59% | **18.78%** |  2.64% |  8.88% |  8.89% |  8.69% |
+| S1 | 800,000 | **56.86%** | 29.81% | 49.44% | 55.32% | 55.38% | 56.08% |
+| S2 | 100,000 | 13.11% | **21.24%** |  2.78% | 10.53% | 10.61% | 10.24% |
+| S2 | 800,000 | 68.36% | 56.55% | 62.57% | 66.78% | 67.67% | **70.33%** |
+
+### Merged ARC traces (scan-heavy)
+
+ConCat (DS1 ∥ S3), MergeP (P1–P14 interleaved), and MergeS (S1–S3 interleaved) splice ARC traces into long sequences with weak frequency skew over very large key spaces. TinyLFU's frequency sketch is built for a single stable workload, not concatenated phases, so admission rejects items LRU-style policies would retain — Stretto trails by **30–60 points** across every measured capacity. **These traces document the regime where Stretto is the wrong tool**; do not use them to size a Stretto cache.
+
+ConCat (DS1 ∥ S3):
+
+| Capacity | QuickCache | Stretto | TinyUFO | Moka Sync | Moka Async | Moka Segmented(8) |
+|---:|---:|---:|---:|---:|---:|---:|
+|   200,000 | **60.43%** | 14.31% | 40.81% | 54.80% | 55.38% | 57.86% |
+|   400,000 | **72.44%** | 15.31% | 57.37% | 63.41% | 64.51% | 67.96% |
+| 3,200,000 | **87.74%** | 43.26% | 86.87% | 73.09% | 76.99% | 82.22% |
+
+MergeP (P1–P14 interleaved):
+
+| Capacity | QuickCache | Stretto | TinyUFO | Moka Sync | Moka Async | Moka Segmented(8) |
+|---:|---:|---:|---:|---:|---:|---:|
+|   400,000 | **44.31%** | 10.71% | 38.40% | 38.09% | 38.48% | 40.31% |
+| 1,000,000 | **57.98%** | 22.83% | 53.41% | 50.66% | 51.46% | 53.77% |
+| 3,200,000 | **75.23%** | 39.62% | 71.23% | 65.02% | 66.43% | 70.42% |
+
+MergeS (S1–S3 interleaved):
+
+| Capacity | QuickCache | Stretto | TinyUFO | Moka Sync | Moka Async | Moka Segmented(8) |
+|---:|---:|---:|---:|---:|---:|---:|
+|   400,000 | 19.96% | 14.67% |  7.29% | 20.62% | 20.68% | **21.14%** |
+| 1,000,000 | **44.81%** | 28.25% | 30.15% | 41.67% | 42.01% | 44.19% |
+| 3,200,000 | **83.02%** | 45.29% | 82.03% | 77.54% | 78.38% | 80.38% |
+
+### Sync vs async cache
+
+`AsyncCache` since v0.9.0 uses the same TinyLFU policy and the same 64-stripe insert buffer as sync `Cache`. Hit ratios track within ~0.4 percentage points across OLTP and most of S3:
+
+| Trace, Capacity | Stretto sync | Stretto async |
+|---|---:|---:|
+| OLTP, 256        | 75.74% | 75.78% |
+| OLTP, 512        | 76.02% | 75.66% |
+| OLTP, 1,000      | 76.13% | 75.87% |
+| OLTP, 2,000      | 76.39% | 76.15% |
+| S3,   100,000    | 20.72% | 20.90% |
+| S3,   400,000    | 43.92% | 43.21% |
+| S3,   800,000    | 56.52% | 58.50% |
+
+The S3 800K row swings ~2 points run-to-run (async ahead here, sync ahead in others) because of drop-on-overflow during scan bursts, not policy divergence. Throughput is comparable: at S3 cap=400K sync finishes in ~2.9s vs async ~4.2s; at OLTP cap=256 both complete in under 0.07s. Pick `AsyncCache` for runtime ergonomics — hit ratio is not the tradeoff.
 
 ### Reproducing
 
 ```bash
-git clone --recursive https://github.com/moka-rs/mokabench.git
-cd mokabench/cache-trace/arc && zstd -d S3.lis.zst DS1.lis.zst OLTP.lis.zst && cd ../..
-cargo run --release --features "stretto,quick_cache,tiny-ufo" -- -f s3,ds1,oltp -n 16
+git clone --recursive https://github.com/al8n/cachebench.git
+cd cachebench/cache-trace/arc && for f in *.lis.zst; do zstd -d "$f"; done && cd ../..
+cargo run --release --features "stretto,quick_cache,tiny-ufo,moka-v012" -- \
+    -f oltp,p1,p2,p3,p4,p5,p6,p7,p8,p9,p10,p11,p12,p13,p14,s1,s2,s3,ds1,concat,merge-p,merge-s -n 16
 ```
+
+`spc1likeread` is omitted from the tables above; with a 30,000,000-entry default capacity it takes ≈30 minutes per cache implementation and adds little signal beyond what DS1 already shows.
 
 ## Installation
 
@@ -199,9 +307,9 @@ any 64bit hash.
 
 #### buffer_size
 
-`buffer_size` is the size of the insert buffers. The Dgraph's developers find that 32 * 1024 gives a good performance.
+Both `Cache` and `AsyncCache` buffer admission requests in a 64-stripe ring that hashes each thread (or task) to its own `Mutex<Vec<_>>` so producers rarely contend. When a stripe accumulates `insert_stripe_high_water` items (default `64`) the full batch is sent to the policy processor; the processor also drains every stripe inline every `drain_interval` (default `500ms`) as a safety net.
 
-If for some reason you see insert performance decreasing with lots of contention (you shouldn't), try increasing this value in increments of 32 * 1024. This is a fine-tuning mechanism and you probably won't have to touch this.
+Use `set_insert_stripe_high_water(items)` to tune the per-stripe batch size. Larger values amortize channel sends but delay admission decisions; values around `64–256` work well for caches under ~10K capacity. The stripe count and per-batch channel capacity are not user-tunable.
 
 #### metrics
 
