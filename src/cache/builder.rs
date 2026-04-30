@@ -10,7 +10,6 @@ use std::{
   time::Duration,
 };
 
-
 pub struct CacheBuilderCore<
   K,
   V,
