@@ -71,6 +71,20 @@ See `docs/superpowers/specs/2026-04-26-striped-insert-buffer-design.md`
 - Sync `Cache::insert` latency reduced ~17.7× on the OLTP cachebench
   trace (cap=2000 from 2.83s → 0.160s) while preserving the hit ratio
   (75.35% measured at cap=2000 in Task 15 acceptance benchmarks).
+- **Lock-free `TinyLFU`**: `CountMinSketch` now uses `Vec<AtomicU8>`
+  with CAS-loop nibble increments and per-byte halving; `Bloom` uses
+  `Vec<AtomicU64>` with `fetch_or`-based set and `store(0)` reset; the
+  `TinyLFU` window counter is `AtomicUsize` and a single-winner
+  `AtomicBool` guards `try_reset` so concurrent threshold crossings
+  cannot double-decay the counters. `admit` moved out of
+  `Mutex<PolicyInner>` into a sibling `Arc<TinyLFU>` field on
+  `LFUPolicy` / `AsyncLFUPolicy`, so the policy worker's `handle_items`
+  applies frequency increments lock-free — no more contention between
+  get-path increments and concurrent `add()` admission decisions.
+  `add()` continues to serialize through the costs mutex but reads
+  `admit` lock-free; `clear()` holds the costs lock across both clears
+  so a concurrent `add()` cannot observe a half-cleared (empty admit +
+  populated costs) state that would bias toward eviction.
 
 # Version 0.7 (2022/08/30)
 - change function definition to 
