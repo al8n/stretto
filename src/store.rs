@@ -346,6 +346,31 @@ impl<
     }
   }
 
+  pub fn try_remove_if_expired(
+    &self,
+    key: &u64,
+    conflict: u64,
+  ) -> Result<Option<StoreItem<V>>, CacheError> {
+    let mut data = self.shards[(*key as usize) % NUM_OF_SHARDS].write();
+
+    match data.get(key) {
+      None => Ok(None),
+      Some(item) => {
+        if conflict != 0 && (conflict != item.conflict) {
+          return Ok(None);
+        }
+        // Check expiry under the same shard lock as removal. A concurrent
+        // update may renew the row after an expiration bucket was drained.
+        if item.expiration.is_zero() || !item.expiration.is_expired() {
+          return Ok(None);
+        }
+
+        self.em.try_remove(key, item.expiration)?;
+        Ok(data.remove(key))
+      }
+    }
+  }
+
   pub fn try_remove_if_version(
     &self,
     key: &u64,
@@ -393,33 +418,24 @@ impl<
         .try_cleanup(now)?
         .map_or(Vec::with_capacity(0), |m| {
           m.iter()
-                    // Sanity check. Verify that the store agrees that this key is expired.
-                    // `!t.is_zero()` gate: a zero-TTL row is "never expires"; without
-                    // the gate, `is_expired()` returns true unconditionally (elapsed
-                    // is always >= 0), so the store row would be destroyed any time
-                    // a stale bucket happened to name this key.
+                    // The expiration bucket can be stale if a concurrent write
+                    // renewed the row after this bucket was drained. Check the
+                    // current expiry atomically with removal before touching policy.
                     .filter_map(|(k, v)| {
-                        self.expiration(k)
-                            .and_then(|t| {
-                                if !t.is_zero() && t.is_expired() {
-                                    let cost = policy.cost(k);
-                                    policy.remove(k);
-                                    self.try_remove(k, *v)
-                                        .map(|maybe_sitem| {
-                                            maybe_sitem.map(|sitem| CrateItem {
-                                                val: Some(sitem.value),
-                                                index: sitem.key,
-                                                conflict: sitem.conflict,
-                                                cost,
-                                                exp: t,
-                                            })
-                                        })
-                                        .ok()
-                                } else {
-                                    None
+                        self.try_remove_if_expired(k, *v)
+                            .ok()
+                            .flatten()
+                            .map(|sitem| {
+                                let cost = policy.cost(k);
+                                policy.remove(k);
+                                CrateItem {
+                                    val: Some(sitem.value),
+                                    index: sitem.key,
+                                    conflict: sitem.conflict,
+                                    cost,
+                                    exp: sitem.expiration,
                                 }
                             })
-                            .flatten()
                     })
                     .collect()
         }),
@@ -437,24 +453,19 @@ impl<
     let mut removed_items = Vec::new();
     if let Some(items) = items {
       for (k, v) in items.iter() {
-        let expiration = self.expiration(k);
-        if let Some(t) = expiration {
-          // See the matching `!t.is_zero()` guard in the sync cleanup
-          // above: zero-TTL rows must not be treated as expired.
-          if !t.is_zero() && t.is_expired() {
-            let cost = policy.cost(k);
-            policy.remove(k);
-            let removed_item = self.try_remove(k, *v)?;
-            if let Some(sitem) = removed_item {
-              removed_items.push(CrateItem {
-                val: Some(sitem.value),
-                index: sitem.key,
-                conflict: sitem.conflict,
-                cost,
-                exp: t,
-              })
-            }
-          }
+        // The expiration bucket can be stale if a concurrent write renewed
+        // the row after this bucket was drained. Check expiry under the same
+        // shard lock as removal before touching policy.
+        if let Some(sitem) = self.try_remove_if_expired(k, *v)? {
+          let cost = policy.cost(k);
+          policy.remove(k);
+          removed_items.push(CrateItem {
+            val: Some(sitem.value),
+            index: sitem.key,
+            conflict: sitem.conflict,
+            cost,
+            exp: sitem.expiration,
+          });
         }
       }
     }
@@ -467,14 +478,11 @@ impl<
   /// the rest of the cache state (policy, metrics, `clear_generation`) has
   /// been reset.
   ///
-  /// The em wipe is load-bearing: without it, a bucket created by a pre-clear
-  /// TTL insert survives `clear`, and when the cleanup ticker processes that
-  /// bucket later it calls `try_remove(key, stale_conflict)`. For a
-  /// deterministic `KeyBuilder`, a post-clear reinsert of the same key
-  /// produces the same conflict, so the stale bucket entry would match and
-  /// delete the fresh row. See the matching `!t.is_zero()` guards in
-  /// `try_cleanup`/`try_cleanup_async` which close the same hole from the
-  /// other side (zero-TTL rows must not be treated as expired).
+  /// The em wipe discards expiration records created before `clear`. Cleanup
+  /// also checks that a row is still expired under its shard lock before
+  /// removal, so a stale bucket cannot remove a renewed live row; the wipe
+  /// avoids carrying stale records into the post-clear cache. Zero-TTL rows
+  /// are explicitly treated as non-expiring by the cleanup removal helper.
   ///
   /// Returning values here — instead of firing callbacks in-place — is
   /// load-bearing on two fronts:
@@ -839,6 +847,26 @@ mod test {
     // conflict mismatch ⇒ refused, row stays.
     assert!(s.try_remove_if_not_stale(&10, 9, 5).unwrap().is_none());
     assert!(s.get(&10, 7).is_some());
+  }
+
+  #[test]
+  fn test_store_try_remove_if_expired_preserves_renewed_row() {
+    let s: ShardedMap<u64> = ShardedMap::new();
+    let expired = Time::now_with_expiration(Duration::from_millis(1));
+    s.try_insert(10, 20, 7, expired, 0).unwrap();
+    std::thread::sleep(Duration::from_millis(10));
+
+    let renewed = Time::now_with_expiration(Duration::from_secs(60));
+    assert!(matches!(
+      s.try_update(10, 30, 7, renewed, 0).unwrap(),
+      UpdateResult::Update(_, _)
+    ));
+
+    // An expiration bucket may already have been drained by the cleanup
+    // processor before the concurrent update moved this row to a new TTL.
+    assert!(s.try_remove_if_expired(&10, 7).unwrap().is_none());
+    assert_eq!(s.get(&10, 7).unwrap().read(), 30);
+    assert_eq!(s.expiration(&10), Some(renewed));
   }
 
   #[test]
